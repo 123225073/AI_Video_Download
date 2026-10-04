@@ -15,5 +15,6 @@ contextBridge.exposeInMainWorld('fengsha', {
   transcriptionSearch: invoke('transcription-search'),
   transcriptionDraft: invoke('transcription-draft'),
   transcriptionSource: invoke('transcription-source'),
+  onCreatorChange(callback) { const listener = (_event, value) => callback(value); ipcRenderer.on('fengsha:creator-changed', listener); return () => ipcRenderer.removeListener('fengsha:creator-changed', listener); },
   onChange(callback) { const listener = (_event, value) => callback(value); ipcRenderer.on('fengsha:changed', listener); return () => ipcRenderer.removeListener('fengsha:changed', listener); }
 });

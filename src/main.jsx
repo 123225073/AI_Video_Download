@@ -32,7 +32,7 @@ function App() {
   const [transcriptSeed, setTranscriptSeed] = useState(null), [settingsSection, setSettingsSection] = useState('download');
   const goSettings = section => { setSettingsSection(section || 'download'); setPage('settings'); };
   const goTranscription = mediaId => { setTranscriptSeed({ mediaId }); setPage('transcription'); };
-  useEffect(() => { call('creatorLast').then(setCreatorRecord).catch(() => {}); }, []);
+  useEffect(() => { call('creatorLast').then(setCreatorRecord).catch(() => {}); return api.onCreatorChange(setCreatorRecord); }, []);
   const notify = (message, error = false) => { setToast({ message, error }); };
   useEffect(() => { call('snapshot').then(setState).catch(e => notify(e.message, true)); return api.onChange(setState); }, []);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(null), 6000); return () => clearTimeout(timer); }, [toast]);

@@ -15,16 +15,21 @@ import { AIService } from './ai.js';
 import { Transcriptions, transcriptionUrl } from './transcription.js';
 import { WeChatCreators } from './wechat-creators.js';
 import { CollectorConnection } from './collector-connection.js';
+import { createAgentHandler, startAgentServer } from './agent.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Keep mutable data outside the program directory so future installer updates cannot remove it.
 const localBase = app.isPackaged ? path.resolve(path.dirname(app.getPath('exe')), '..') : path.join(root, '.local');
 const testMode = process.env.FENGSHA_TEST_MODE === '1' && !app.isPackaged;
+const background = process.argv.includes('--agent-background');
+const dataArg = process.argv.indexOf('--agent-data-dir');
 if (testMode) console.error('FENGSHA_BOOT: module');
-if (testMode && process.env.FENGSHA_TEST_DATA) app.setPath('userData', path.resolve(process.env.FENGSHA_TEST_DATA));
+if (dataArg >= 0 && process.argv[dataArg + 1]) app.setPath('userData', path.resolve(process.argv[dataArg + 1]));
+else if (testMode && process.env.FENGSHA_TEST_DATA) app.setPath('userData', path.resolve(process.env.FENGSHA_TEST_DATA));
 else app.setPath('userData', path.join(localBase, '用户数据'));
 protocol.registerSchemesAsPrivileged([{ scheme: 'fengsha-media', privileges: { secure: true, stream: true, supportFetchAPI: true } }]);
 let win, store, queue, accounts, engine, creators, ai, transcriptions, wechatCreators, collectorConnection, environment = [], parseProgress = null, closing = false, quitting = false;
+let agentServer, agentIdleTimer;
 const snapshot = () => ({ version: app.getVersion(), settings: store.settings(), tasks: queue.tasks(), media: queue.media().map(m => ({ ...m, exists: fs.existsSync(m.filePath) })), accounts: accounts.list(), environment, parseProgress, creatorProgress: creators?.progress(), scheduler: queue.scheduler(), ai: ai?.all(), transcriptions: transcriptions?.list() || [], transcriptionFolders: transcriptions?.folders() || [], speechEnvironment: transcriptions?.environment(), collector: wechatCreators?.config(), collectorConnection:collectorConnection?.status() });
 let changedTimer;
 function changed() { clearTimeout(changedTimer); if (closing || quitting) return; changedTimer = setTimeout(() => { if (!closing && !quitting && win && !win.isDestroyed()) win.webContents.send('fengsha:changed', snapshot()); }, 80); }
@@ -33,7 +38,7 @@ function mediaById(id) { const m = store.get('media', id); if (!m) throw new Err
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
+  app.on('second-instance', (_event, argv) => { if (!argv.includes('--agent-background') && win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
   await app.whenReady();
   if (testMode) console.error('FENGSHA_BOOT: ready');
   const bin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(root, 'bin');
@@ -54,12 +59,13 @@ else {
   if(!testMode) await collectorConnection.recover().catch(e=>collectorConnection.update('error',e.message));
   protocol.handle('fengsha-media', request => { const id = new URL(request.url).hostname; const t = id.startsWith('transcript-') ? store.get('transcription', id.slice(11)) : null; const m = t ? { filePath: t.sourceFile || t.source.file } : store.get('media', id); if (!m?.filePath || !fs.existsSync(m.filePath)) return new Response('Not found', { status: 404 }); return net.fetch(pathToFileURL(m.filePath).href); });
   handle('snapshot', snapshot);
-  handle('parse', async (text, limit = 30) => {
+  const parseLinks = async (text, limit = 30) => {
     if (parseProgress || creators.progress()) throw new Error('正在识别或读取博主，请等待当前操作结束');
     const urls = linksFromText(text); if (!urls.length) throw new Error('未找到链接，请粘贴平台分享链接'); if (urls.length > 30) throw new Error('一次最多识别 30 个链接');
     limit = Math.max(1, Math.min(300, Number(limit) || 30)); const results = [];
     try { for (let i = 0; i < urls.length; i++) { parseProgress = { index: i + 1, total: urls.length, platform: platformOf(urls[i]) || '未知平台' }; changed(); try { results.push(await engine.parse(urls[i], { limit })); } catch (e) { const error = classifyError(e.message); if (error.category === 'auth') accounts.markExpired(platformOf(urls[i])); results.push({ url: urls[i], platform: platformOf(urls[i]) || '未知平台', error: error.category === 'unknown' ? safeLog(e.message) : error.message, category: error.category, items: [] }); } } return results; } finally { parseProgress = null; changed(); }
-  });
+  };
+  handle('parse', parseLinks);
   handle('enqueue', (items, options) => queue.enqueue(items, options));
   handle('creator-identify', text => { if (parseProgress) throw new Error('正在识别视频，请等待当前识别结束'); const urls = linksFromText(text); if (urls.length !== 1) throw new Error('识别博主时请粘贴一个视频或博主主页链接'); return creators.identify(urls[0]); });
   handle('creator-page', (...args) => creators.page(...args));
@@ -114,15 +120,21 @@ else {
   win = new BrowserWindow({ width: 1480, height: 940, minWidth: 1080, minHeight: 720, title: '风沙全平台视频下载器', frame: false, backgroundColor: '#f8fafc', icon: path.join(root, 'assets', 'icon.png'), show: false, webPreferences: { preload: path.join(root, 'electron', 'preload.cjs'), sandbox: true, nodeIntegration: false, contextIsolation: true } });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  win.once('ready-to-show', () => { if (!testMode || process.env.FENGSHA_TEST_VISIBLE === '1') win.show(); });
+  win.once('ready-to-show', () => { if (!background && (!testMode || process.env.FENGSHA_TEST_VISIBLE === '1')) win.show(); });
   win.on('close', async e => {
     if (closing) return; e.preventDefault();
     if (queue.active.size || transcriptions.active) { const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['继续处理', '暂停任务并退出'], defaultId: 0, cancelId: 0, message: '仍有下载或转录任务，是否暂停并退出？', detail: '任务与已完成文稿保留，下次启动可以继续处理。' }); if (r.response === 0) return; }
-    closing = true; clearTimeout(changedTimer); await creators.close(); await transcriptions.close(); await queue.close(); await collectorConnection.close().catch(()=>{}); await accounts.flushAll(); store.close(); win.destroy(); app.quit();
+    closing = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); await creators.close(); await transcriptions.close(); await queue.close(); await collectorConnection.close().catch(()=>{}); await accounts.flushAll(); store.close(); win.destroy(); app.quit();
   });
-  app.on('before-quit', e => { if (!closing && !quitting) { e.preventDefault(); quitting = true; clearTimeout(changedTimer); void creators.close().then(() => transcriptions.close()).then(() => queue.close()).then(()=>collectorConnection.close().catch(()=>{})).then(() => accounts.flushAll()).then(() => { store.close(); closing = true; app.quit(); }); } });
+  app.on('before-quit', e => { if (!closing && !quitting) { e.preventDefault(); quitting = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); void creators.close().then(() => transcriptions.close()).then(() => queue.close()).then(()=>collectorConnection.close().catch(()=>{})).then(() => accounts.flushAll()).then(() => { store.close(); closing = true; app.quit(); }); } });
   if (testMode) globalThis.fengshaTest = { store, queue, engine, creators, accounts, ai, transcriptions, wechatCreators, collectorConnection, snapshot, win };
   await win.loadFile(path.join(root, 'dist', 'index.html'));
+  const agentBusy = type => type === 'parse' ? Boolean(parseProgress) : Boolean(parseProgress || creators.progress() || transcriptions.active || queue.active.size || queue.tasks().some(t => ['queued', 'retry-wait'].includes(t.status)) || (agentServer?.active || 0) > 1);
+  agentServer = await startAgentServer(app.getPath('userData'), createAgentHandler({ engine, queue, store, accounts, creators, parse: parseLinks,
+    identify: source => { if (parseProgress) throw new Error('正在识别视频，请稍后识别博主'); const urls = linksFromText(source); if (urls.length !== 1) throw new Error('请提供一个视频或主页链接'); return creators.identify(urls[0]); },
+    busy: agentBusy, creatorChanged: record => { if (win && !win.isDestroyed()) win.webContents.send('fengsha:creator-changed', record); }, status: () => ({ version: app.getVersion(), pid: process.pid, background: !win.isVisible(), dataDirectory: app.getPath('userData'), activeTasks: queue.active.size }), stop: () => setTimeout(() => app.quit(), 100) }));
+  agentIdleTimer = setInterval(() => { if (background && !win.isVisible() && !agentBusy() && !agentServer.active && Date.now() - agentServer.lastUsed > 30000) app.quit(); }, 1000);
+  agentIdleTimer.unref();
   if (testMode) console.error('FENGSHA_BOOT: renderer');
   void engine.environment().then(value => { environment = value; changed(); }); queue.pump();
 }

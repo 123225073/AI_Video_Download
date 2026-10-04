@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#4265da"/></marker></defs>
+<rect width="1200" height="360" rx="24" fill="#f5f7fc"/>
+<g font-family="Microsoft YaHei, sans-serif"><text x="44" y="52" font-size="27" font-weight="700" fill="#182442">Agent 调用：识别 → 选择 → 下载 → 读取结果</text>
+<g fill="white" stroke="#d7def0" stroke-width="2"><rect x="40" y="106" width="245" height="144" rx="16"/><rect x="331" y="106" width="245" height="144" rx="16"/><rect x="622" y="106" width="245" height="144" rx="16"/><rect x="913" y="106" width="245" height="144" rx="16"/></g>
+<g fill="#4265da" font-size="22" font-weight="700"><text x="65" y="143">1  inspect / creator</text><text x="356" y="143">2  核对作品清单</text><text x="647" y="143">3  download</text><text x="938" y="143">4  media / probe</text></g>
+<g fill="#46536e" font-size="19"><text x="65" y="182">识别视频、读取作者</text><text x="65" y="216">返回标题、ID、数量</text><text x="356" y="182">选择 --indices 编号</text><text x="356" y="216">或明确指定 --all</text><text x="647" y="182">默认等待下载完成</text><text x="647" y="216">返回本地文件路径</text><text x="938" y="182">查询媒体与文件信息</text><text x="938" y="216">让 Agent 继续处理</text></g>
+<g stroke="#4265da" stroke-width="3" marker-end="url(#arrow)"><path d="M288 178 H321"/><path d="M579 178 H612"/><path d="M870 178 H903"/></g>
+<text x="44" y="308" font-size="19" fill="#66738b">默认输出 JSON · 复用桌面下载队列 · 超时后查询 tasks · 平台登录与验证由本人完成</text></g></svg>

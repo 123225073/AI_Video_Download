@@ -58,7 +58,7 @@ try {
   await page.getByLabel('自动失败重试').selectOption('2'); await page.getByLabel('下载文件归档规则').selectOption('author');
   await page.getByLabel('跳过重复视频', { exact: true }).uncheck(); await page.getByLabel('选择默认保存目录').click();
   await screenshot(page, '下载与存储', '01-下载与存储.png');
-  await select(page, '应用与组件'); await page.getByText('当前版本 · 0.3.8', { exact: true }).waitFor();
+  await select(page, '应用与组件'); await page.getByText('当前版本 · ' + JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version, { exact: true }).waitFor();
   await screenshot(page, '应用与组件', '02-应用与组件.png');
   await select(page, 'AI 模型'); await page.getByLabel('文本服务名称').fill('未保存的模型配置');
   await select(page, '视频号连接'); await page.getByText('组件已准备', { exact: true }).waitFor();

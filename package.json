@@ -1,6 +1,6 @@
 {
   "name": "fengsha-video-downloader",
-  "version": "0.3.8",
+  "version": "0.4.0",
   "description": "风沙全平台视频下载器：链接识别、批量下载与本地媒体管理",
   "private": true,
   "type": "module",
@@ -14,15 +14,17 @@
     ]
   },
   "scripts": {
-    "build": "node scripts/prepare-collector.mjs && vite build",
+    "build": "node scripts/prepare-collector.mjs && node scripts/prepare-cli.mjs && vite build",
     "start": "node scripts/start.mjs",
     "dev": "vite --host 127.0.0.1",
     "check": "node --check electron/main.js && node --check electron/engine.js && node --check electron/queue.js && node --check electron/store.js && node --check electron/wechat.js && vite build",
     "test": "node --test tests/*.test.js",
     "test:e2e": "node scripts/e2e.mjs",
-    "dist": "pnpm build && electron-builder --win nsis --x64 --publish never",
+    "dist": "node scripts/package.mjs",
     "test:manuscript": "node scripts/manuscript-e2e.mjs",
-    "test:settings": "node scripts/settings-e2e.mjs"
+    "test:settings": "node scripts/settings-e2e.mjs",
+    "cli": "node cli/fengsha.mjs",
+    "test:cli": "node scripts/cli-e2e.mjs"
   },
   "dependencies": {
     "sql.js": "^1.13.0",
@@ -48,7 +50,8 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "cli/**/*"
     ],
     "extraResources": [
       {
@@ -67,6 +70,26 @@
       {
         "from": "docs/使用说明.md",
         "to": "使用说明.md"
+      },
+      {
+        "to": "cli",
+        "filter": [
+          "**/*",
+          "!fengsha-cli.cmd"
+        ],
+        "from": "cli"
+      },
+      {
+        "from": "docs/images",
+        "to": "images"
+      },
+      {
+        "from": "docs/CLI使用说明.md",
+        "to": "CLI使用说明.md"
+      },
+      {
+        "from": "docs/安装部署.md",
+        "to": "安装部署.md"
       }
     ],
     "win": {
@@ -82,6 +105,12 @@
       "createStartMenuShortcut": true,
       "shortcutName": "风沙全平台视频下载器",
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "extraFiles": [
+      {
+        "from": "cli/fengsha-cli.cmd",
+        "to": "fengsha-cli.cmd"
+      }
+    ]
   }
 }

@@ -14,6 +14,7 @@ local-data/
 .env.*
 !.env.example
 *.encrypted
+**/.agent-channel.json
 *.pem
 *.key
 *.pfx

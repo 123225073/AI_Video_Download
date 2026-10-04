@@ -2,7 +2,7 @@
 
 Windows 桌面应用，提供 **视频链接识别与下载、博主作品批量下载、本地媒体管理、语音转录、AI 文案矫正和多语言翻译**。
 
-当前版本：**0.3.8**。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
+当前版本：**0.4.0**。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
 
 “全平台”是产品名称，当前接入 YouTube、B站、抖音、小红书、微信视频号；实际可用性受登录状态、访问权限、地区、限流与平台接口变化影响。各平台的实测范围见下表。
 
@@ -10,10 +10,25 @@ Windows 桌面应用，提供 **视频链接识别与下载、博主作品批量
 
 - [安装、源码部署、组件准备与打包](docs/安装部署.md)
 - [完整使用说明与失败处理](docs/使用说明.md)
-- [本次仓库交付与验证记录](docs/GitHub交付验证.md)
+- [CLI 与 Agent 调用说明](docs/CLI使用说明.md)
+- [0.4.0 CLI 与图文交付验收](docs/验收-0.4.0.md)
 - [第三方组件、来源与许可](THIRD-PARTY-NOTICES.md)
 - [0.3.8 统一设置历史验收](docs/验收-0.3.8.md)
 - [0.3.7 转录与翻译历史验收](docs/验收-0.3.7.md)
+
+## Agent CLI
+
+0.4.0 新增命令入口：识别链接、分页读取博主、下载、查询任务、读取媒体、检查本地视频。默认输出 JSON，桌面已打开时复用该进程；未打开时自动启动后台，空闲后退出。
+
+![Agent 调用流程](docs/images/agent-flow.svg)
+
+```powershell
+node cli/fengsha.mjs inspect '视频分享链接'
+node cli/fengsha.mjs download '视频分享链接' --output 'D:\视频素材'
+node cli/fengsha.mjs media
+```
+
+安装版提供 fengsha-cli.cmd，使用包内 Node，无需另装环境。多条清单必须选择 --indices 或明确 --all，下载完成返回文件路径；异步与超时应查询 tasks。完整参数见 [CLI 文档](docs/CLI使用说明.md)。
 
 ## 现有功能
 
@@ -110,9 +125,9 @@ Windows 桌面应用，提供 **视频链接识别与下载、博主作品批量
 
 ### 使用现成安装包
 
-取得可信的 `FengshaVideoDownloader-0.3.8-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
+取得可信的 `FengshaVideoDownloader-0.4.0-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
 
-**本仓库首次上传仅提供源码和文档，不包含安装包，也未发布 GitHub Release。** 本机已有安装包不等于仓库中可以下载；从仓库使用请按下面步骤准备并自行构建。
+完整安装包见 [v0.4.0 Release](https://github.com/123225073/AI_Video_Download/releases/tag/v0.4.0)；私有仓库需登录具有访问权限的账号。源码仓库仍排除大型运行组件与模型，源码部署按下面步骤准备。
 
 ### 从源码运行
 
@@ -144,7 +159,7 @@ pnpm test:settings
 pnpm dist
 ```
 
-`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.3.8-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
+`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.4.0-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
 
 ## 典型使用顺序
 
@@ -173,6 +188,7 @@ Electron 40、React 19、Vite 7、SQL.js、Zod、OpenCC-JS；下载依赖 yt-dlp
 ```text
 src/          桌面界面与样式
 electron/     主进程、平台适配、队列、账户、AI、转录及持久化
+cli/          Agent 命令入口、参数说明与本机通信
 bin/          自行准备的外部运行组件；仓库只保留脚本及许可
 scripts/      构建、启动、语音环境准备和隔离测试
 tests/        核心逻辑自动测试
@@ -181,4 +197,3 @@ assets/       应用图标
 ```
 
 项目当前声明 `UNLICENSED`，私有上传不等于采用开放源码许可。第三方许可证独立适用，视频号上游含 Commons Clause；销售或商业分发前需要核对各组件授权。详见[第三方通知](THIRD-PARTY-NOTICES.md)。
-
