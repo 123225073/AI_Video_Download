@@ -1,0 +1,87 @@
+{
+  "name": "fengsha-video-downloader",
+  "version": "0.3.8",
+  "description": "风沙全平台视频下载器：链接识别、批量下载与本地媒体管理",
+  "private": true,
+  "type": "module",
+  "main": "electron/bootstrap.cjs",
+  "author": "Fengsha",
+  "license": "UNLICENSED",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/prepare-collector.mjs && vite build",
+    "start": "node scripts/start.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "check": "node --check electron/main.js && node --check electron/engine.js && node --check electron/queue.js && node --check electron/store.js && node --check electron/wechat.js && vite build",
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "node scripts/e2e.mjs",
+    "dist": "pnpm build && electron-builder --win nsis --x64 --publish never",
+    "test:manuscript": "node scripts/manuscript-e2e.mjs",
+    "test:settings": "node scripts/settings-e2e.mjs"
+  },
+  "dependencies": {
+    "sql.js": "^1.13.0",
+    "zod": "^4.1.0",
+    "opencc-js": "1.0.5"
+  },
+  "devDependencies": {
+    "electron": "^40.0.0",
+    "electron-builder": "^26.0.12",
+    "vite": "^7.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "lucide-react": "^0.468.0",
+    "playwright": "^1.55.0"
+  },
+  "build": {
+    "appId": "online.fengsha.video-downloader",
+    "productName": "风沙全平台视频下载器",
+    "artifactName": "FengshaVideoDownloader-${version}-setup.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "**/*",
+          "!yt-dlp-new.exe",
+          "!yt-dlp-checksums.txt"
+        ]
+      },
+      {
+        "from": "THIRD-PARTY-NOTICES.md",
+        "to": "THIRD-PARTY-NOTICES.md"
+      },
+      {
+        "from": "docs/使用说明.md",
+        "to": "使用说明.md"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico",
+      "executableName": "FengshaVideoDownloader",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "风沙全平台视频下载器",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
