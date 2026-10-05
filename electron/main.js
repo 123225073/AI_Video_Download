@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, protocol, net, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, protocol, net, safeStorage, session } from 'electron';
 import { Store } from './store.js';
 import { Engine } from './engine.js';
 import { Queue } from './queue.js';
@@ -16,6 +16,7 @@ import { Transcriptions, transcriptionUrl } from './transcription.js';
 import { WeChatCreators } from './wechat-creators.js';
 import { CollectorConnection } from './collector-connection.js';
 import { createAgentHandler, startAgentServer } from './agent.js';
+import { Bilibili } from './bilibili.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Keep mutable data outside the program directory so future installer updates cannot remove it.
@@ -47,6 +48,7 @@ else {
   accounts = new AccountManager(store, path.join(app.getPath('userData'), 'accounts'), changed);
   await accounts.restore();
   const wechat = new WeChat(accounts, bin); engine = new Engine(bin, accounts, wechat); queue = new Queue(store, engine, changed);
+  engine.bilibili = new Bilibili((url, { accountId, ...options }) => { const s = accountId ? accounts.getSession(accountId) : session.fromPartition('fengsha-creator-guest-B站'); return s.fetch(url, { ...options, credentials: 'include', headers: { ...options.headers, 'User-Agent': s.getUserAgent() } }); });
   engine.douyinBrowser = () => new CreatorBrowser(accounts, engine);
   ai = new AIService(store, path.join(app.getPath('userData'), 'ai'), safeStorage, changed);
   transcriptions = new Transcriptions(store, engine, ai, path.join(app.getPath('userData'), '转录资料'), changed, { testing: testMode });
@@ -59,6 +61,7 @@ else {
   if(!testMode) await collectorConnection.recover().catch(e=>collectorConnection.update('error',e.message));
   protocol.handle('fengsha-media', request => { const id = new URL(request.url).hostname; const t = id.startsWith('transcript-') ? store.get('transcription', id.slice(11)) : null; const m = t ? { filePath: t.sourceFile || t.source.file } : store.get('media', id); if (!m?.filePath || !fs.existsSync(m.filePath)) return new Response('Not found', { status: 404 }); return net.fetch(pathToFileURL(m.filePath).href); });
   handle('snapshot', snapshot);
+  handle('creator-refresh', id => creators.refresh(id));
   const parseLinks = async (text, limit = 30) => {
     if (parseProgress || creators.progress()) throw new Error('正在识别或读取博主，请等待当前操作结束');
     const urls = linksFromText(text); if (!urls.length) throw new Error('未找到链接，请粘贴平台分享链接'); if (urls.length > 30) throw new Error('一次最多识别 30 个链接');

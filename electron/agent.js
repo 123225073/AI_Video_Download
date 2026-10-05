@@ -31,6 +31,7 @@ export function createAgentHandler({ engine, queue, store, accounts, creators, p
       if (busy('parse')) throw failure('正在识别链接，请稍后读取博主', 'BUSY', 1);
       let record = options.record ? store.get('creator', options.record) : await identify(source);
       if (!record) throw failure('博主记录不存在', 'NOT_FOUND');
+      if (options.refresh) { record = await creators.refresh(record.id); creatorChanged?.(record); return { ...publicRecord(record), metadataMessage: record.metadataMessage, metadataPending: record.metadataPending, partial: record.metadataPending > 0 }; }
       if (options.record && !options.continue) { creatorChanged?.(record); return publicRecord(record); }
       const filters = { limit: options.limit || 50, period: options.period || 'all', from: options.from, to: options.to, keyword: options.keyword, includeUnknown: options['include-unknown'], excludeDownloaded: !options['include-downloaded'] };
       let first = true;

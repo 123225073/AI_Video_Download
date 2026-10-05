@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { command } from './engine.js';
 import { platformOf, validSource, classifyError, safeLog } from './core.js';
+import { thumbnailUrl } from './thumbnail.js';
+
+export const missingBiliMetadata = item => item.available !== false && (!item.title || item.title === '待获取标题' || !thumbnailUrl(item.thumbnail) || !item.duration || !item.publishedAt);
 
 export function profileFromUrl(source) {
   const u = new URL(source), platform = platformOf(source);
@@ -60,9 +63,13 @@ export class Creators {
       endpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent('https://www.youtube.com/watch?v=' + id)}&format=json`;
     } else return null;
     try {
-      const response = await fetch(endpoint, { signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]), headers: { Referer: platform === 'B站' ? 'https://www.bilibili.com/' : 'https://www.youtube.com/' }, redirect: 'error' });
-      if (!response.ok) return null;
-      const data = await response.json();
+      let data;
+      if (platform === 'B站' && this.engine.bilibili) data = { code: 0, data: await this.engine.bilibili.json(endpoint.replace('https://api.bilibili.com', ''), this.engine.accounts?.active('B站')?.id, signal) };
+      else {
+        const response = await fetch(endpoint, { signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]), headers: { Referer: platform === 'B站' ? 'https://www.bilibili.com/' : 'https://www.youtube.com/' }, redirect: 'error' });
+        if (!response.ok) return null;
+        data = await response.json();
+      }
       if (platform === 'B站' && biliProfile && data.code === 0 && String(data.data?.card?.mid) === biliProfile.id) return { id: biliProfile.id, name: data.data.card.name, avatar: data.data.card.face, total: Number.isInteger(data.data.archive_count) ? data.data.archive_count : null };
       if (platform === 'B站' && data.code === 0 && data.data?.owner?.mid) return { id: String(data.data.owner.mid), name: data.data.owner.name, avatar: data.data.owner.face };
       if (platform === 'YouTube' && data.author_url && platformOf(data.author_url) === platform && profileFromUrl(data.author_url)) return { url: data.author_url, name: data.author_name };
@@ -107,7 +114,7 @@ export class Creators {
         const id = platform === 'B站' ? (profile?.id || item?.creatorId) : (item?.creatorId?.startsWith('UC') ? item.creatorId : data?.id?.startsWith('UC') ? data.id : null);
         const url = platform === 'B站' && /^\d+$/.test(id || '') ? `https://space.bilibili.com/${id}/video` : platform === 'YouTube' && id ? `https://www.youtube.com/channel/${id}` : null;
         if (!url) throw new Error('原链接未返回稳定的作者 ID，不能用同名搜索结果代替；请直接粘贴博主主页链接');
-        creator = { platform, id, url, name: metadata?.name || item.author, avatar: metadata?.avatar || data?.thumbnails?.find(t => t.id === 'avatar_uncropped')?.url || '', total: metadata?.total ?? null, supported: true, adapter: 'yt-dlp', listUrl: platform === 'YouTube' ? `https://www.youtube.com/playlist?list=UU${id.slice(2)}` : url, reason: platform === 'B站' ? 'B站作品清单通过主页适配器读取；本机未登录实测受平台限制，请根据返回结果登录或稍后重试。' : null };
+        creator = { platform, id, url, name: metadata?.name || item.author, avatar: thumbnailUrl(metadata?.avatar || data?.thumbnails?.find(t => t.id === 'avatar_uncropped')?.url || ''), total: metadata?.total ?? null, supported: true, adapter: platform === 'B站' && this.engine.bilibili ? 'bilibili' : 'yt-dlp', listUrl: platform === 'YouTube' ? `https://www.youtube.com/playlist?list=UU${id.slice(2)}` : url, reason: platform === 'B站' ? '按 B站实际页码读取完整作品资料；遇到平台限制时保留清单，请登录、完成官方验证或等待后继续。' : null };
         if (platform === 'B站' && creator.total === null) { const header = await this.identityMetadata(url, platform, signal); if (header?.id === id) Object.assign(creator, { total: header.total, avatar: header.avatar || creator.avatar, name: header.name || creator.name }); }
         if (platform === 'YouTube' && !creator.avatar) {
           try { const header = await this.flat(`${url}/videos`, platform, 1, 1, signal, account?.id); if (header.channel_id === id || header.id === id) creator.avatar = header.thumbnails?.find(t => t.id === 'avatar_uncropped')?.url || ''; }
@@ -119,6 +126,36 @@ export class Creators {
     }, '正在从原链接识别博主', platformOf(source) === '视频号');
   }
   last() { const id = this.store.get('meta', 'lastCreator')?.id; const r = id ? this.store.get('creator', id) : null; return r?.status === 'reading' ? { ...r, status: 'interrupted', message: '上次读取被中断，可继续读取已保存清单' } : r; }
+  async refresh(id) {
+    let record = this.store.get('creator', id);
+    if (!record || record.creator.platform !== 'B站' || !this.engine.bilibili) throw new Error('仅支持补全已保存的 B站作品清单');
+    return this.exclusive(async signal => {
+      let updated = 0, unavailable = 0;
+      const pending = record.items.filter(missingBiliMetadata).slice(0, 50);
+      const save = message => { record = { ...record, metadataMessage: message, metadataPending: record.items.filter(missingBiliMetadata).length }; this.store.put('creator', id, record); this.store.flush(); this.changed(); };
+      for (const item of pending) {
+        try {
+          signal.throwIfAborted();
+          this.active.label = `正在补全作品信息 ${updated + 1} / ${pending.length}`; this.changed();
+          const data = await this.engine.bilibili.detail(item.url, this.engine.accounts?.active('B站')?.id, signal);
+          if (!data || data.uploader_id !== String(record.creator.id)) throw new Error('B站视频详情与当前博主不一致，未修改清单');
+          const metadata = this.engine.item(data, item.url, 'B站', item.collection, item.part);
+          record = { ...record, items: record.items.map(old => old.key === item.key ? { ...old, ...metadata, height: old.height || metadata.height } : old) };
+          updated++; save(`已补全 ${updated} 条作品信息`);
+        } catch (error) {
+          const classified = classifyError(error.message);
+          if (!signal.aborted && ['unavailable', 'restricted'].includes(classified.category)) {
+            record = { ...record, items: record.items.map(old => old.key === item.key ? { ...old, available: false, metadataError: classified.message } : old) };
+            unavailable++; save(`已补全 ${updated} 条，另有 ${unavailable} 条失效或受限作品`); continue;
+          }
+          save(signal.aborted ? `已停止补全，已取得的 ${updated} 条信息保留` : `已补全 ${updated} 条；${classified.category === 'unknown' ? safeLog(error.message) : classified.message}`);
+          return record;
+        }
+      }
+      save(`已补全 ${updated} 条作品信息${unavailable ? `，${unavailable} 条失效或受限作品已标注` : ''}${record.items.filter(missingBiliMetadata).length ? '，仍有缺失信息，可再次补全' : '，当前可用作品信息完整'}`);
+      return record;
+    }, '正在补全 B站作品信息');
+  }
   async page(id, rawFilters, reset = false, extend = false) {
     const original = this.store.get('creator', id); if (!original) throw new Error('博主清单不存在，请重新识别');
     if (!original.creator.supported) throw new Error(original.creator.reason);
@@ -128,11 +165,11 @@ export class Creators {
       r.creator = { ...r.creator, accountId: account?.id || null };
       if (extend && r.filters.limit) r.filters = { ...r.filters, limit: r.filters.limit + 50 };
       if (r.complete) return r;
-      const count = Math.min(50, r.filters.limit === null ? 50 : r.filters.limit - r.scanned);
+      const count = Math.min(r.creator.platform === 'B站' && this.engine.bilibili ? 30 : 50, r.filters.limit === null ? 50 : r.filters.limit - r.scanned);
       if (count <= 0) return { ...r, status: 'limited' };
       const checkpoint = { ...r, status: 'reading', message: null }; this.store.put('creator', id, checkpoint); this.store.flush();
       try {
-        let entries, final, total = r.total, browserEnd = false, collector;
+        let entries, final, total = r.total, browserEnd = false, collector, advance;
         if (r.creator.adapter === 'wechat-collector') {
           collector = await this.wechatCreators.page(r.creator, count, signal, r.collectorCursor, r.collectorPending);
           if (!r.collectorPending?.length && !collector.complete && (r.usedCollectorCursors || []).includes(JSON.stringify(collector.next))) throw new Error('平台重复返回旧分页位置，已保留清单；请稍后继续读取');
@@ -141,10 +178,17 @@ export class Creators {
         } else if (r.creator.adapter === 'browser') {
           const data = await this.browser.page(r.creator, count, signal, r.seen); entries = data.items; browserEnd = data.complete; final = false;
         } else {
+          if (r.creator.platform === 'B站' && this.engine.bilibili) {
+            if (reset) this.engine.bilibili.reset(r.creator);
+            const data = await this.engine.bilibili.page(r.creator, r.cursor, count, signal);
+            entries = data.entries.map(e => this.engine.item(e, e.webpage_url, 'B站'));
+            final = data.complete; total = data.total; advance = data.advance;
+          } else {
           const data = await this.flat(r.creator.listUrl, r.creator.platform, r.cursor, count, signal, r.creator.accountId);
           entries = (data.entries || []).filter(Boolean).map(e => this.engine.item({ ...e, uploader: r.creator.name }, e.webpage_url || (e.url?.startsWith('https://') ? e.url : r.creator.platform === 'YouTube' ? `https://www.youtube.com/watch?v=${e.id}` : `https://www.bilibili.com/video/${e.id}`), r.creator.platform));
           total = Number(data.playlist_count || 0) || r.total || null;
           final = entries.length < count || Boolean(total && r.scanned + entries.length >= total);
+          }
         }
         const seen = new Set(r.seen), downloaded = item => { const m = this.store.get('media', item.key); return Boolean(m && fs.existsSync(m.filePath)); };
         const items = [...r.items], skipped = { ...r.skipped };
@@ -160,15 +204,16 @@ export class Creators {
           if (why) skipped[why] = (skipped[why] || 0) + 1; else items.push(item);
         }
         if (signal.aborted) throw new Error('CANCELLED');
-        const scanned = r.scanned + entries.length;
+        const scanned = r.scanned + (advance ?? entries.length);
         const progressed = collector && (JSON.stringify(collector.next) !== JSON.stringify(r.collectorCursor) || collector.pending.length !== (r.collectorPending?.length || 0));
         if (collector && !r.collectorPending?.length) r.usedCollectorCursors = [...(r.usedCollectorCursors || []), JSON.stringify(collector.next)];
-        r = { ...r, items, skipped, scanned, cursor: r.cursor + entries.length, ...(collector ? { collectorCursor: collector.next, collectorPending: collector.pending } : {}), seen: [...seen], total, complete: final, status: browserEnd ? 'browser-end' : final ? 'complete' : r.filters.limit !== null && scanned >= r.filters.limit ? 'limited' : entries.length || progressed ? 'partial' : 'interrupted', message: browserEnd ? '官方页面显示已到末页，当前清单仅包含实际读取到的展示作品；尚不能保证覆盖该账号全部作品。' : !entries.length && !final && !progressed ? '页面暂未出现新作品，请在官方窗口加载作品后继续读取' : null };
+        r = { ...r, items, skipped, scanned, cursor: r.cursor + (advance ?? entries.length), ...(collector ? { collectorCursor: collector.next, collectorPending: collector.pending } : {}), seen: [...seen], total, complete: final, status: browserEnd ? 'browser-end' : final ? 'complete' : r.filters.limit !== null && scanned >= r.filters.limit ? 'limited' : entries.length || advance || progressed ? 'partial' : 'interrupted', message: browserEnd ? '官方页面显示已到末页，当前清单仅包含实际读取到的展示作品；尚不能保证覆盖该账号全部作品。' : !entries.length && !advance && !final && !progressed ? '页面暂未出现新作品，请在官方窗口加载作品后继续读取' : null };
         this.store.put('creator', id, r); this.store.flush(); return r;
       } catch (error) {
         const c = classifyError(error.message);
         if (c.category === 'auth') this.engine.accounts?.markExpired(r.creator.platform, r.creator.accountId);
-        r = { ...checkpoint, status: signal.aborted ? 'cancelled' : 'interrupted', message: signal.aborted ? '已停止；已读取清单保留，可继续读取' : c.category === 'unknown' ? safeLog(error.message) : c.message };
+        const preserve = reset && original.creator.platform === 'B站' && original.items.length ? original : checkpoint;
+        r = { ...preserve, status: signal.aborted ? 'cancelled' : 'interrupted', message: signal.aborted ? '已停止；已读取清单保留，可继续读取' : (preserve === original ? '重新读取失败，原清单已保留；' : '') + (c.category === 'unknown' ? safeLog(error.message) : c.message) };
         this.store.put('creator', id, r); this.store.flush(); return r;
       }
     }, '正在分页读取博主作品', original.creator.platform === '视频号');

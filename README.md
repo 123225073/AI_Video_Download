@@ -2,7 +2,7 @@
 
 Windows 桌面应用，提供 **视频链接识别与下载、博主作品批量下载、本地媒体管理、语音转录、AI 文案矫正和多语言翻译**。
 
-当前版本：**0.4.0**。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
+当前版本：**0.4.1**。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
 
 “全平台”是产品名称，当前接入 YouTube、B站、抖音、小红书、微信视频号；实际可用性受登录状态、访问权限、地区、限流与平台接口变化影响。各平台的实测范围见下表。
 
@@ -15,6 +15,10 @@ Windows 桌面应用，提供 **视频链接识别与下载、博主作品批量
 - [第三方组件、来源与许可](THIRD-PARTY-NOTICES.md)
 - [0.3.8 统一设置历史验收](docs/验收-0.3.8.md)
 - [0.3.7 转录与翻译历史验收](docs/验收-0.3.7.md)
+
+## 0.4.1 B站信息修复
+
+修复 B站 HTTP 封面被丢弃，以及旧版博主清单只有链接、缺少标题 / 时长 / 日期的问题。B站分页改用原生列表字段与实际页码，保留请求受限前的清单，新增“补全作品信息”修复旧清单。详见 [本次验收与限制](docs/验收-0.4.1.md)。
 
 ## Agent CLI
 
@@ -125,9 +129,9 @@ node cli/fengsha.mjs media
 
 ### 使用现成安装包
 
-取得可信的 `FengshaVideoDownloader-0.4.0-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
+取得可信的 `FengshaVideoDownloader-0.4.1-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
 
-完整安装包见 [v0.4.0 Release](https://github.com/123225073/AI_Video_Download/releases/tag/v0.4.0)；私有仓库需登录具有访问权限的账号。源码仓库仍排除大型运行组件与模型，源码部署按下面步骤准备。
+完整安装包见 [v0.4.1 Release](https://github.com/123225073/AI_Video_Download/releases/tag/v0.4.1)；私有仓库需登录具有访问权限的账号。源码仓库仍排除大型运行组件与模型，源码部署按下面步骤准备。
 
 ### 从源码运行
 
@@ -159,7 +163,7 @@ pnpm test:settings
 pnpm dist
 ```
 
-`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.4.0-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
+`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.4.1-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
 
 ## 典型使用顺序
 

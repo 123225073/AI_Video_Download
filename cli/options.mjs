@@ -1,10 +1,10 @@
 export const commands = ['help', 'version', 'environment', 'inspect', 'creator', 'download', 'tasks', 'task', 'media', 'probe', 'accounts', 'service'];
 const values = new Set(['limit', 'indices', 'list', 'record', 'output', 'quality', 'archive', 'timeout', 'id', 'action', 'period', 'from', 'to', 'keyword', 'data-dir', 'file']);
-const flags = new Set(['json', 'all', 'no-wait', 'force', 'include-unknown', 'include-downloaded', 'continue', 'help']);
+const flags = new Set(['json', 'all', 'no-wait', 'force', 'include-unknown', 'include-downloaded', 'continue', 'refresh', 'help']);
 export function usage() {
   return { name: 'fengsha-cli', format: 'JSON', commands: {
     inspect: 'inspect <分享链接或文案> [--limit 30]',
-    creator: 'creator <视频或主页链接> [--limit 50] [--period 7|30|90|all|custom] [--from YYYY-MM-DD --to YYYY-MM-DD] [--keyword 文字]；或 creator --record ID --continue',
+    creator: 'creator <视频或主页链接> [--limit 50] [--period 7|30|90|all|custom] [--from YYYY-MM-DD --to YYYY-MM-DD] [--keyword 文字]；或 creator --record ID --continue；B站旧清单补全：creator --record ID --refresh',
     download: 'download <链接> 或 --list 清单.json 或 --record ID [--indices 1,2 | --all] [--output 目录] [--quality best|1080|720|480] [--archive flat|author|collection] [--no-wait]',
     tasks: 'tasks [--id ID]', task: 'task --id ID --action pause|resume|retry|cancel',
     media: 'media [--id ID]', probe: 'probe --file 本地视频路径',
@@ -36,6 +36,7 @@ export function parseArgs(argv) {
   if (options.quality && !['best', '1080', '720', '480'].includes(options.quality)) throw new Error('无效画质');
   if (options.archive && !['flat', 'author', 'collection'].includes(options.archive)) throw new Error('无效归档规则');
   if (options.all && options.indices) throw new Error('--all 和 --indices 不能同时使用');
+  if (options.refresh && (command !== 'creator' || !options.record || options.continue || positional[0])) throw new Error('--refresh 仅用于 creator --record，不能同时提供链接或 --continue');
   if (options.indices && !/^\d+(,\d+)*$/.test(options.indices)) throw new Error('--indices 使用从 1 开始的逗号分隔编号');
   if (command === 'download' && [positional[0], options.list, options.record].filter(Boolean).length !== 1) throw new Error('下载需提供且仅提供一个链接、--list 或 --record');
   if (command === 'inspect' && !positional[0] || command === 'creator' && !positional[0] && !options.record) throw new Error('请提供链接或已保存博主记录');

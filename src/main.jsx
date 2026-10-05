@@ -9,6 +9,7 @@ import { enqueueInChunks, concurrencyLabel } from './batch.js';
 import SettingsPage from './SettingsPage.jsx';
 import TranscriptionPage from './TranscriptionPage.jsx';
 import { FileText } from 'lucide-react';
+import Thumb from './Thumbnail.jsx';
 
 const api = window.fengsha;
 const PLATFORMS = ['视频号', '抖音', '小红书', 'B站', 'YouTube'];
@@ -21,7 +22,6 @@ async function call(name, ...args) { const r = await api[name](...args); if (!r.
 function Button({ children, variant = '', className = '', ...props }) { return <button className={`button ${variant} ${className}`} {...props}>{children}</button>; }
 function Badge({ children, tone = '' }) { return <span className={`badge ${tone}`}>{children}</span>; }
 function Platform({ name }) { return <span className={`platform ${PLATFORM_CLASS[name] || ''}`}>{name}</span>; }
-function Thumb({ item, className = '' }) { return <div className={`thumb ${className}`}>{item.thumbnail ? <img src={item.thumbnail} alt="" referrerPolicy="no-referrer" loading="lazy" onError={e => { e.currentTarget.style.display = 'none'; }}/>: null}<FileVideo className="thumb-placeholder" size={32}/>{item.duration ? <span className="duration">{duration(item.duration)}</span> : null}</div>; }
 function Empty({ icon: Icon = FileVideo, title, text, action }) { return <div className="empty"><span className="empty-icon"><Icon size={34}/></span><h3>{title}</h3><p>{text}</p>{action}</div>; }
 function Modal({ title, children, close }) { return <div className="modal-backdrop" onClick={close}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={e => e.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button className="icon-button" onClick={close} aria-label="关闭"><X size={20}/></button></div>{children}</section></div>; }
 

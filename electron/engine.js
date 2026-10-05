@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { platformOf, validSource, cleanName, mediaKey, safeLog } from './core.js';
+import { platformOf, validSource, cleanName, mediaKey, safeLog, classifyError } from './core.js';
+import { thumbnailUrl } from './thumbnail.js';
 
 export function stopProcess(child) {
   if (!child?.pid || child.exitCode !== null) return;
@@ -74,14 +75,22 @@ export class Engine {
     }
     const args = await this.arguments(platform, account?.id);
     args.push('--dump-single-json', '--skip-download', '--flat-playlist', '--playlist-end', String(limit), '--', url);
-    const data = JSON.parse(await command(path.join(this.bin, 'yt-dlp.exe'), args, { signal }));
+    let data, metadataOnly = false;
+    try { data = JSON.parse(await command(path.join(this.bin, 'yt-dlp.exe'), args, { signal })); }
+    catch (error) {
+      if (signal?.aborted || platform !== 'B站' || !this.bilibili || classifyError(error.message).category === 'restricted') throw error;
+      data = await this.bilibili.detail(url, account?.id, signal);
+      if (!data) throw error;
+      data.webpage_url = url; metadataOnly = true;
+      if (data.pages?.length > 1 && !new URL(url).searchParams.has('p')) data.entries = data.pages.slice(0, limit).map(page => ({ ...data, pages: undefined, webpage_url: `https://www.bilibili.com/video/${data.id}?p=${page.page}`, title: `${data.title} · ${page.part}`, duration: page.duration }));
+    }
     this.accounts?.markVerified(platform, account?.id);
     const entries = data.entries ? data.entries.filter(Boolean) : [data];
     const source = new URL(url);
-    let biliPages = [];
+    let biliPages = metadataOnly ? data.pages || [] : [];
     if (platform === 'B站' && data.entries) {
       const bvid = source.pathname.match(/\/video\/(BV[\w]+)/)?.[1];
-      if (bvid) try {
+      if (bvid && !biliPages.length) try {
         const apiSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000);
         const response = await fetch(`https://api.bilibili.com/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`, { signal: apiSignal, headers: { Referer: 'https://www.bilibili.com/' } });
         const metadata = await response.json(); if (metadata.code === 0 && Array.isArray(metadata.data)) biliPages = metadata.data;
@@ -99,15 +108,15 @@ export class Engine {
       return this.item({ ...entry, channel_id: entry.channel_id || data.channel_id, uploader_id: entry.uploader_id || data.uploader_id, channel_url: entry.channel_url || data.channel_url, uploader_url: entry.uploader_url || data.uploader_url }, entryUrl, platform, data.entries ? data.title : null, part);
     });
     const total = Number(biliPages.length || data.playlist_count || data.n_entries || entries.length);
-    return { url, platform, title: data.title || '解析结果', total, complete: !data.entries || (Boolean(biliPages.length || data.playlist_count || data.n_entries) && total <= entries.length), items, accountId: account?.id || null };
+    return { url, platform, title: data.title || '解析结果', total, complete: !data.entries || (Boolean(biliPages.length || data.playlist_count || data.n_entries) && total <= entries.length), items, metadataOnly, accountId: account?.id || null };
   }
   item(data, url, platform, collection = null, part = null) {
     const formats = (data.formats || []).filter(f => !f.has_drm && f.vcodec !== 'none');
-    const image = data.thumbnail || data.thumbnails?.at(-1)?.url || '';
+    const image = [data.thumbnail, ...(data.thumbnails || []).map(t => t.url).reverse()].map(thumbnailUrl).find(Boolean) || '';
     const item = {
       url, platform, sourceId: platform === 'B站' ? new URL(url).pathname.match(/\/video\/((?:BV|av)[\w]+)/i)?.[1] || String(data.id || url) : String(data.id || url), part: part || (platform === 'B站' ? Number(new URL(url).searchParams.get('p') || 1) : null), title: String(data.title || data.description || '待获取标题').slice(0, 180),
       author: String(data.uploader || data.channel || '未知作者'), collection, duration: data.duration || null,
-      thumbnail: image.startsWith('https://') ? image : '',
+      thumbnail: image,
       height: Math.max(0, ...formats.map(f => f.height || 0)) || null,
       available: !['private', 'premium_only', 'subscriber_only'].includes(data.availability),
       publishedAt: data.upload_date || (data.timestamp ? new Date(data.timestamp * 1000).toISOString().slice(0, 10).replaceAll('-', '') : null),

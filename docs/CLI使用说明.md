@@ -1,4 +1,4 @@
-# CLI 与 Agent 使用说明（0.4.0）
+# CLI 与 Agent 使用说明（0.4.1）
 
 Agent 可以直接调用命令识别视频、读取作者作品、下载视频，并取得本地文件路径与媒体信息。所有命令默认输出一个 JSON 对象，退出码标识成功、参数错误、超时或部分失败。
 
@@ -165,3 +165,11 @@ node cli/fengsha.mjs service stop
 | 4 | 部分读取 / 部分下载未完成 | 保留成功结果，核对未完成部分 |
 
 CLI 没有扩大平台支持范围。小红书仍为实验接入，真实微信作者采集仍需现场验证；既有公开平台实测范围见 [README](https://github.com/123225073/AI_Video_Download)。源码 CLI 与安装版验收记录见 [0.4.0 验收](https://github.com/123225073/AI_Video_Download/blob/main/docs/验收-0.4.0.md)。
+
+## 0.4.1：补全 B站旧清单
+
+```powershell
+node cli/fengsha.mjs creator --record '博主清单ID' --refresh
+```
+
+每次最多补50条缺失信息。它保留原来的读取位置与已取得字段，不重新下载视频；返回 metadataMessage / metadataPending。仍有缺失时返回退出码4，修复成功返回0。不能与 --continue 同时使用。原生列表单页30条，--limit仍为原来的数量上限。inspect返回metadataOnly:true时只确认视频信息，实际格式需在下载时解析。平台请求受限仍需本人更新会话、验证或等待。

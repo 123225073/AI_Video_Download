@@ -5,6 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 const program = path.resolve(process.argv[2] || 'release/win-unpacked');
+const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
 const output = path.resolve('output', `packaged-cli-${Date.now()}`); fs.mkdirSync(output, { recursive: true });
 const profile = path.join(output, '用户数据'), fixture = path.join(output, 'test.mp4');
 const executable = path.join(program, 'FengshaVideoDownloader.exe');
@@ -23,8 +24,8 @@ function cli(args, cmd = false) {
   });
 }
 try {
-  assert.equal((await cli(['version'])).data.version, '0.4.0'); result.bundledNode = true;
-  assert.equal((await cli(['version'], true)).data.version, '0.4.0'); result.cmdEntry = true;
+  assert.equal((await cli(['version'])).data.version, version); result.bundledNode = true;
+  assert.equal((await cli(['version'], true)).data.version, version); result.cmdEntry = true;
   const environment = await cli(['environment']); assert.equal(environment.data.components.length, 4); assert.ok(environment.data.components.every(c => c.ok)); result.components = true;
   const url = `http://127.0.0.1:${server.address().port}/video.mp4`;
   const inspection = await cli(['inspect', url]); assert.equal(inspection.data.items.length, 1);
@@ -35,7 +36,7 @@ try {
   app = await electron.launch({ executablePath: executable, args: ['--agent-data-dir', profile], env, timeout: 45000 });
   const page = await app.firstWindow(); await page.getByRole('heading', { name: '链接下载', exact: true }).waitFor();
   const snapshot = (await page.evaluate(() => window.fengsha.snapshot())).value;
-  assert.equal(snapshot.version, '0.4.0'); assert.equal(snapshot.media.length, 1); assert.equal(snapshot.tasks[0].status, 'completed'); result.guiDataRetained = true;
+  assert.equal(snapshot.version, version); assert.equal(snapshot.media.length, 1); assert.equal(snapshot.tasks[0].status, 'completed'); result.guiDataRetained = true;
   const service = await cli(['service']); assert.equal(service.data.background, false); result.reusesGUI = true;
   const help = fs.readFileSync(path.join(program, 'resources/使用说明.md'), 'utf8');
   for (const match of help.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) assert.ok(fs.existsSync(path.join(program, 'resources', match[1])), match[1]);

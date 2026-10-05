@@ -42,6 +42,7 @@ export function archiveDirectory(settings, item) {
 }
 export function classifyError(message) {
   const text = String(message);
+  if (/BILIBILI_RISK|\[Bilibili[^\]]*\].*(?:\(352\)|\(412\)|\(401\))|Request is (?:rejected|blocked) by server.*\((?:352|412|401)\)/i.test(text)) return { category: 'rate-limit', message: 'B站限制了作品列表请求，已保留当前清单和读取位置。请在账号管理登录或更新 B站会话，完成官方验证后等待至少一分钟，再继续读取；不要连续重复提交。', retryable: true };
   const rules = [
     [/WECHAT_LOGIN|Sign in|Login required|Fresh cookies|cookies.*valid|HTTP Error 401/i, 'auth', '登录状态缺失或已过期，请配置登录后重新识别', false],
     [/DRM|paywall|members.only|Private video|paid content/i, 'restricted', '该内容受访问限制，不能通过此下载器获取', false],
