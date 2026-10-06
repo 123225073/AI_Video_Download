@@ -19,7 +19,7 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const env = { ...process.env, FENGSHA_TEST_MODE: '1', FENGSHA_TEST_DATA: path.join(output, 'profile'), FENGSHA_TEST_VISIBLE: '1' }; delete env.ELECTRON_RUN_AS_NODE;
 let application; const errors = [], result = { output, ok: false, pages: [] };
 async function launch() {
-  application = await electron.launch({ executablePath: require('electron'), args: [root], env, timeout: 45000 });
+  application = await electron.launch({ executablePath: require('electron'), args: [path.resolve(process.argv[2] || root)], env, timeout: 45000 });
   const page = await application.firstWindow(); page.on('pageerror', error => errors.push(error.message));
   await page.getByRole('heading', { name: '链接下载', exact: true }).waitFor();
   await application.evaluate(({ ipcMain, dialog }, directory) => {

@@ -1,4 +1,4 @@
-# CLI 与 Agent 使用说明（0.4.1）
+# CLI 与 Agent 使用说明（0.4.2）
 
 Agent 可以直接调用命令识别视频、读取作者作品、下载视频，并取得本地文件路径与媒体信息。所有命令默认输出一个 JSON 对象，退出码标识成功、参数错误、超时或部分失败。
 
@@ -166,10 +166,16 @@ node cli/fengsha.mjs service stop
 
 CLI 没有扩大平台支持范围。小红书仍为实验接入，真实微信作者采集仍需现场验证；既有公开平台实测范围见 [README](https://github.com/123225073/AI_Video_Download)。源码 CLI 与安装版验收记录见 [0.4.0 验收](https://github.com/123225073/AI_Video_Download/blob/main/docs/验收-0.4.0.md)。
 
-## 0.4.1：补全 B站旧清单
+## 0.4.2：补全 B站旧清单
 
 ```powershell
 node cli/fengsha.mjs creator --record '博主清单ID' --refresh
 ```
 
 每次最多补50条缺失信息。它保留原来的读取位置与已取得字段，不重新下载视频；返回 metadataMessage / metadataPending。仍有缺失时返回退出码4，修复成功返回0。不能与 --continue 同时使用。原生列表单页30条，--limit仍为原来的数量上限。inspect返回metadataOnly:true时只确认视频信息，实际格式需在下载时解析。平台请求受限仍需本人更新会话、验证或等待。
+
+## 0.4.2：中断与超时
+
+`creator` 在读取失败时保留已取得的 `items`，返回 `complete:false`、`partial:true` 和退出码4。`restartRequired:true` 表示下次继续会从第一页重新读取，例如切换账号或失败的重读；Agent 应说明这一点。普通中断仍沿用有效读取位置，不重复提交下载。
+
+`download --timeout` 的等待预算从发出下载请求开始，包含解析、入队和完成轮询，不在入队后重新计时；服务冷启动另有启动等待。轮询超时返回已入队 ID，任务继续后台执行。复用排队期间恢复的完整文件也返回文件路径、大小与时长。平台账号会话只通过桌面账号管理配置，CLI 不读取普通浏览器的私密登录资料。

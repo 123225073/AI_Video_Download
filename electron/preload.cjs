@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const invoke = (name) => (...args) => ipcRenderer.invoke(`fengsha:${name}`, ...args);
 contextBridge.exposeInMainWorld('fengsha', {
   snapshot: invoke('snapshot'), parse: invoke('parse'), enqueue: invoke('enqueue'),
-  creatorIdentify: invoke('creator-identify'), creatorPage: invoke('creator-page'), creatorLast: invoke('creator-last'), creatorCancel: invoke('creator-cancel'),
+  creatorIdentify: invoke('creator-identify'), creatorPage: invoke('creator-page'), creatorLast: invoke('creator-last'), creatorCancel: invoke('creator-cancel'), creatorRecover: invoke('creator-recover'),
   creatorRefresh: invoke('creator-refresh'),
   action: invoke('action'), saveSettings: invoke('settings'), chooseFolder: invoke('folder'),
   login: invoke('login'), accounts: invoke('accounts'), addAccount: invoke('account-add'), importAccount: invoke('account-import'), accountAction: invoke('account-action'), environment: invoke('environment'),

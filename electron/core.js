@@ -42,6 +42,8 @@ export function archiveDirectory(settings, item) {
 }
 export function classifyError(message) {
   const text = String(message);
+  if (/ERR_BLOCKED_BY_CLIENT/i.test(text)) return { category: 'network', message: '本机网络组件拦截了请求，当前清单已保留。请稍后继续读取；若持续出现，可检查该应用的代理或网络过滤设置。', retryable: false };
+  if (/BILIBILI_RESPONSE/i.test(text)) return { category: 'extractor', message: 'B站返回了验证页面或无效资料，未推进读取位置。请检查官方页面访问状态，稍后继续读取。', retryable: false };
   if (/BILIBILI_RISK|\[Bilibili[^\]]*\].*(?:\(352\)|\(412\)|\(401\))|Request is (?:rejected|blocked) by server.*\((?:352|412|401)\)/i.test(text)) return { category: 'rate-limit', message: 'B站限制了作品列表请求，已保留当前清单和读取位置。请在账号管理登录或更新 B站会话，完成官方验证后等待至少一分钟，再继续读取；不要连续重复提交。', retryable: true };
   const rules = [
     [/WECHAT_LOGIN|Sign in|Login required|Fresh cookies|cookies.*valid|HTTP Error 401/i, 'auth', '登录状态缺失或已过期，请配置登录后重新识别', false],

@@ -125,22 +125,36 @@ export class Creators {
       this.store.put('creator', record.id, record); this.store.put('meta', 'lastCreator', { id: record.id }); this.store.flush(); return record;
     }, '正在从原链接识别博主', platformOf(source) === '视频号');
   }
-  last() { const id = this.store.get('meta', 'lastCreator')?.id; const r = id ? this.store.get('creator', id) : null; return r?.status === 'reading' ? { ...r, status: 'interrupted', message: '上次读取被中断，可继续读取已保存清单' } : r; }
+  last() { const id = this.store.get('meta', 'lastCreator')?.id; const r = id ? this.store.get('creator', id) : null; if (!r) return null; return { ...r, recoveryAvailable: !r.items.length && Boolean(this.previous(r)), ...(r.status === 'reading' ? { status: 'interrupted', message: '上次读取被中断，可继续读取已保存清单' } : {}) }; }
+  previous(record) {
+    if (record?.creator.platform !== 'B站') return null;
+    return this.store.list('creator').filter(old => old.id !== record.id && old.creator?.platform === 'B站' && old.creator.id === record.creator.id && (old.creator.accountId || null) === (record.creator.accountId || null) && old.items?.length).sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+  }
+  recover(id) {
+    if (this.active) throw new Error('请先停止当前读取');
+    const record = this.store.get('creator', id), previous = this.previous(record);
+    if (!record || record.items?.length || !previous) throw new Error('没有可恢复的同一作者清单');
+    const restored = { ...previous, id: record.id, source: record.source, createdAt: record.createdAt, complete: false, status: 'interrupted', restartRequired: true, recoveryAvailable: false, message: `已恢复同一作者上次保存的 ${previous.items.length} 条清单（历史结果，并非本次新读取）；继续读取将从第一页重读。` };
+    this.store.put('creator', id, restored); this.store.flush(); this.changed(); return restored;
+  }
   async refresh(id) {
     let record = this.store.get('creator', id);
     if (!record || record.creator.platform !== 'B站' || !this.engine.bilibili) throw new Error('仅支持补全已保存的 B站作品清单');
     return this.exclusive(async signal => {
       let updated = 0, unavailable = 0;
+      const accountId = this.engine.accounts?.active('B站')?.id;
       const pending = record.items.filter(missingBiliMetadata).slice(0, 50);
       const save = message => { record = { ...record, metadataMessage: message, metadataPending: record.items.filter(missingBiliMetadata).length }; this.store.put('creator', id, record); this.store.flush(); this.changed(); };
       for (const item of pending) {
         try {
           signal.throwIfAborted();
           this.active.label = `正在补全作品信息 ${updated + 1} / ${pending.length}`; this.changed();
-          const data = await this.engine.bilibili.detail(item.url, this.engine.accounts?.active('B站')?.id, signal);
+          if (this.engine.accounts?.active('B站')?.id !== accountId) throw new Error('读取期间切换了 B站账号，已保留补全进度，请再次补全');
+          const data = await this.engine.bilibili.detail(item.url, accountId, signal);
           if (!data || data.uploader_id !== String(record.creator.id)) throw new Error('B站视频详情与当前博主不一致，未修改清单');
           const metadata = this.engine.item(data, item.url, 'B站', item.collection, item.part);
-          record = { ...record, items: record.items.map(old => old.key === item.key ? { ...old, ...metadata, height: old.height || metadata.height } : old) };
+          const populated = Object.fromEntries(Object.entries(metadata).filter(([key, value]) => value !== null && value !== undefined && value !== '' && !(key === 'title' && value === '待获取标题')));
+          record = { ...record, items: record.items.map(old => old.key === item.key ? { ...old, ...populated, height: old.height || metadata.height } : old) };
           updated++; save(`已补全 ${updated} 条作品信息`);
         } catch (error) {
           const classified = classifyError(error.message);
@@ -160,8 +174,14 @@ export class Creators {
     const original = this.store.get('creator', id); if (!original) throw new Error('博主清单不存在，请重新识别');
     if (!original.creator.supported) throw new Error(original.creator.reason);
     return this.exclusive(async signal => {
-      let r = reset ? { ...original, items: [], scanned: 0, cursor: 1, seen: [], skipped: {}, complete: false, collectorCursor: null, collectorPending: [], usedCollectorCursors: [], filters: normalizeFilters(rawFilters) } : { ...original, filters: original.filters || normalizeFilters(rawFilters) };
+      const restart = !reset && Boolean(original.restartRequired);
+      reset = reset || restart;
+      let r = reset ? { ...original, items: [], scanned: 0, cursor: 1, seen: [], skipped: {}, complete: false, restartRequired: false, collectorCursor: null, collectorPending: [], usedCollectorCursors: [], filters: normalizeFilters(restart ? original.filters : rawFilters) } : { ...original, filters: original.filters || normalizeFilters(rawFilters) };
       const account = this.engine.accounts?.active(r.creator.platform);
+      if (!reset && r.creator.platform === 'B站' && r.scanned > 0 && (r.creator.accountId || null) !== (account?.id || null)) {
+        const retained = { ...original, status: 'interrupted', complete: false, restartRequired: true, message: 'B站账号已切换，原清单保留；继续读取将从第一页重新读取，避免混用不同账号的分页。' };
+        this.store.put('creator', id, retained); this.store.flush(); return retained;
+      }
       r.creator = { ...r.creator, accountId: account?.id || null };
       if (extend && r.filters.limit) r.filters = { ...r.filters, limit: r.filters.limit + 50 };
       if (r.complete) return r;
@@ -191,6 +211,7 @@ export class Creators {
           }
         }
         const seen = new Set(r.seen), downloaded = item => { const m = this.store.get('media', item.key); return Boolean(m && fs.existsSync(m.filePath)); };
+        if (r.creator.platform === 'B站' && entries.some(item => seen.has(item.key))) throw new Error('B站重复返回已读取作品，请重新读取；原清单和位置已保留');
         const items = [...r.items], skipped = { ...r.skipped };
         for (let item of entries) {
           if (seen.has(item.key)) continue;
@@ -213,7 +234,8 @@ export class Creators {
         const c = classifyError(error.message);
         if (c.category === 'auth') this.engine.accounts?.markExpired(r.creator.platform, r.creator.accountId);
         const preserve = reset && original.creator.platform === 'B站' && original.items.length ? original : checkpoint;
-        r = { ...preserve, status: signal.aborted ? 'cancelled' : 'interrupted', message: signal.aborted ? '已停止；已读取清单保留，可继续读取' : (preserve === original ? '重新读取失败，原清单已保留；' : '') + (c.category === 'unknown' ? safeLog(error.message) : c.message) };
+        r = { ...preserve, complete: false, restartRequired: preserve === original || Boolean(preserve.restartRequired) || /重复返回|读取期间变化/.test(error.message), status: signal.aborted ? 'cancelled' : 'interrupted', message: signal.aborted ? '已停止；已读取清单保留，可继续读取' : (preserve === original ? '重新读取失败，原清单已保留；' : '') + (c.category === 'unknown' ? safeLog(error.message) : c.message) };
+        r.recoveryAvailable = !r.items.length && Boolean(this.previous(r));
         this.store.put('creator', id, r); this.store.flush(); return r;
       }
     }, '正在分页读取博主作品', original.creator.platform === '视频号');

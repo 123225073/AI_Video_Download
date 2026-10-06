@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { thumbnailUrl } from '../electron/thumbnail.js';
-import { Bilibili, biliEntry } from '../electron/bilibili.js';
+import { Bilibili, biliEntry, biliDuration } from '../electron/bilibili.js';
 import { classifyError } from '../electron/core.js';
 import { Creators } from '../electron/creators.js';
 import { Store } from '../electron/store.js';
@@ -49,6 +49,87 @@ test('B站原始分页保留标题封面日期时长，非整页继续不重新�
   const first = await reader.page(creator, 1, 30); assert.equal(first.entries[0].title, '作品1'); assert.equal(first.entries[0].duration, 659); assert.ok(first.entries[0].timestamp); assert.match(first.entries[0].thumbnail, /^https:/);
   await reader.page(creator, 31, 20); const tail = await reader.page(creator, 51, 30); assert.equal(tail.advance, 10); assert.equal(tail.complete, false);
   const last = await reader.page(creator, 61, 30); assert.equal(last.complete, true); assert.deepEqual(calls, [1,2,3]);
+});
+
+test('来源头仅发送可信源站，不带作者路径或查询参数', async () => {
+  let headers;
+  const reader = new Bilibili(async (_url, options) => { headers = options.headers; return ok({}); }, { interval: 0 });
+  await reader.json('/x/web-interface/view?bvid=BV1MVbW6XEbZ', null, null, creator.url + '?secret=tracking');
+  assert.equal(headers.Referer, 'https://space.bilibili.com/');
+});
+
+test('HTML、缺失响应体、客户端拦截与799限流都给出可操作分类', async () => {
+  for (const [response, category] of [
+    [{ ok:true, status:200, json:async()=>{throw new SyntaxError('Unexpected token < SECRET');} }, 'extractor'],
+    [{ ok:true, status:200, json:async()=>({code:0}) }, 'extractor'],
+    [{ ok:true, status:200, json:async()=>({code:-799}) }, 'rate-limit']
+  ]) {
+    const reader=new Bilibili(async()=>response,{interval:0});
+    await assert.rejects(reader.json('/x/space/arc/search'), error=>classifyError(error.message).category===category && !error.message.includes('SECRET'));
+  }
+  const reader=new Bilibili(async()=>{throw Error('net::ERR_BLOCKED_BY_CLIENT');},{interval:0});
+  await assert.rejects(reader.json('/x/space/arc/search'),error=>classifyError(error.message).category==='network');
+});
+
+test('取消排队请求立即返回，同时不让后续请求越过正在执行的请求', async () => {
+  let finish, entered; const started=new Promise(r=>entered=r); const calls=[];
+  const reader=new Bilibili(async url=>{calls.push(url); if(calls.length===1){entered(); await new Promise(r=>finish=r);}return ok({});},{interval:0});
+  const first=reader.json('/first');await started;
+  const c=new AbortController(); const second=reader.json('/second',null,c.signal); const third=reader.json('/third'); c.abort();
+  await Promise.race([assert.rejects(second),new Promise((_,reject)=>setTimeout(()=>reject(Error('排队取消超过200毫秒')),200))]);
+  assert.equal(calls.length,1);finish();await first;await third;assert.equal(calls.length,2);assert.ok(calls[1].endsWith('/third'));
+});
+
+test('非法时长与隐藏合集不污染作品字段', () => {
+  for(const value of [Infinity,NaN,-1,'1:99','1:60:01'])assert.equal(biliDuration(value),null);
+  assert.equal(biliDuration('1:02:03'),3723);
+  assert.equal(biliEntry({meta:{attribute:156}},creator),null);
+});
+
+test('重复视频页及缩水的未完成页不会被缓存或误报读完', async () => {
+  const reader=new Bilibili(async url=>{if(url.includes('/nav'))return ok({wbi_img:images});const pn=Number(new URL(url).searchParams.get('pn'));return ok({page:{pn,ps:30,count:60},list:{vlist:Array.from({length:30},(_,i)=>raw(i+1))}});},{interval:0});
+  await reader.page(creator,1,30);await assert.rejects(reader.page(creator,31,30),/重复/);
+  const short=new Bilibili(async url=>url.includes('/nav')?ok({wbi_img:images}):ok({page:{pn:1,ps:30,count:60},list:{vlist:[raw(1)]}}),{interval:0});
+  await assert.rejects(short.page(creator,1,30),/分页/);
+});
+
+test('av链接、分P和作者字段必须匹配，缓存读取也响应取消', async () => {
+  const reader=new Bilibili(async()=>ok({aid:2,bvid:'BV1MVbW6XEbZ',owner:{mid:60542591},pages:[{page:1,duration:40}]}),{interval:0});
+  await assert.rejects(reader.detail('https://www.bilibili.com/video/av1'),/不一致/);
+  await assert.rejects(reader.detail('https://www.bilibili.com/video/BV1MVbW6XEbZ?p=NaN'),/分P/);
+  const c=new AbortController();c.abort();await assert.rejects(reader.page(creator,1,30,c.signal));
+});
+
+test('切换账号不能接着旧账号游标拼接作品清单，重新读取仍保留失败前清单', async () => {
+  const {store,engine,service,record}=await fixture();const item=engine.item(biliEntry(raw(1),creator),biliEntry(raw(1),creator).webpage_url,'B站');
+  engine.accounts={active:()=>({id:'new-account'})};let calls=0;engine.bilibili={reset(){},page:async()=>{calls++;throw Error('BILIBILI_RISK 799');}};
+  store.put('creator',record.id,{...record,items:[item],seen:[item.key],scanned:1,cursor:2,filters: { ... (await import('../electron/creators.js')).normalizeFilters({limit:100}) }});
+  const result=await service.page(record.id,{});assert.equal(calls,0);assert.equal(result.cursor,2);assert.match(result.message,/账号/);
+  store.put('creator',record.id,{...store.get('creator',record.id),complete:true});
+  const failed=await service.page(record.id,{limit:100},true);assert.equal(failed.items.length,1);assert.equal(failed.restartRequired,true);
+  const retry=await service.page(record.id,{});assert.equal(calls,2);assert.equal(retry.items.length,1);store.close();
+});
+
+test('失败重读后显式改变筛选仍生效，重复页继续会重新读第一页', async () => {
+  const {store,engine,service,record}=await fixture();const item=engine.item(biliEntry(raw(1),creator),biliEntry(raw(1),creator).webpage_url,'B站');const starts=[];
+  store.put('creator',record.id,{...record,items:[item],scanned:1,cursor:2,seen:[item.key],restartRequired:true,filters:{limit:50,keyword:'旧关键词',period:'all'}});
+  engine.bilibili={reset(){},page:async(_creator,start)=>{starts.push(start);return{entries:[biliEntry(raw(2),creator)],advance:1,total:1,complete:true};}};
+  const result=await service.page(record.id,{limit:100,keyword:'作品2'},true);assert.equal(result.filters.keyword,'作品2');assert.equal(result.filters.limit,100);assert.equal(result.items[0].title,'作品2');assert.deepEqual(starts,[1]);store.close();
+});
+
+test('补全响应缺少字段不覆盖原有封面、日期与时长', async () => {
+  const {store,engine,service,record}=await fixture();const item=engine.item(biliEntry(raw(1),creator),biliEntry(raw(1),creator).webpage_url,'B站');item.title='待获取标题';store.put('creator',record.id,{...record,items:[item]});
+  engine.bilibili={detail:async()=>({id:raw(1).bvid,title:'补全标题',uploader_id:creator.id})};
+  const result=await service.refresh(record.id);assert.equal(result.items[0].title,'补全标题');assert.equal(result.items[0].thumbnail,item.thumbnail);assert.equal(result.items[0].duration,item.duration);assert.equal(result.items[0].publishedAt,item.publishedAt);store.close();
+});
+
+test('识别新记录失败可明确恢复同作者历史结果，不混入其他作者或账号', async () => {
+  const {store,engine,service,record}=await fixture();const item=engine.item(biliEntry(raw(1),creator),biliEntry(raw(1),creator).webpage_url,'B站');
+  store.put('creator','history',{...record,id:'history',items:[item],scanned:1,cursor:2,complete:true,createdAt:1});
+  store.put('creator','wrong-account',{...record,id:'wrong-account',creator:{...creator,accountId:'other'},items:[{...item,title:'其他账号私密清单'}],createdAt:3});
+  engine.bilibili={reset(){},page:async()=>{throw Error('BILIBILI_RISK 799');}};
+  const failed=await service.page(record.id,{limit:100},true);assert.equal(failed.recoveryAvailable,true);assert.equal(failed.items.length,0);
+  const recovered=service.recover(record.id);assert.equal(recovered.id,record.id);assert.equal(recovered.items[0].title,'作品1');assert.match(recovered.message,/历史结果/);assert.equal(recovered.restartRequired,true);assert.equal(recovered.complete,false);assert.equal(store.get('creator','history').complete,true);assert.throws(()=>service.recover(record.id));store.close();
 });
 test('串作者、缺页和空页不能推进位置或伪装完整，集合不作为视频', async () => {
   assert.throws(() => biliEntry({ ...raw(1), mid: 999 }, creator), /其他作者/);

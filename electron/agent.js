@@ -8,7 +8,7 @@ import { safeLog, validSource, platformOf, mediaKey } from './core.js';
 
 export const publicItem = item => Object.fromEntries(['key', 'url', 'platform', 'sourceId', 'part', 'title', 'author', 'collection', 'duration', 'thumbnail', 'height', 'available', 'publishedAt', 'creatorId', 'creatorUrl', 'acquisition', 'objectNonceId'].filter(k => item[k] !== undefined).map(k => [k, item[k]]));
 const publicTask = t => ({ id: t.id, item: publicItem(t.item), status: t.status, progress: t.progress, message: t.message, error: t.error, filePath: t.filePath, size: t.size, duration: t.duration, createdAt: t.createdAt });
-function publicRecord(r) { const { accountId, ...creator } = r.creator; return { id: r.id, creator, total: r.total, scanned: r.scanned, status: r.status, complete: r.complete, message: r.message, filters: r.filters, skipped: r.skipped, items: r.items.map(publicItem) }; }
+function publicRecord(r) { const { accountId, ...creator } = r.creator; return { id: r.id, creator, total: r.total, scanned: r.scanned, status: r.status, complete: r.complete, restartRequired: Boolean(r.restartRequired), message: r.message, filters: r.filters, skipped: r.skipped, items: r.items.map(publicItem) }; }
 const failure = (message, code = 'INVALID_ARGUMENT', exitCode = 2) => Object.assign(new Error(message), { code, exitCode });
 export function createAgentHandler({ engine, queue, store, accounts, creators, parse, identify, busy, status, stop, creatorChanged }) {
   return async ({ command, source, options = {}, items }) => {

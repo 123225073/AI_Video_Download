@@ -51,6 +51,9 @@ try {
   await app.evaluate(()=>{const b=globalThis.fengshaTest.engine.bilibili;b.reset(globalThis.fengshaTest.creators.last().creator);b.request=async()=>({ok:false,status:412});});
   await page.getByRole('button',{name:'确认博主并读取作品'}).click();await page.getByText(/B站限制了作品列表请求/).waitFor();result.riskMessage=true;
   assert.equal(await page.locator('.creator-item').count(),55);result.failedResetKeepsList=true;
+  assert.equal(await page.getByRole('button',{name:'继续读取',exact:true}).count(),1);result.failedResetCanContinue=true;
+  const partial=spawnSync(process.execPath,[entry,'creator','--record',id,'--continue','--data-dir',env.FENGSHA_TEST_DATA],{encoding:'utf8',env,windowsHide:true});
+  assert.equal(partial.status,4,partial.stdout+partial.stderr);const response=JSON.parse(partial.stdout);assert.equal(response.data.items.length,55);assert.equal(response.data.complete,false);assert.equal(response.data.restartRequired,true);result.cliFailureRetainsList=true;
   assert.deepEqual(errors,[]);result.rendererErrors=errors;result.ok=true;
 } catch(e) {result.error=String(e.stack||e);process.exitCode=1;await page?.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});}
 finally {await app?.close().catch(()=>{});fs.writeFileSync(path.join(output,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));}

@@ -113,13 +113,15 @@ export class Engine {
   item(data, url, platform, collection = null, part = null) {
     const formats = (data.formats || []).filter(f => !f.has_drm && f.vcodec !== 'none');
     const image = [data.thumbnail, ...(data.thumbnails || []).map(t => t.url).reverse()].map(thumbnailUrl).find(Boolean) || '';
+    const timestamp = Number(data.timestamp), date = new Date(timestamp * 1000);
+    const duration = Number(data.duration);
     const item = {
       url, platform, sourceId: platform === 'B站' ? new URL(url).pathname.match(/\/video\/((?:BV|av)[\w]+)/i)?.[1] || String(data.id || url) : String(data.id || url), part: part || (platform === 'B站' ? Number(new URL(url).searchParams.get('p') || 1) : null), title: String(data.title || data.description || '待获取标题').slice(0, 180),
-      author: String(data.uploader || data.channel || '未知作者'), collection, duration: data.duration || null,
+      author: String(data.uploader || data.channel || '未知作者'), collection, duration: Number.isFinite(duration) && duration > 0 ? duration : null,
       thumbnail: image,
       height: Math.max(0, ...formats.map(f => f.height || 0)) || null,
       available: !['private', 'premium_only', 'subscriber_only'].includes(data.availability),
-      publishedAt: data.upload_date || (data.timestamp ? new Date(data.timestamp * 1000).toISOString().slice(0, 10).replaceAll('-', '') : null),
+      publishedAt: data.upload_date || (timestamp > 0 && timestamp < 253402300800 && Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10).replaceAll('-', '') : null),
       creatorId: String(data.channel_id || data.uploader_id || ''), creatorUrl: data.channel_url || data.uploader_url || null, creatorAvatar: data.uploader_avatar || '',
       accountId: this.accounts?.active(platform)?.id || null
     };

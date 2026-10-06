@@ -60,7 +60,9 @@ export class Queue {
       try {
         const existing = this.store.get('media', task.item.key);
         if (!task.options.force && this.store.settings().skipDuplicates && existing && fs.existsSync(existing.filePath)) {
-          this.save({ ...task, status: 'completed', filePath: existing.filePath, message: '复用已有完整文件', completedAt: Date.now() }); return;
+          const size = fs.statSync(existing.filePath).size;
+          this.save({ ...task, status: 'completed', filePath: existing.filePath, size, duration: existing.duration ?? task.item.duration, height: existing.height ?? task.item.height, progress: { bytes: size, total: size }, message: '复用已有完整文件', completedAt: Date.now() });
+          this.store.flush(); return;
         }
         let last = 0;
         const output = await this.engine.download(task, archiveDirectory(task.options, task.item), controller.signal, p => {

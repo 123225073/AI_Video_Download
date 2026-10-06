@@ -50,18 +50,22 @@ async function run() {
   }
   const ready = await connect(); if (!ready.ok) return ready;
   const timeout = (parsed.options.timeout || 3600) * 1000;
+  const deadline = Date.now() + timeout;
   let result = await request(directory, parsed, timeout);
   if (parsed.command !== 'download' || !result.ok || parsed.options['no-wait'] || !result.data.added.length) return result;
-  const deadline = Date.now() + timeout, ids = new Set(result.data.added), enqueue = result.data;
+  const ids = new Set(result.data.added), enqueue = result.data;
   while (Date.now() < deadline) {
-    const reply = await request(directory, { command: 'tasks' }, 30000); if (!reply.ok) return { ...reply, data: { ...enqueue } };
+    let reply;
+    try { reply = await request(directory, { command: 'tasks' }, Math.max(1, Math.min(30000, deadline - Date.now()))); }
+    catch (error) { if (error.code === 'TIMEOUT') break; throw error; }
+    if (!reply.ok) return { ...reply, data: { ...enqueue } };
     const tasks = reply.data.tasks.filter(t => ids.has(t.id));
     if (tasks.length !== ids.size) return { ok: false, error: { code: 'TASK_MISSING', message: '部分任务记录缺失，请查询任务状态' }, data: { ...enqueue, tasks }, exitCode: 1 };
     if (tasks.every(t => ['completed', 'failed', 'cancelled', 'paused'].includes(t.status))) {
       const ok = tasks.every(t => t.status === 'completed');
       return { ok, command: 'download', data: { ...enqueue, tasks, files: tasks.filter(t => t.status === 'completed').map(t => ({ taskId: t.id, filePath: t.filePath, size: t.size, duration: t.duration })) }, ...(ok ? {} : { error: { code: 'DOWNLOAD_INCOMPLETE', message: '部分任务未完成，请根据任务状态处理后重试' }, exitCode: 4 }) };
     }
-    await delay(500);
+    await delay(Math.max(0, Math.min(500, deadline - Date.now())));
   }
   return { ok: false, command: 'download', error: { code: 'TIMEOUT', message: '等待超时；任务继续在后台执行，请查询 tasks，不要重复提交' }, data: enqueue, exitCode: 3 };
 }

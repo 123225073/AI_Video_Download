@@ -10,7 +10,7 @@ import { mediaKey } from '../electron/core.js';
 const directory = () => path.resolve('output', 'unit', randomUUID());
 const item = n => ({ platform: 'YouTube', url: `https://www.youtube.com/watch?v=test${n}`, sourceId: `test${n}`, title: `测试 ${n}`, author: '测试作者', available: true });
 const wait = async fn => { const end = Date.now() + 5000; while (!fn()) { if (Date.now() > end) throw new Error('等待测试条件超时'); await new Promise(r => setTimeout(r, 15)); } };
-async function setup(download, concurrency = 2) { const dir = directory(); fs.mkdirSync(dir, { recursive: true }); const store = await Store.open(dir, { savePath: dir, quality: 'best', retries: 1, archive: 'flat', skipDuplicates: true, concurrency }); const engine = { download, accounts: { active: () => null, markExpired: () => {} } }; return { store, queue: new Queue(store, engine, () => {}), dir }; }
+async function setup(download, concurrency = 2) { const dir = directory(); fs.mkdirSync(dir, { recursive: true }); const store = await Store.open(dir, { savePath: dir, quality: 'best', retries: 1, archive: 'flat', skipDuplicates: true, concurrency }); const engine = { download, accounts: { active: () => null, markExpired: () => {} } }; return { store, queue: new Queue(store, engine, () => {}, () => ({ freeMemory: 8 * 1024 ** 3, cores: 8, cpuBusy: 0 })), dir }; }
 
 test('SQLite原子保存后重新打开保留设置与任务', async () => {
   const dir = directory(); let store = await Store.open(dir, { concurrency: 2 }); store.put('settings', 'main', { concurrency: 3 }); store.put('task', 'a', { id: 'a', status: 'queued' }); store.close();
@@ -45,4 +45,13 @@ test('网络故障安排有限重试，登录失败不会盲目自动重试', as
 test('重启将中断任务恢复为待用户继续，不假装完成', async () => {
   const { queue, store } = await setup(async () => {}); store.put('task', 'crashed', { id: 'crashed', status: 'processing', item: item(1), createdAt: Date.now() }); await queue.close();
   const recovered = new Queue(store, {}, () => {}); assert.equal(store.get('task', 'crashed').status, 'paused'); assert.equal(store.get('task', 'crashed').interrupted, true); await recovered.close(); store.close();
+});
+
+test('排队期间文件恢复后复用媒体，同时保存CLI需要的大小时长和画质', async () => {
+  let calls=0;const {queue,store,dir}=await setup(async()=>{calls++;throw Error('不应重新下载');});
+  queue.closing=true;const video=item(77),key=mediaKey(video),file=path.join(dir,'restored.mp4');
+  store.put('media',key,{id:key,filePath:file,size:7,duration:42,height:1080});
+  const id=queue.enqueue([video]).added[0];fs.writeFileSync(file,'fixture');queue.closing=false;queue.pump();await wait(()=>queue.active.size===0);
+  const task=store.get('task',id);assert.equal(task.status,'completed');assert.equal(task.size,7);assert.equal(task.duration,42);assert.equal(task.height,1080);assert.equal(calls,0);
+  await queue.close();store.close();
 });

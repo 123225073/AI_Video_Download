@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="520" viewBox="0 0 1100 520">
+ <rect width="1100" height="520" rx="20" fill="#f4f8ff"/>
+ <g font-family="Microsoft YaHei, sans-serif" fill="#182c4c">
+  <text x="45" y="56" font-size="28" font-weight="bold">B站作品读取：先确认会话，再保留进度</text>
+  <g fill="white" stroke="#c8dbfa" stroke-width="2"><rect x="45" y="92" width="305" height="130" rx="16"/><rect x="395" y="92" width="305" height="130" rx="16"/><rect x="745" y="92" width="305" height="130" rx="16"/></g>
+  <text x="65" y="130" font-size="22" font-weight="bold">① 应用内账号管理</text><text x="65" y="170" font-size="18">B站官方登录 → 完成登录</text><text x="65" y="200" font-size="16">与普通浏览器的会话独立</text>
+  <text x="415" y="130" font-size="22" font-weight="bold">② 确认原作者 UID</text><text x="415" y="170" font-size="18">选择账号、范围和读取数量</text><text x="415" y="200" font-size="16">开始读取，不会自动下载</text>
+  <text x="765" y="130" font-size="22" font-weight="bold">③ 检查真实作品信息</text><text x="765" y="170" font-size="18">标题、封面、日期、时长</text><text x="765" y="200" font-size="16">勾选作品 → 加入下载队列</text>
+  <text x="364" y="168" font-size="24" fill="#3076ee">→</text><text x="714" y="168" font-size="24" fill="#3076ee">→</text>
+  <rect x="45" y="258" width="1005" height="190" rx="16" fill="#fff8eb" stroke="#efd2a4"/>
+  <text x="68" y="300" font-size="23" font-weight="bold">读取中断时</text>
+  <text x="68" y="342" font-size="19">平台限制 / 验证页面：保留清单和位置，完成官方验证，等待后继续。</text>
+  <text x="68" y="378" font-size="19">切换账号 / 分页变化 / 重读失败：保留原清单，再次继续从第一页重读。</text>
+  <text x="68" y="414" font-size="19">旧条目信息缺失：使用“补全作品信息”；不用重新下载视频。</text>
+  <text x="45" y="490" font-size="17" fill="#62758f">状态示意图，不代表已验证任意作者的完整历史；平台限制解除后才能继续获取。</text>
+ </g>
+</svg>

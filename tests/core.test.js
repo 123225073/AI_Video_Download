@@ -31,3 +31,11 @@ test('不同失败原因具有不同重试策略，日志去除签名和Cookie',
   assert.equal(classifyError('No video formats found!').category, 'extractor');
   assert.ok(!safeLog('Cookie=SECRET https://example.com/?token=SECRET').includes('SECRET'));
 });
+
+test('无效或溢出的媒体时间字段不能使整批识别崩溃或输出Infinity', () => {
+  const engine=new Engine('',null,null);
+  for(const value of [Infinity,NaN,1e300,-1]) {
+    const item=engine.item({timestamp:value,duration:value},'https://www.youtube.com/watch?v=test','YouTube');
+    assert.equal(item.publishedAt,null);assert.equal(item.duration,value===1e300?1e300:null);
+  }
+});
