@@ -1,4 +1,4 @@
-# CLI 与 Agent 使用说明（0.4.2）
+# CLI 与 Agent 使用说明（0.4.3）
 
 Agent 可以直接调用命令识别视频、读取作者作品、下载视频，并取得本地文件路径与媒体信息。所有命令默认输出一个 JSON 对象，退出码标识成功、参数错误、超时或部分失败。
 
@@ -179,3 +179,9 @@ node cli/fengsha.mjs creator --record '博主清单ID' --refresh
 `creator` 在读取失败时保留已取得的 `items`，返回 `complete:false`、`partial:true` 和退出码4。`restartRequired:true` 表示下次继续会从第一页重新读取，例如切换账号或失败的重读；Agent 应说明这一点。普通中断仍沿用有效读取位置，不重复提交下载。
 
 `download --timeout` 的等待预算从发出下载请求开始，包含解析、入队和完成轮询，不在入队后重新计时；服务冷启动另有启动等待。轮询超时返回已入队 ID，任务继续后台执行。复用排队期间恢复的完整文件也返回文件路径、大小与时长。平台账号会话只通过桌面账号管理配置，CLI 不读取普通浏览器的私密登录资料。
+
+## 0.4.3：B站登录前置提示
+
+B站 `creator 链接`、`creator --record ID --continue` 和 `creator --record ID --refresh` 在应用未保存可用登录会话时返回 `ok:false`、`error.code:BILIBILI_LOGIN_REQUIRED` 和退出码1。Agent应提示本人进入桌面账号管理完成 B站登录；不要循环重试，也不要把它解释成平台已经拒绝了本次清单请求。
+
+`creator --record ID` 仅读取历史结果，不要求重新登录。单条公开视频的 inspect/download不增加这一博主登录前置限制。账号状态与本机登录资料的存在仅作为前置检查，平台实际有效性仍以请求响应为准。

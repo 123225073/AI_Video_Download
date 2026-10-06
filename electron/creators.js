@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { command } from './engine.js';
 import { platformOf, validSource, classifyError, safeLog } from './core.js';
 import { thumbnailUrl } from './thumbnail.js';
+import { creatorLoginPrompt, creatorLoginError } from './creator-login.js';
 
 export const missingBiliMetadata = item => item.available !== false && (!item.title || item.title === '待获取标题' || !thumbnailUrl(item.thumbnail) || !item.duration || !item.publishedAt);
 
@@ -42,6 +43,18 @@ export function filterItem(item, filters, downloaded) {
 
 export class Creators {
   constructor(store, engine, browser, changed, wechatCreators = null) { this.store = store; this.engine = engine; this.browser = browser; this.changed = changed; this.wechatCreators = wechatCreators; this.active = null; }
+  async requireLogin(platform, signal) {
+    if (platform !== 'B站') return;
+    signal?.throwIfAborted();
+    const account = this.engine.accounts?.active(platform), prompt = creatorLoginPrompt(platform, account);
+    if (prompt) throw creatorLoginError(prompt.message);
+    const ready = await this.engine.accounts?.bilibiliLoginReady?.(account.id);
+    signal?.throwIfAborted();
+    if (!ready) throw creatorLoginError('本应用未检测到有效的 B站登录会话，请在账号管理重新登录并点击“完成登录”，再执行博主读取。');
+    const current = this.engine.accounts.active(platform), changedPrompt = creatorLoginPrompt(platform, current);
+    if (changedPrompt) throw creatorLoginError(changedPrompt.message);
+    if (current.id !== account.id) throw creatorLoginError('B站账号选择已变化，请确认已登录的下载账号后重新执行。');
+  }
   async exclusive(fn, label, useWechat = false) {
     if (this.active) throw new Error('正在读取博主，请先停止当前读取');
     const controller = new AbortController(); this.active = { controller, label }; this.changed();
@@ -86,7 +99,7 @@ export class Creators {
   async identify(source) {
     validSource(source);
     return this.exclusive(async signal => {
-      const platform = platformOf(source); let profile = profileFromUrl(source); const account = this.engine.accounts?.active(platform);
+      const platform = platformOf(source); if (platform === 'B站') await this.requireLogin(platform, signal); let profile = profileFromUrl(source); const account = this.engine.accounts?.active(platform);
       let creator;
       if (['抖音', '小红书'].includes(platform)) creator = await this.browser.identify(source, platform, account?.id, signal);
       else if (platform === '视频号') {
@@ -141,6 +154,7 @@ export class Creators {
     let record = this.store.get('creator', id);
     if (!record || record.creator.platform !== 'B站' || !this.engine.bilibili) throw new Error('仅支持补全已保存的 B站作品清单');
     return this.exclusive(async signal => {
+      await this.requireLogin(record.creator.platform, signal);
       let updated = 0, unavailable = 0;
       const accountId = this.engine.accounts?.active('B站')?.id;
       const pending = record.items.filter(missingBiliMetadata).slice(0, 50);
@@ -174,6 +188,7 @@ export class Creators {
     const original = this.store.get('creator', id); if (!original) throw new Error('博主清单不存在，请重新识别');
     if (!original.creator.supported) throw new Error(original.creator.reason);
     return this.exclusive(async signal => {
+      if (original.creator.platform === 'B站') await this.requireLogin(original.creator.platform, signal);
       const restart = !reset && Boolean(original.restartRequired);
       reset = reset || restart;
       let r = reset ? { ...original, items: [], scanned: 0, cursor: 1, seen: [], skipped: {}, complete: false, restartRequired: false, collectorCursor: null, collectorPending: [], usedCollectorCursors: [], filters: normalizeFilters(restart ? original.filters : rawFilters) } : { ...original, filters: original.filters || normalizeFilters(rawFilters) };

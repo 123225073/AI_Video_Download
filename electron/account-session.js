@@ -9,6 +9,9 @@ export function allowedCookie(platform, cookie) {
   const host = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
   return (domains[platform] || []).some(domain => host === domain || host.endsWith(`.${domain}`));
 }
+export function hasBilibiliLoginCookie(cookies, now = Date.now() / 1000) {
+  return cookies.some(c => c.name === 'SESSDATA' && Boolean(c.value) && allowedCookie('B站', c) && (c.expirationDate == null || c.expirationDate === 0 || Number.isFinite(c.expirationDate) && c.expirationDate > now));
+}
 export function cookieDetails(cookie) {
   return { url: `https://${cookie.domain.replace(/^\./, '')}${cookie.path || '/'}`, name: cookie.name, value: cookie.value, ...(cookie.domain.startsWith('.') ? { domain: cookie.domain } : {}), path: cookie.path || '/', secure: Boolean(cookie.secure), httpOnly: Boolean(cookie.httpOnly), ...(cookie.expirationDate ? { expirationDate: cookie.expirationDate } : {}), ...(cookie.sameSite ? { sameSite: cookie.sameSite } : {}) };
 }

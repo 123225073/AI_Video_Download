@@ -10,8 +10,11 @@ try {
   app = await electron.launch({ executablePath: createRequire(import.meta.url)('electron'), args: [path.resolve(process.argv[2] || '.')], env, timeout: 45000 });
   page = await app.firstWindow(); page.on('pageerror', e=>errors.push(e.message)); await page.getByRole('heading',{name:'链接下载',exact:true}).waitFor();
   await page.route('https://i2.hdslb.com/**', route=>route.fulfill({path:path.resolve('assets/icon.png'),contentType:'image/png'}));
-  await app.evaluate(() => {
-    const { engine } = globalThis.fengshaTest; engine.bilibili.interval=0;
+  await app.evaluate(async () => {
+    const { engine, accounts } = globalThis.fengshaTest; engine.bilibili.interval=0;
+    const account=accounts.add('B站','隔离测试会话（非真实登录）');
+    await accounts.getSession(account.id).cookies.set({url:'https://www.bilibili.com/',domain:'.bilibili.com',path:'/',name:'SESSDATA',value:'SYNTHETIC-BILI-E2E',expirationDate:Date.now()/1000+3600});
+    await accounts.complete(account.id);
     globalThis.biliTestCalls=[];
     engine.bilibili.request=async url=>{
       const u=new URL(url); globalThis.biliTestCalls.push(u.pathname+u.search);

@@ -10,12 +10,12 @@ import { classifyError } from '../electron/core.js';
 import { Creators } from '../electron/creators.js';
 import { Store } from '../electron/store.js';
 
-const creator = { platform: 'B站', id: '60542591', name: '原作者', url: 'https://space.bilibili.com/60542591/video', listUrl: 'https://space.bilibili.com/60542591/video', supported: true, adapter: 'yt-dlp' };
+const creator = { platform: 'B站', id: '60542591', name: '原作者', url: 'https://space.bilibili.com/60542591/video', listUrl: 'https://space.bilibili.com/60542591/video', supported: true, adapter: 'yt-dlp', accountId: 'bili-session' };
 const images = { img_url: 'https://i0.hdslb.com/' + 'a'.repeat(32) + '.png', sub_url: 'https://i0.hdslb.com/' + 'b'.repeat(32) + '.png' };
 const raw = n => ({ bvid: 'BV' + String(n).padStart(10, '0'), mid: 60542591, author: '原作者', title: `作品${n}`, pic: 'http://i2.hdslb.com/bfs/archive/cover.jpg', length: '10:59', created: 1791028800 });
 const ok = data => ({ ok: true, status: 200, json: async () => ({ code: 0, data }) });
 async function fixture() {
-  const store = await Store.open(path.resolve('output/unit', randomUUID()), {}), engine = new Engine('', null, null);
+  const store = await Store.open(path.resolve('output/unit', randomUUID()), {}), engine = new Engine('', { active: () => ({ id: 'bili-session', platform: 'B站', status: '会话已保存', lastSync: 1 }), bilibiliLoginReady: async () => true }, null);
   const service = new Creators(store, engine, null, () => {});
   const record = { id: 'record', creator, items: [], scanned: 0, cursor: 1, seen: [], skipped: {}, status: 'identified', complete: false };
   store.put('creator', record.id, record); return { store, engine, service, record };
@@ -102,7 +102,7 @@ test('av链接、分P和作者字段必须匹配，缓存读取也响应取消',
 
 test('切换账号不能接着旧账号游标拼接作品清单，重新读取仍保留失败前清单', async () => {
   const {store,engine,service,record}=await fixture();const item=engine.item(biliEntry(raw(1),creator),biliEntry(raw(1),creator).webpage_url,'B站');
-  engine.accounts={active:()=>({id:'new-account'})};let calls=0;engine.bilibili={reset(){},page:async()=>{calls++;throw Error('BILIBILI_RISK 799');}};
+  engine.accounts={active:()=>({id:'new-account',platform:'B站',status:'会话已保存',lastSync:1}),bilibiliLoginReady:async()=>true};let calls=0;engine.bilibili={reset(){},page:async()=>{calls++;throw Error('BILIBILI_RISK 799');}};
   store.put('creator',record.id,{...record,items:[item],seen:[item.key],scanned:1,cursor:2,filters: { ... (await import('../electron/creators.js')).normalizeFilters({limit:100}) }});
   const result=await service.page(record.id,{});assert.equal(calls,0);assert.equal(result.cursor,2);assert.match(result.message,/账号/);
   store.put('creator',record.id,{...store.get('creator',record.id),complete:true});

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow, session, safeStorage } from 'electron';
 import { platforms } from './core.js';
-import { allowedCookie, cookieDetails, parseCookieFile } from './account-session.js';
+import { allowedCookie, cookieDetails, parseCookieFile, hasBilibiliLoginCookie } from './account-session.js';
 
 const websites = { '视频号': 'https://yuanbao.tencent.com/', '抖音': 'https://www.douyin.com/', '小红书': 'https://www.xiaohongshu.com/', 'B站': 'https://www.bilibili.com/', 'YouTube': 'https://www.youtube.com/' };
 export class AccountManager {
@@ -11,6 +11,10 @@ export class AccountManager {
   list() { return this.store.list('account').map(a => ({ ...a, active: this.store.get('active-account', a.platform)?.id === a.id })); }
   account(id) { const a = this.store.get('account', id); if (!a) throw new Error('账号记录不存在'); return a; }
   active(platform) { const id = this.store.get('active-account', platform)?.id; return id ? this.store.get('account', id) : null; }
+  async bilibiliLoginReady(id) {
+    if (this.account(id).platform !== 'B站') return false;
+    return hasBilibiliLoginCookie(await this.getSession(id).cookies.get({ url: 'https://api.bilibili.com/', name: 'SESSDATA' }));
+  }
   save(a) { this.store.put('account', a.id, a); this.store.flush(); this.changed(); return a; }
   add(platform, name) {
     if (!platforms.includes(platform)) throw new Error('请选择有效的平台');
@@ -52,7 +56,7 @@ export class AccountManager {
         const s = this.getSession(a.id);
         const valid = cookies.filter(c => allowedCookie(a.platform, c) && (!c.expirationDate || c.expirationDate > Date.now() / 1000));
         for (const c of valid) await s.cookies.set(cookieDetails(c));
-        if (cookies.length && !valid.length) this.markExpired(a.platform, a.id);
+        if (cookies.length && !valid.length || a.platform === 'B站' && !await this.bilibiliLoginReady(a.id)) this.markExpired(a.platform, a.id);
       } catch { this.save({ ...a, status: '需要重新登录', message: '本机会话无法恢复，请重新登录' }); }
     }
   }
@@ -84,6 +88,7 @@ export class AccountManager {
     await s.cookies.flushStore();
     const cookies = await s.cookies.get({});
     if (!cookies.length) throw new Error('尚未获取会话，请先在官方页面完成登录');
+    if (a.platform === 'B站' && !await this.bilibiliLoginReady(id)) throw new Error('尚未检测到 B站登录会话，请先在官方窗口完成扫码或登录，再回到这里点击“完成登录”');
     this.save({ ...a, status: '会话已保存', lastSync: Date.now(), message: '实际登录有效性由下一次解析或下载验证' });
     await this.persist(id);
     const w = this.windows.get(id); if (w && !w.isDestroyed()) w.close();

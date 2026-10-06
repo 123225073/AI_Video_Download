@@ -10,6 +10,7 @@ import SettingsPage from './SettingsPage.jsx';
 import TranscriptionPage from './TranscriptionPage.jsx';
 import { FileText } from 'lucide-react';
 import Thumb from './Thumbnail.jsx';
+import { creatorLoginPrompt, bilibiliCreatorSource, CREATOR_LOGIN_REQUIRED } from '../electron/creator-login.js';
 
 const api = window.fengsha;
 const PLATFORMS = ['视频号', '抖音', '小红书', 'B站', 'YouTube'];
@@ -18,7 +19,7 @@ const STATUS = { queued: '等待中', downloading: '下载中', processing: '合
 const date = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 const bytes = value => !value ? '—' : value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : value >= 1024 ** 2 ? `${(value / 1024 ** 2).toFixed(1)} MB` : `${Math.round(value / 1024)} KB`;
 const duration = value => value ? `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}` : '时长待获取';
-async function call(name, ...args) { const r = await api[name](...args); if (!r.ok) throw new Error(r.error); return r.value; }
+async function call(name, ...args) { const r = await api[name](...args); if (!r.ok) throw Object.assign(new Error(r.error), { code: r.code }); return r.value; }
 function Button({ children, variant = '', className = '', ...props }) { return <button className={`button ${variant} ${className}`} {...props}>{children}</button>; }
 function Badge({ children, tone = '' }) { return <span className={`badge ${tone}`}>{children}</span>; }
 function Platform({ name }) { return <span className={`platform ${PLATFORM_CLASS[name] || ''}`}>{name}</span>; }
@@ -29,6 +30,7 @@ function App() {
   const [state, setState] = useState(null), [page, setPage] = useState('new'), [group, setGroup] = useState(null), [results, setResults] = useState([]), [text, setText] = useState(''), [parsing, setParsing] = useState(false), [toast, setToast] = useState(null), [accountFilter, setAccountFilter] = useState('全部平台');
   const [creatorRecord, setCreatorRecord] = useState(null), [identifying, setIdentifying] = useState(false);
   const [creatorError, setCreatorError] = useState(null);
+  const [loginPrompt, setLoginPrompt] = useState(null), [loginReturn, setLoginReturn] = useState(false);
   const [transcriptSeed, setTranscriptSeed] = useState(null), [settingsSection, setSettingsSection] = useState('download');
   const goSettings = section => { setSettingsSection(section || 'download'); setPage('settings'); };
   const goTranscription = mediaId => { setTranscriptSeed({ mediaId }); setPage('transcription'); };
@@ -39,8 +41,13 @@ function App() {
   const perform = async (name, ...args) => { try { return await call(name, ...args); } catch (e) { notify(e.message, true); throw e; } };
   const safe = (name, ...args) => perform(name, ...args).catch(() => {});
   async function parse(limit = 30, source = text) { setParsing(true); try { const r = await perform('parse', source, limit); setResults(r); if (limit > 30 && r[0]?.items.length) setGroup(r[0]); } catch { /* The error toast remains visible. */ } finally { setParsing(false); } }
-  const goAccounts = platform => { setAccountFilter(platform || '全部平台'); setPage('accounts'); };
-  async function identifyCreator(source = text) { setPage('creator'); setIdentifying(true); setCreatorError(null); try { setCreatorRecord(await perform('creatorIdentify', typeof source === 'string' ? source : text)); } catch (e) { setCreatorRecord(null); setCreatorError(e.message); } finally { setIdentifying(false); } }
+  const goAccounts = platform => { setLoginReturn(false); setAccountFilter(platform || '全部平台'); setPage('accounts'); };
+  function ensureCreatorLogin(platform, message = null) {
+    const issue = message ? { title: '请先登录 B站账号', message } : creatorLoginPrompt(platform, state?.accounts.find(a => a.platform === platform && a.active));
+    if (!issue) return true;
+    setLoginPrompt(issue); return false;
+  }
+  async function identifyCreator(source = text) { const input = typeof source === 'string' ? source : text; setPage('creator'); if (bilibiliCreatorSource(input) && !ensureCreatorLogin('B站')) return; setIdentifying(true); setCreatorError(null); try { setCreatorRecord(await perform('creatorIdentify', input)); } catch (e) { if (e.code === CREATOR_LOGIN_REQUIRED) ensureCreatorLogin('B站', e.message); else { setCreatorRecord(null); setCreatorError(e.message); } } finally { setIdentifying(false); } }
   if (!state) return <div className="boot"><Wind size={48}/><h2>风沙全平台视频下载器</h2><p>正在读取本地资料库…</p></div>;
   const menus = [['new', Plus, '链接下载'], ['creator', Users, '博主批量下载'], ['tasks', ListTodo, '任务中心'], ['library', Library, '媒体库'], ['transcription', FileText, '转录与翻译'], ['accounts', Users, '账号管理']];
   const running = state.tasks.filter(t => ['downloading', 'processing'].includes(t.status));
@@ -50,17 +57,18 @@ function App() {
     <div className="body"><aside className="sidebar"><div className="brand"><Wind size={46}/><div><strong>风沙</strong><span>全平台视频下载器</span></div></div><nav>{menus.map(([id, Icon, label]) => <button key={id} aria-label={label} className={page === id || (id === 'new' && page === 'selection') ? 'active' : ''} onClick={() => setPage(id)}><Icon size={21}/><span>{label}</span>{id === 'tasks' && running.length > 0 ? <b>{running.length}</b> : null}</button>)}</nav><div className="sidebar-bottom"><div className="local-note"><HardDrive size={16}/><span>视频与资料保存在本机</span></div><button aria-label="设置" className={page === 'settings' ? 'active' : ''} onClick={() => goSettings(settingsSection)}><Settings size={20}/><span>设置</span></button><button onClick={() => safe('openHelp')}><CircleHelp size={20}/>帮助与使用说明</button></div></aside>
     <main className="main">
       {page === 'new' && <NewDownload {...{ state, text, setText, results, parsing, parse, safe, perform, notify, identifyCreator, identifying }} resumeCreator={creatorRecord ? () => setPage('creator') : null} open={g => { setGroup(g); setPage('selection'); }} settings={() => goSettings('download')} accounts={goAccounts}/>}
-      {page === 'creator' && <CreatorPage {...{ state, identifying, perform, safe, notify }} error={creatorError} record={creatorRecord} setRecord={setCreatorRecord} back={() => setPage('new')} accounts={goAccounts} settings={() => goSettings('collector')} source={text} setSource={setText} identify={identifyCreator} reidentify={() => identifyCreator(creatorRecord?.source || text)} done={() => setPage('tasks')}/>}
+      {page === 'creator' && <CreatorPage {...{ state, identifying, perform, safe, notify, ensureCreatorLogin }} error={creatorError} record={creatorRecord} setRecord={setCreatorRecord} back={() => setPage('new')} accounts={goAccounts} settings={() => goSettings('collector')} source={text} setSource={setText} identify={identifyCreator} reidentify={() => identifyCreator(creatorRecord?.source || text)} done={() => setPage('tasks')}/>}
       {page === 'selection' && group && <Selection {...{ state, group, perform, notify, parsing }} back={() => setPage('new')} more={() => parse(300, group.url)} done={() => setPage('tasks')}/>}
       {page === 'tasks' && <Tasks {...{ state, safe }} accounts={goAccounts} newDownload={() => setPage('new')}/>}
       {page === 'library' && <MediaLibrary {...{ state, safe, perform, notify }} newDownload={() => setPage('new')} transcribe={goTranscription}/>}
       {page === 'transcription' && <TranscriptionPage key="transcription" {...{ state, safe, perform, notify }} seed={transcriptSeed} settings={() => goSettings('ai')}/>}
       {page === 'archive' && <TranscriptionPage key="archive" {...{ state, safe, perform, notify }} archiveView settings={() => goSettings('ai')}/>}
-      {page === 'accounts' && <Accounts {...{ state, safe, perform, notify }} filter={accountFilter} setFilter={setAccountFilter}/>}
+      {page === 'accounts' && <>{loginReturn && <div className="creator-notice"><CircleHelp size={18}/><span>完成 B站登录并保存会话后，返回原来的博主页面继续操作。</span><Button onClick={() => { setLoginReturn(false); setPage('creator'); }}>返回博主读取</Button></div>}<Accounts {...{ state, safe, perform, notify }} filter={accountFilter} setFilter={setAccountFilter}/></>}
       {page === 'settings' && <SettingsPage {...{ state, safe, perform, notify }} section={settingsSection} select={setSettingsSection} transcribe={() => setPage('transcription')} creator={() => setPage('creator')} preferences={section => <Preferences {...{ state, safe, perform, notify, section }} accounts={goAccounts}/>}/>}
     </main></div>
     <footer className="statusbar"><span><i className="status-dot"/>本地资料库 · v{state.version}</span><div><span><ArrowDown size={14}/>下载速度 {speed ? `${bytes(speed)}/s` : '—'}</span><span><Download size={14}/>{running.length} 个任务执行中</span></div></footer>
     {toast && <div className={`toast ${toast.error ? 'error' : ''}`} role="status">{toast.error ? <AlertCircle size={19}/> : <CheckCircle2 size={19}/>}<span>{toast.message}</span><button onClick={() => setToast(null)} aria-label="关闭提示"><X size={16}/></button></div>}
+    {loginPrompt && <Modal title={loginPrompt.title} close={() => setLoginPrompt(null)}><p>{loginPrompt.message}</p><ol><li>添加 B站账号，打开官方登录窗口。</li><li>本人扫码或登录，完成页面要求的验证。</li><li>回到账号管理点击“完成登录”，确认显示“下载使用中”。</li><li>返回博主页面，再执行识别或读取。</li></ol><p className="hint">已填写的链接和已有清单保留；会话保存后仍以平台实际响应为准。</p><div className="modal-actions"><Button onClick={() => setLoginPrompt(null)}>暂不执行</Button><Button variant="primary" onClick={() => { setLoginPrompt(null); goAccounts('B站'); setLoginReturn(true); }}>去登录 B站</Button></div></Modal>}
   </div>;
 }
 function Heading({ title, subtitle, action }) { return <header className="page-heading"><div><h1>{title}</h1><p>{subtitle}</p></div>{action}</header>; }

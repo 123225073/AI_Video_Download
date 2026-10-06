@@ -50,6 +50,7 @@ try {
     await a.getSession(first.id).cookies.set({ url: 'https://www.bilibili.com/', name: 'FENGSHA_TEST_ONLY', value: 'synthetic-A', expirationDate: Date.now() / 1000 + 3600 });
     await a.getSession(first.id).cookies.set({ url: 'https://www.bilibili.com/', name: 'FENGSHA_SESSION_ONLY', value: 'synthetic-session', secure: true, httpOnly: true });
     await a.getSession(second.id).cookies.set({ url: 'https://www.bilibili.com/', name: 'FENGSHA_TEST_ONLY', value: 'synthetic-B', expirationDate: Date.now() / 1000 + 3600 });
+    for (const id of [first.id,second.id]) await a.getSession(id).cookies.set({url:'https://www.bilibili.com/',domain:'.bilibili.com',path:'/',name:'SESSDATA',value:'SYNTHETIC-ACCOUNT-E2E',expirationDate:Date.now()/1000+3600});
     await a.complete(first.id); await a.complete(second.id);
     return [first.id, second.id];
   });
