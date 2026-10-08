@@ -27,10 +27,11 @@ export class WeChatCreators {
     if (!response.ok) throw new Error(`视频号采集服务未就绪（HTTP ${response.status}），请检查微信页面是否已连接`);
     let text = await response.text(); if (text.length > 8 * 1024 * 1024) throw new Error('视频号列表过大，请缩小范围');
     // Platform IDs exceed JS's integer precision; preserve numeric IDs before JSON parsing.
-    text = text.replace(/("(?:id|objectId|objectNonceId|decodeKey)"\s*:\s*)(\d{16,})(?=\s*[,}])/g, '$1"$2"');
+    text = text.replace(/("(?:id|objectId|objectNonceId|decodeKey|commentId|replyCommentId)"\s*:\s*)(\d{16,})(?=\s*[,}])/g, '$1"$2"');
     let payload; try { payload = JSON.parse(text); } catch { throw new Error('视频号采集服务返回了无效数据，请检查服务版本'); }
-    if (payload.code !== undefined) { if (Number(payload.code) !== 0) throw new Error('视频号采集请求未完成，请在微信打开视频号页面后重试'); payload = payload.data; }
-    if (payload?.errCode || payload?.data?.BaseResponse?.Ret) throw new Error('微信拒绝了作品读取，请在微信完成登录或验证后重试');
+    if (payload.code !== undefined) { if (Number(payload.code) !== 0) throw new Error(`视频号采集请求失败：${String(payload.message || payload.msg || '服务未返回结果').slice(0,240)}`); payload = payload.data; }
+    if (payload?.errCode) throw new Error(`微信页面接口未完成：${String(payload.errMsg || '接口调用失败').slice(0,240)}`);
+    if (payload?.data?.BaseResponse?.Ret) throw new Error('微信官方接口拒绝了本次请求，请检查官方页面的登录或验证状态');
     return payload?.data || payload;
   }
   async test() { const data = await this.request('/api/channels/status'); if (typeof data?.available !== 'boolean') throw new Error('服务未返回微信连接状态，请检查采集服务版本'); return { connected: data.available, detail: data.available ? '微信已连接，可以识别博主和下载作品' : '微信页面未连接；请开始识别以自动准备连接，再在微信进入视频号页面' }; }

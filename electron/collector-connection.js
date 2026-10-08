@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID, createHash, X509Certificate } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {ClashRoute} from './clash-route.js';
+import YAML from 'yaml';
 
 const bundledHash = '26a99c72dc1873982671426af2b60a20ceef9f7bb31e47fb7db42f94de45a818';
 export function collectorEnvironment(base=process.env) {
@@ -79,16 +80,39 @@ export class CollectorConnection {
   prepare() {if(this.state.phase==='error')return Promise.reject(new Error('上次网络恢复尚未完成，请先点击恢复原网络'));if(!this.preparing)this.preparing=this.prepareComponent().finally(()=>this.preparing=null);return this.preparing;}
   async prepareComponent() {
     this.update('preparing','正在准备内置视频号组件');
+    // v260907 supports a workdir global.js. Deploy our narrowly scoped adapter
+    // without replacing the upstream executable or its certificate identity.
+    const contentScript=path.join(this.bin,'collector','collector-content.js');
+    if(fs.existsSync(contentScript))fs.writeFileSync(path.join(this.directory,'fengsha-content.js'),fs.readFileSync(contentScript));
+    const componentConfig=path.join(this.directory,'component.yaml');
+    if(fs.existsSync(contentScript)){
+      const current=fs.existsSync(componentConfig)?YAML.parse(fs.readFileSync(componentConfig,'utf8')):null;
+      if(current&&typeof current==='object'&&!Array.isArray(current)){
+        current.inject={...(current.inject||{}),globalScript:'fengsha-content.js'};
+        fs.writeFileSync(componentConfig,YAML.stringify(current));
+      }
+    }
     let ready=false; try {await this.api('/api/channels/status',null,2000);ready=true;}catch{}
     if(!ready) {
       const executable=path.join(this.bin,'collector','wx_video_download.exe');
       if(!fs.existsSync(executable) || createHash('sha256').update(fs.readFileSync(executable)).digest('hex')!==bundledHash) throw new Error('内置微信组件缺失或校验失败，请重新安装程序');
       const config=path.join(this.directory,'component.yaml');
-      if(!fs.existsSync(config)) fs.writeFileSync(config,'api:\n  hostname: 127.0.0.1\n  port: 2022\nproxy:\n  enabled: false\n  system: false\n  skipInstallRootCert: true\n  tun: false\n  tcpRelay:\n    enabled: false\n');
+      if(!fs.existsSync(config)) fs.writeFileSync(config,'api:\n  hostname: 127.0.0.1\n  port: 2022\ninject:\n  globalScript: fengsha-content.js\nproxy:\n  enabled: false\n  system: false\n  skipInstallRootCert: true\n  tun: false\n  tcpRelay:\n    enabled: false\n');
       retireStaleComponentPid(this.directory);
       this.worker=spawn(executable,['server','--config',config,'--workdir',this.directory],{cwd:this.directory,env:collectorEnvironment(),windowsHide:true,stdio:'ignore'}); this.worker.on('error',()=>{});
       for(let i=0;i<15;i++){await delay(500);try{await this.api('/api/channels/status',null,1000);ready=true;break;}catch{}}
       if(!ready) throw new Error('视频号组件未能启动，可能被安全软件拦截或本机端口被占用');
+    }
+    if(fs.existsSync(contentScript)){
+      const configInfo=await this.api('/api/config');
+      if(path.resolve(String(configInfo.config_file||'')).toLowerCase()!==path.resolve(componentConfig).toLowerCase())throw new Error('当前本机采集服务由其他程序启动，不能替换其脚本；请关闭其他采集工具后再试');
+      const wanted=path.join(this.directory,'fengsha-content.js');
+      const field=configInfo.fields?.find(f=>f.key==='inject.globalScript');
+      if(path.resolve(String(field?.effective_value||'')).toLowerCase()!==path.resolve(wanted).toLowerCase()){
+        const update=await this.api('/api/config',{values:{'inject.globalScript':wanted}});
+        let applied=false;for(let i=0;i<25;i++){await delay(400);try{const status=await this.api('/api/restart/status?restart_token='+encodeURIComponent(update.restart_token),null,1500);if(status.restart_completed&&status.config_applied){applied=true;break;}}catch{}}
+        if(!applied)throw new Error('采集搜索扩展重载尚未完成，请稍后重新准备连接');
+      }
     }
     let certificate=await this.api('/api/proxy/certificate/status');
     if(certificate.is_legacy || !certificate.name?.startsWith('Fengsha-WeChat-') || new Date(certificate.detail?.not_after).getTime() < Date.now()+86400000 || new Date(certificate.detail?.not_after).getTime()>Date.now()+2*366*86400000) {

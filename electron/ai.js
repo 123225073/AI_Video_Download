@@ -3,6 +3,7 @@ import path from 'node:path';
 
 export const providerDefaults = { name: 'CPA', baseUrl: 'https://cpa.fengsha.online/v1', model: '', protocol: 'chat', tokenParameter: 'max_tokens', timeout: 120, outputTokens: 3000, chunkChars: 10000 };
 export const speechDefaults = { name: '语音服务', baseUrl: '', model: '', mode: 'local', localModel: 'small', language: 'zh', timeout: 180 };
+export const imageDefaults = { name:'图片二创', baseUrl:'https://api.openai.com/v1', model:'gpt-image-2.5-sunburst', timeout:300 };
 export function apiBase(value) {
   let u; try { u = new URL(String(value).trim()); } catch { throw new Error('请填写有效的模型服务地址'); }
   if (u.username || u.password || u.search || u.hash || (u.protocol !== 'https:' && !(u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)))) throw new Error('服务地址请使用 HTTPS；本机服务可使用 HTTP，不要把密钥放进地址');
@@ -18,13 +19,13 @@ export class AIService {
     try { const value = JSON.parse(this.vault.decryptString(fs.readFileSync(this.secretFile(kind)))); return value.origin === new URL(base).origin ? value.key : ''; } catch { return ''; }
   }
   config(kind = 'text') {
-    const c = { ...(kind === 'speech' ? speechDefaults : providerDefaults), ...this.store.get('ai-config', kind) };
+    const c = { ...(kind === 'speech' ? speechDefaults : kind === 'image' ? imageDefaults : providerDefaults), ...this.store.get('ai-config', kind) };
     return { ...c, hasKey: Boolean(c.baseUrl && this.secret(kind, c.baseUrl)) };
   }
-  all() { return { text: this.config('text'), speech: this.config('speech') }; }
+  all() { return { text: this.config('text'), speech: this.config('speech'), image:this.config('image') }; }
   save(kind, raw) {
-    if (!['text', 'speech'].includes(kind)) throw new Error('请选择文本或语音服务');
-    const old = this.config(kind), defaults = kind === 'speech' ? speechDefaults : providerDefaults;
+    if (!['text', 'speech','image'].includes(kind)) throw new Error('请选择文本、语音或图片服务');
+    const old = this.config(kind), defaults = kind === 'speech' ? speechDefaults : kind === 'image' ? imageDefaults : providerDefaults;
     const baseUrl = raw.baseUrl?.trim() ? apiBase(raw.baseUrl) : kind === 'speech' ? '' : apiBase(defaults.baseUrl);
     const c = { name: String(raw.name || defaults.name).slice(0, 40), baseUrl, model: String(raw.model || '').trim().slice(0, 150), timeout: bounded(raw.timeout, defaults.timeout, 30, 600) };
     if (kind === 'speech') Object.assign(c, { mode: raw.mode === 'remote' ? 'remote' : 'local', localModel: ['tiny', 'base', 'small'].includes(raw.localModel) ? raw.localModel : speechDefaults.localModel, language: ['auto', 'zh', 'en', 'ja', 'ko', 'de', 'fr', 'es'].includes(raw.language) ? raw.language : speechDefaults.language });

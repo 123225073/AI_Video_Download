@@ -191,3 +191,12 @@ B站 `creator 链接`、`creator --record ID --continue` 和 `creator --record I
 例如：node cli/fengsha.mjs search 'AI' --platform YouTube。五个平台都可选择；返回 data.users 的公开资料及主页链接。需要人工验证时 status=needs-action，退出码4；不要自动循环重试。继续当前搜索使用 search --record 搜索ID --continue，搜索ID在本机当前进程内有效。浏览器窗口保持打开时后台等待人工处理，不自动按普通空闲退出。
 
 核对用户后把 url 传给 creator，再按原流程选择视频执行 download。完整字段、各平台登录/连接条件和图文操作见 [用户搜索](用户搜索.md)。
+
+
+## 作品搜索与克隆（0.6.0）
+
+`node cli/fengsha.mjs notes 'AI' --platform YouTube --limit 50` 默认最近一个月，可用 --from YYYY-MM-DD、--to YYYY-MM-DD、--include-unknown 修改日期范围。返回搜索记录 ID 及作品 ID；`notes --record 搜索ID --continue` 继续有效游标。
+
+`node cli/fengsha.mjs clone --record 搜索ID --id 作品ID` 克隆原稿；视频文字异步提取，可用 `drafts --id 稿件ID` 读取状态、正文和本机素材路径。`drafts` 列出保存的稿件。CLI 克隆不会自动调用付费图片服务；AI 二创、发布及逐位联系在桌面操作。未确认结果和平台验证应说明原因，不能自动循环重试。
+
+`notes` 遇到登录验证或未完成读取返回 partial=true、退出码4；不能把等待验证当作零条搜索成功。

@@ -50,3 +50,5 @@ __pycache__/
 *.tar.gz
 # 独立研究资料与原始媒体证据不属于下载器源码交付。
 docs/调研-*/
+
+/bin/collector/collector-content.js

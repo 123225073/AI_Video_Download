@@ -3,6 +3,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {build} from 'esbuild';
 fs.mkdirSync('bin/collector',{recursive:true});
+fs.writeFileSync('bin/collector/collector-content.js',fs.readFileSync('electron/collector-content.js'));
 // Bundle the interop assembly. Windows PowerShell's runtime CodeDOM compilation
 // can fail with a machine's compiler response configuration; do not alter it.
 if(process.platform==='win32') {

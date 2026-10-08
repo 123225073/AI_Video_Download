@@ -20,6 +20,13 @@ import { Bilibili } from './bilibili.js';
 import { bilibiliRequest } from './bilibili-request.js';
 import { UserSearch } from './user-search.js';
 import { UserSearchBrowser } from './user-search-browser.js';
+import { ContentSearch } from './content-search.js';
+import { ContentBrowser } from './content-browser.js';
+import { ContentStudio } from './content-studio.js';
+import { ContentPublisher } from './content-publisher.js';
+import {CommentWorkflow} from './comment-workflow.js';
+import {ContactMessages} from './contact-messages.js';
+let contentSearch,contentStudio,contentPublisher,comments,contacts;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Keep mutable data outside the program directory so future installer updates cannot remove it.
@@ -34,7 +41,7 @@ else app.setPath('userData', path.join(localBase, '用户数据'));
 protocol.registerSchemesAsPrivileged([{ scheme: 'fengsha-media', privileges: { secure: true, stream: true, supportFetchAPI: true } }]);
 let win, store, queue, accounts, engine, creators, userSearch, ai, transcriptions, wechatCreators, collectorConnection, environment = [], parseProgress = null, closing = false, quitting = false;
 let agentServer, agentIdleTimer;
-const snapshot = () => ({ version: app.getVersion(), settings: store.settings(), tasks: queue.tasks(), media: queue.media().map(m => ({ ...m, exists: fs.existsSync(m.filePath) })), accounts: accounts.list(), environment, parseProgress, creatorProgress: creators?.progress(), scheduler: queue.scheduler(), ai: ai?.all(), transcriptions: transcriptions?.list() || [], transcriptionFolders: transcriptions?.folders() || [], speechEnvironment: transcriptions?.environment(), collector: wechatCreators?.config(), collectorConnection:collectorConnection?.status(), userSearchProgress:userSearch?.active?{platform:userSearch.activePlatform}:null });
+const snapshot = () => ({ version: app.getVersion(), settings: store.settings(), tasks: queue.tasks(), media: queue.media().map(m => ({ ...m, exists: fs.existsSync(m.filePath) })), accounts: accounts.list(), environment, parseProgress, creatorProgress: creators?.progress(), scheduler: queue.scheduler(), ai: ai?.all(), transcriptions: transcriptions?.list() || [], transcriptionFolders: transcriptions?.folders() || [], speechEnvironment: transcriptions?.environment(), collector: wechatCreators?.config(), collectorConnection:collectorConnection?.status(), contentProgress:contacts?.active?{kind:"contact",message:"正在准备或提交所选用户的私信…"}:comments?.active?{kind:"comments",message:"正在读取评论与公开用户资料…"}:contentSearch?.active?{kind:"search",message:"正在读取作品并筛选发布日期…"}:(contentStudio?.active||contentStudio?.remixController)?{kind:"clone",message:"正在克隆、改图或生成发布素材…"}:null, userSearchProgress:userSearch?.active?{platform:userSearch.activePlatform}:null });
 let changedTimer;
 function changed() { clearTimeout(changedTimer); if (closing || quitting) return; changedTimer = setTimeout(() => { if (!closing && !quitting && win && !win.isDestroyed()) win.webContents.send('fengsha:changed', snapshot()); }, 80); }
 function handle(name, callback) { ipcMain.handle(`fengsha:${name}`, async (event, ...args) => { if (event.sender !== win.webContents) return { ok: false, error: '无效请求' }; try { return { ok: true, value: await callback(...args) }; } catch (e) { return { ok: false, code: e.code, error: classifyError(e.message).category === 'unknown' ? safeLog(e.message) : classifyError(e.message).message }; } }); }
@@ -58,8 +65,8 @@ else {
   wechatCreators = new WeChatCreators(store, engine);
   creators = new Creators(store, engine, new CreatorBrowser(accounts, engine), changed, wechatCreators);
   userSearch = new UserSearch({ accounts, creators, bilibili: engine.bilibili, wechat: wechatCreators, browser: new UserSearchBrowser(accounts), changed });
-  const searchNotBusy = () => { if (userSearch.active) throw new Error('正在搜索用户，请停止或等搜索结束后再操作'); };
-  const searchStart = (platform, keyword) => { if (parseProgress) throw new Error('正在识别视频，请等待识别结束'); return userSearch.start(platform, keyword); };
+  const searchNotBusy = () => { if (userSearch.active || contentSearch?.active || contentStudio?.active || contentStudio?.remixController || comments?.active || contacts?.active) throw new Error('正在搜索或二创，请停止或等操作结束后再操作'); };
+  const searchStart = (platform, keyword) => { if (parseProgress || contentSearch?.active || contentStudio?.active) throw new Error('正在识别或二创，请等待完成'); return userSearch.start(platform, keyword); };
   handle('user-search', searchStart);
   handle('user-search-more', id => { if (parseProgress) throw new Error('正在识别视频，请等待识别结束'); return userSearch.more(id); });
   handle('user-search-last', () => userSearch.view());
@@ -69,13 +76,46 @@ else {
   // CurrentUser scope, per-task leases and recovery remain enforced by the helper.
   collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true});
   creators.connection=collectorConnection;wechat.collector=wechatCreators;wechat.connection=collectorConnection;
+  contentSearch=new ContentSearch({accounts,creators,userSearch,bilibili:engine.bilibili,wechat:wechatCreators,browser:new ContentBrowser(accounts),store,changed});
+  contentStudio=new ContentStudio({store,search:contentSearch,browser:new ContentBrowser(accounts),transcriptions,ai,directory:path.join(app.getPath('userData'),'二创稿件'),changed});
+  contentPublisher=new ContentPublisher({accounts,studio:contentStudio,store});
+  comments=new CommentWorkflow({store,search:contentSearch,accounts,wechat:wechatCreators,connection:collectorConnection,changed});
+  contacts=new ContactMessages({store,comments,accounts,changed});
+  handle('comments-start',(recordId,itemId,limit)=>{if((contentStudio.active||contentStudio.remixController||contacts.active)||contentSearch.active||parseProgress)throw new Error('正在搜索或二创，请等待完成');return comments.start(recordId,itemId,limit);});
+  handle('comments-more',(id,limit)=>{if((contentStudio.active||contentStudio.remixController||contacts.active)||contentSearch.active||parseProgress)throw new Error('正在搜索或二创，请等待完成');return comments.more(id,limit);});
+  handle('comments-last',()=>comments.view());
+  handle('comments-show',()=>comments.browser.show());
+  handle('comments-export',async id=>{const r=comments.record?.id===id?comments.record:store.get('comment-collection',id);if(!r)throw new Error('评论资料不存在');const directory=path.join(app.getPath('userData'),'评论资料');fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,r.id+'.json');const {accountId,...publicRecord}=r;fs.writeFileSync(file,JSON.stringify(publicRecord,null,2));await shell.openPath(directory);return {file};});
+  handle('contact-prepare',(collectionId,userId,accountId,text)=>{if(comments.active||contentSearch.active||contentStudio.active||contentStudio.remixController)throw new Error('请等待采集或二创完成');return contacts.prepare(collectionId,userId,accountId,text);});
+  handle('contact-send',id=>contacts.send(id));
+  handle('content-search',(platform,keyword,options)=>{if(parseProgress||(contentStudio.active||contentStudio.remixController||comments.active||contacts.active))throw new Error('正在识别或二创，请等待完成');return contentSearch.start(platform,keyword,options);});
+  handle('content-more',id=>{if(parseProgress||(contentStudio.active||contentStudio.remixController||comments.active||contacts.active))throw new Error('正在识别或二创，请等待完成');return contentSearch.more(id);});
+  handle('content-last',()=>contentSearch.view());
+  handle('content-cancel',()=>{contentSearch.cancel();contentStudio.cancel();comments.cancel();contacts.cancel();});
+  handle('content-show',()=>contentSearch.browser.show());
+  handle('content-clone',(recordId,itemId)=>{if(comments.active||contacts.active||creators.progress()||parseProgress)throw new Error('当前采集或识别正在运行，请等待完成');return contentStudio.clone(recordId,itemId);});
+  handle('content-drafts',()=>contentStudio.list());
+  handle('content-draft-last',()=>{const id=store.get('meta','lastContentDraft')?.id;return id?contentStudio.get(id):null;});
+  handle('content-draft-get',id=>contentStudio.get(id));
+  handle('content-draft-save',(id,value)=>contentStudio.save(id,value));
+  handle('content-assets-add',async id=>{const r=await dialog.showOpenDialog(win,{properties:['openFile','multiSelections'],filters:[{name:'图片',extensions:['png','jpg','jpeg','webp']}]});return r.canceled?null:contentStudio.add(id,r.filePaths);});
+  handle('content-image-edit',(id,assetId,prompt)=>contentStudio.editImage(id,assetId,prompt));
+  handle('content-remix',(id,prompt)=>contentStudio.remix(id,prompt));
+  handle('content-auto-remix',(id,prompt)=>contentStudio.autoRemix(id,bin,prompt));
+  handle('content-video-frames',id=>contentStudio.videoFrames(id,bin));
+  handle('content-render-video',id=>contentStudio.renderVideo(id,bin));
+  handle('content-video-preview',id=>{const d=contentStudio.get(id);if(!d.videoFile||d.videoRevision!==d.revision)throw new Error('当前稿件尚未生成对应视频');return shell.openPath(d.videoFile);});
+  handle('content-export',async id=>{const result=contentStudio.export(id);await shell.openPath(result.directory);return result;});
+  handle('content-publish-open',(id,platform,accountId,mode)=>contentPublisher.open(id,platform,accountId,mode));
+  handle('content-publish-fill',()=>contentPublisher.fill());
+  handle('content-publish-submit',()=>contentPublisher.submit());
   if(!testMode) await collectorConnection.recover().catch(e=>collectorConnection.update('error',e.message));
-  protocol.handle('fengsha-media', request => { const id = new URL(request.url).hostname; const t = id.startsWith('transcript-') ? store.get('transcription', id.slice(11)) : null; const m = t ? { filePath: t.sourceFile || t.source.file } : store.get('media', id); if (!m?.filePath || !fs.existsSync(m.filePath)) return new Response('Not found', { status: 404 }); return net.fetch(pathToFileURL(m.filePath).href); });
+  protocol.handle('fengsha-media', request => { const u = new URL(request.url), id = u.hostname; if(id.startsWith('draft-')){try{const a=contentStudio.asset(id.slice(6),u.pathname.slice(1));return net.fetch(pathToFileURL(a.file).href);}catch{return new Response('Not found',{status:404});}} const t = id.startsWith('transcript-') ? store.get('transcription', id.slice(11)) : null; const m = t ? { filePath: t.sourceFile || t.source.file } : store.get('media', id); if (!m?.filePath || !fs.existsSync(m.filePath)) return new Response('Not found', { status: 404 }); return net.fetch(pathToFileURL(m.filePath).href); });
   handle('snapshot', snapshot);
   handle('creator-refresh', id => { searchNotBusy(); return creators.refresh(id); });
   handle('creator-recover', id => creators.recover(id));
   const parseLinks = async (text, limit = 30) => {
-    if (parseProgress || creators.progress() || userSearch.active) throw new Error('正在搜索、识别或读取博主，请等待当前操作结束');
+    if (parseProgress || creators.progress() || userSearch.active || contentSearch.active || contentStudio.active || contentStudio.remixController || comments.active || contacts.active) throw new Error('正在搜索、识别或读取博主，请等待当前操作结束');
     const urls = linksFromText(text); if (!urls.length) throw new Error('未找到链接，请粘贴平台分享链接'); if (urls.length > 30) throw new Error('一次最多识别 30 个链接');
     limit = Math.max(1, Math.min(300, Number(limit) || 30)); const results = [];
     try { for (let i = 0; i < urls.length; i++) { parseProgress = { index: i + 1, total: urls.length, platform: platformOf(urls[i]) || '未知平台' }; changed(); try { results.push(await engine.parse(urls[i], { limit })); } catch (e) { const error = classifyError(e.message); if (error.category === 'auth') accounts.markExpired(platformOf(urls[i])); results.push({ url: urls[i], platform: platformOf(urls[i]) || '未知平台', error: error.category === 'unknown' ? safeLog(e.message) : error.message, category: error.category, items: [] }); } } return results; } finally { parseProgress = null; changed(); }
@@ -86,7 +126,7 @@ else {
   handle('creator-page', (...args) => { searchNotBusy(); return creators.page(...args); });
   handle('creator-last', () => creators.last());
   handle('creator-cancel', () => creators.cancel());
-  handle('ai-save', (kind, value) => { if (transcriptions.active) throw new Error('转录或 AI 任务正在运行，请停止或完成后再更改模型配置'); return ai.save(kind, value); });
+  handle('ai-save', (kind, value) => { if (transcriptions.active || contentStudio?.active || contentStudio?.remixController) throw new Error('转录或二创正在运行，请停止或完成后再更改模型配置'); return ai.save(kind, value); });
   handle('ai-models', kind => ai.models(kind));
   handle('ai-test', () => ai.test());
   handle('transcription-choose', async () => { const r = await dialog.showOpenDialog(win, { title: '选择视频、播客、文稿或字幕', properties: ['openFile'], filters: [{ name: '音视频与文稿', extensions: ['mp4', 'mp3', 'm4a', 'wav', 'webm', 'mkv', 'mov', 'ogg', 'flac', 'aac', 'txt', 'md', 'srt', 'vtt'] }] }); return r.canceled ? null : transcriptions.choose(r.filePaths[0]); });
@@ -139,17 +179,17 @@ else {
   win.on('close', async e => {
     if (closing) return; e.preventDefault();
     if (queue.active.size || transcriptions.active) { const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['继续处理', '暂停任务并退出'], defaultId: 0, cancelId: 0, message: '仍有下载或转录任务，是否暂停并退出？', detail: '任务与已完成文稿保留，下次启动可以继续处理。' }); if (r.response === 0) return; }
-    closing = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); await userSearch.close(); await creators.close(); await transcriptions.close(); await queue.close(); await collectorConnection.close().catch(()=>{}); await accounts.flushAll(); store.close(); win.destroy(); app.quit();
+    closing = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); await comments.close(); await contacts.close(); await contentSearch.close(); await contentStudio.close(); contentPublisher.close(); await userSearch.close(); await creators.close(); await transcriptions.close(); await queue.close(); await collectorConnection.close().catch(()=>{}); await accounts.flushAll(); store.close(); win.destroy(); app.quit();
   });
-  app.on('before-quit', e => { if (!closing && !quitting) { e.preventDefault(); quitting = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); void userSearch.close().then(() => creators.close()).then(() => transcriptions.close()).then(() => queue.close()).then(()=>collectorConnection.close().catch(()=>{})).then(() => accounts.flushAll()).then(() => { store.close(); closing = true; app.quit(); }); } });
-  if (testMode) globalThis.fengshaTest = { store, queue, engine, creators, userSearch, accounts, ai, transcriptions, wechatCreators, collectorConnection, snapshot, win };
+  app.on('before-quit', e => { if (!closing && !quitting) { e.preventDefault(); quitting = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); void comments.close().then(()=>contacts.close()).then(()=>contentSearch.close()).then(()=>contentStudio.close()).then(()=>contentPublisher.close()).then(()=>userSearch.close()).then(() => creators.close()).then(() => transcriptions.close()).then(() => queue.close()).then(()=>collectorConnection.close().catch(()=>{})).then(() => accounts.flushAll()).then(() => { store.close(); closing = true; app.quit(); }); } });
+  if (testMode) globalThis.fengshaTest = { store, queue, engine, creators, userSearch, contentSearch, contentStudio, contentPublisher, comments, contacts, accounts, ai, transcriptions, wechatCreators, collectorConnection, snapshot, win };
   await win.loadFile(path.join(root, 'dist', 'index.html'));
-  const agentBusy = type => type === 'parse' ? Boolean(parseProgress || userSearch.active) : Boolean(parseProgress || userSearch.active || (userSearch.browser.window && !userSearch.browser.window.isDestroyed()) || creators.progress() || transcriptions.active || queue.active.size || queue.tasks().some(t => ['queued', 'retry-wait'].includes(t.status)) || (agentServer?.active || 0) > 1);
-  agentServer = await startAgentServer(app.getPath('userData'), createAgentHandler({ engine, queue, store, accounts, creators, userSearch, parse: parseLinks,
+  const agentBusy = type => type === 'parse' ? Boolean(parseProgress || userSearch.active || contentSearch.active || (contentStudio.active||contentStudio.remixController||comments.active||contacts.active)) : Boolean(parseProgress || userSearch.active || contentSearch.active || contentStudio.active || [userSearch.browser.window,contentSearch.browser.window,contentStudio.browser.window,comments.browser.window,contacts.browser.window,contentPublisher.window].some(w=>w&&!w.isDestroyed()) || creators.progress() || transcriptions.active || queue.active.size || queue.tasks().some(t => ['queued', 'retry-wait'].includes(t.status)) || (agentServer?.active || 0) > 1);
+  agentServer = await startAgentServer(app.getPath('userData'), createAgentHandler({ engine, queue, store, accounts, creators, userSearch, contentSearch, contentStudio, parse: parseLinks,
     identify: source => { searchNotBusy(); if (parseProgress) throw new Error('正在识别视频，请稍后识别博主'); const urls = linksFromText(source); if (urls.length !== 1) throw new Error('请提供一个视频或主页链接'); return creators.identify(urls[0]); },
     busy: agentBusy, creatorChanged: record => { if (win && !win.isDestroyed()) win.webContents.send('fengsha:creator-changed', record); }, status: () => ({ version: app.getVersion(), pid: process.pid, background: !win.isVisible(), dataDirectory: app.getPath('userData'), activeTasks: queue.active.size }), stop: () => setTimeout(() => app.quit(), 100) }));
   agentIdleTimer = setInterval(() => { if (background && !win.isVisible() && !agentBusy() && !agentServer.active && Date.now() - agentServer.lastUsed > 30000) app.quit(); }, 1000);
   agentIdleTimer.unref();
-  if (testMode) console.error('FENGSHA_BOOT: renderer');
+  if (testMode) { globalThis.fengshaTest.ready=true; console.error('FENGSHA_BOOT: renderer'); }
   void engine.environment().then(value => { environment = value; changed(); }); queue.pump();
 }
