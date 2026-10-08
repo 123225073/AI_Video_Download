@@ -1,6 +1,6 @@
 {
   "name": "fengsha-video-downloader",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "风沙全平台视频下载器：链接识别、批量下载与本地媒体管理",
   "private": true,
   "type": "module",
@@ -27,6 +27,7 @@
     "test:cli": "node scripts/cli-e2e.mjs"
   },
   "dependencies": {
+    "yaml": "^2.9.1",
     "sql.js": "^1.13.0",
     "zod": "^4.1.0",
     "opencc-js": "1.0.5"
@@ -94,6 +95,14 @@
       {
         "from": "docs/安装部署.md",
         "to": "安装部署.md"
+      },
+      {
+        "from": "docs/网络代理共存方案.md",
+        "to": "网络代理共存方案.md"
+      },
+      {
+        "from": "docs/微信分流-审阅片段.yaml",
+        "to": "微信分流-审阅片段.yaml"
       }
     ],
     "win": {

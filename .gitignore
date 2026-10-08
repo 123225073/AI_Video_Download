@@ -23,6 +23,7 @@ cookies*.txt
 **/cookies*.txt
 bin/**/*.exe
 bin/**/*.dll
+bin/collector/clash-route-helper.cjs
 bin/**/*.pyd
 bin/asr/runtime/
 bin/asr/models/

@@ -32,3 +32,7 @@ Electron（MIT）、React（MIT）、lucide（ISC）、SQL.js（MIT）、Zod（M
 package.json 当前声明 UNLICENSED，仓库上传不表示本项目已采用某个开源许可证。各第三方组件仍适用各自许可证。源码仓库保留 worker、许可证与来源说明；外部二进制、运行时和模型按安装部署文档从相应上游获取。历史验收文档中的“本次未对外发布”指对应历史交付。
 
 0.4.0 的完整 Windows 安装包另通过用户指定私有仓库的 GitHub Release 提供，其中包含下载工具、语音运行时、模型和上述第三方许可证。它们不进入 Git 源码历史。本次发布不改变本项目或第三方许可，不表示已取得商业销售或商业分发授权。
+
+## Clash 共存配置解析
+
+YAML 2.9.1（ISC），来源 https://github.com/eemeli/yaml ，完整许可证随应用依赖保留；独立恢复辅助程序同时保留其许可证文件 bin/collector/LICENSE-yaml。仅通过 Mihomo 官方本机控制 API 临时分流，不分发 Clash 或 Mihomo 程序。

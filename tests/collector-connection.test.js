@@ -4,12 +4,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../electron/store.js';
-import { CollectorConnection,upstreamProxy,retireStaleComponentPid } from '../electron/collector-connection.js';
+import { CollectorConnection,upstreamProxy,retireStaleComponentPid,collectorEnvironment } from '../electron/collector-connection.js';
+test('采集子进程不继承代理回环；保留 Codex 和其他程序的代理环境',()=>{const original={HTTP_PROXY:'http://127.0.0.1:7897',https_proxy:'http://127.0.0.1:7897',ALL_PROXY:'http://127.0.0.1:7897',NO_PROXY:'localhost',PATH:'original'};const env=collectorEnvironment(original);assert.equal(env.NO_PROXY,'*');assert.equal(env.HTTP_PROXY,undefined);assert.equal(env.https_proxy,undefined);assert.equal(env.ALL_PROXY,undefined);assert.equal(env.PATH,original.PATH);assert.equal(original.HTTP_PROXY,'http://127.0.0.1:7897');});
 const before={ProxyEnable:{present:true,value:1},ProxyServer:{present:true,value:'127.0.0.1:7897'},ProxyOverride:{present:true,value:'localhost;<local>'},AutoConfigURL:{present:false,value:null}};
+test('active Clash proxy guard blocks before certificate or proxy changes', async()=>{
+  const {connection,store,calls}=await fixture();const original=connection.system;
+  connection.system=async(action,file)=>action==='inspect'?{proxy:before,ownerStarted:'start',guardedProxy:true}:original(action,file);
+  await assert.rejects(connection.withConnection(undefined,async()=>{throw Error('must not collect');}),/系统代理守卫/);
+  assert.equal(calls.includes('apply'),false);assert.equal(calls.includes('guard'),false);assert.equal(connection.leaseFile,null);await connection.close();store.close();
+});
+test('a refused or overwritten proxy change cannot enter the waiting/collection phase', async()=>{
+  const {connection,store,calls}=await fixture();let inspected=0,called=false;
+  const original=connection.system;connection.system=async(action,file)=>{if(action==='inspect'){inspected++;return {proxy:before,ownerStarted:'start'};}return original(action,file);};
+  await assert.rejects(connection.withConnection(undefined,async()=>{called=true;}),/代理.*未.*生效|代理.*未.*切换/);
+  assert.equal(called,false);assert.ok(inspected>=2);assert.ok(calls.includes('restore'));await connection.close();store.close();
+});
+test('Clash 守卫开启时选择专用分流，不写系统代理，也不把 Clash 配作采集上游',async()=>{
+ const routeCalls=[],plan={directory:'isolated-fixture',rulesDigest:'fixture'};
+ const {connection,store}=await fixture({routing:{discover:async()=>plan,begin:async p=>{assert.equal(p,plan);routeCalls.push('begin');}}});const system=connection.system;
+ connection.system=async(action,file)=>action==='inspect'?{proxy:before,ownerStarted:'start',guardedProxy:true}:system(action,file);
+ let upstream;connection.api=async(_route,body)=>{if(body.values['proxy.enabled'])upstream=body.values['proxy.upstreamProxy'];};
+ await connection.withConnection(undefined,async()=>{const lease=JSON.parse(fs.readFileSync(connection.leaseFile));assert.equal(lease.mode,'routed');assert.deepEqual(lease.before,before);assert.deepEqual(lease.routing,plan);});
+ assert.equal(upstream,'');assert.deepEqual(routeCalls,['begin']);await connection.close();store.close();
+});
 async function fixture(options={}) {
   const directory=path.resolve('output/unit-connection',randomUUID()),store=await Store.open(directory,{}),calls=[];let online=false;
   store.put('collector-policy','automatic',{allowed:true,certificateFingerprint:'unit'});store.flush();
-  const connection=new CollectorConnection(store,'',directory,()=>{},{waitMs:20,guard:async()=>calls.push('guard'),system:async(action,file)=>{calls.push(action);if(action==='inspect')return {proxy:before,ownerStarted:'start'};if(action==='apply')online=true;if(action==='restore'){online=false;const state=JSON.parse(fs.readFileSync(file));state.phase='restored';fs.writeFileSync(file,JSON.stringify(state));}return {};},...options});
+  const connection=new CollectorConnection(store,'',directory,()=>{},{routing:{discover:async()=>null},waitMs:20,guard:async()=>calls.push('guard'),system:async(action,file)=>{calls.push(action);if(action==='inspect')return {proxy:online?{...before,ProxyServer:{present:true,value:'127.0.0.1:2023'}}:before,ownerStarted:'start'};if(action==='apply')online=true;if(action==='restore'){online=false;const state=JSON.parse(fs.readFileSync(file));state.phase='restored';fs.writeFileSync(file,JSON.stringify(state));}return {};},...options});
   connection.prepare=async()=>{connection.certificate={name:'Fengsha-WeChat-unit',file:'test-public-certificate',fingerprint:'unit'};return connection.status();};
   connection.online=async()=>online;connection.api=async(route,body)=>{calls.push(body.values['proxy.enabled']?'start-proxy':'stop-proxy');return {};};
   return {connection,store,calls};

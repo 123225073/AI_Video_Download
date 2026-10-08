@@ -22,6 +22,21 @@ function Notify-Proxy {
   Initialize-Native
   foreach ($option in @(39,37)) { [void][FengshaProxyNotice]::InternetSetOption([IntPtr]::Zero,$option,[IntPtr]::Zero,0) }
 }
+function Read-ProxyGuard {
+  if (-not (Get-Process -Name 'clash-verge' -ErrorAction SilentlyContinue)) { return $false }
+  foreach ($folder in @('io.github.clash-verge-rev.clash-verge-rev','clash-verge','io.github.clash-verge.clash-verge')) {
+    $configFile = Join-Path (Join-Path $env:APPDATA $folder) 'verge.yaml'
+    if (-not (Test-Path -LiteralPath $configFile)) { continue }
+    $guardEnabled=$false; $systemEnabled=$false
+    # Read only public boolean controls; never return proxy profiles or secrets.
+    foreach ($line in Get-Content -LiteralPath $configFile) {
+      if ($line -match '^\s*enable_proxy_guard\s*:\s*true\s*$') { $guardEnabled=$true }
+      if ($line -match '^\s*enable_system_proxy\s*:\s*true\s*$') { $systemEnabled=$true }
+    }
+    return ($guardEnabled -and $systemEnabled)
+  }
+  return $false
+}
 function Save-State($state) {
   $temporary = $StateFile + '.writing'
   [IO.File]::WriteAllText($temporary,($state | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
@@ -31,6 +46,8 @@ function Open-Root {
   $store = [Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
   # Read-only inspection avoids the protected-root modal prompts of X509Store.Add/Remove.
   $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+  Initialize-Native
+  [FengshaTemporaryRoot]::Refresh($store.StoreHandle)
   return $store
 }
 function Update-Certificate([bool]$add,[Security.Cryptography.X509Certificates.X509Certificate2]$certificate) {
@@ -52,9 +69,18 @@ function Restore-State {
     if (-not $mutex.WaitOne(15000)) { throw '等待连接恢复超时' }
     $state = Read-State
     if ($state.phase -eq 'restored') { return $state }
+    $routeRestored=$true
+    if ($state.mode -eq 'routed') {
+      $script:taskStage='route-restore'
+      $node=Join-Path (Split-Path $PSScriptRoot -Parent) 'node/node.exe'
+      $helper=Join-Path $PSScriptRoot 'clash-route-helper.cjs'
+      try { $null=& $node $helper $StateFile; if ($LASTEXITCODE -ne 0) { $routeRestored=$false } } catch { $routeRestored=$false }
+      # An orphaned collector must not keep decrypting traffic after its owner exits.
+      try { $null=Invoke-RestMethod -Uri 'http://127.0.0.1:2022/api/proxy/config' -Method Post -ContentType 'application/json' -Body '{"values":{"proxy.enabled":false,"proxy.system":false},"restart":true}' -TimeoutSec 15 } catch {}
+    }
     $current = Read-Proxy
     # If the user changed the proxy independently, preserve their newer selection.
-    if ($current.ProxyServer.value -eq $state.proxyAddress) {
+    if ($state.mode -ne 'routed' -and $current.ProxyServer.value -eq $state.proxyAddress) {
       $script:taskStage='proxy-restore'
       foreach ($name in @('ProxyEnable','ProxyServer')) {
         $saved = $state.before.$name
@@ -73,6 +99,7 @@ function Restore-State {
       $store = Open-Root
       try { if (@($store.Certificates | Where-Object Thumbprint -eq $state.certificateThumbprint).Count -gt 0) { throw '临时证书尚未移除' } } finally { $store.Close() }
     }
+    if (-not $routeRestored) { $script:taskStage='route-restore'; throw 'Clash routing restoration incomplete; current settings preserved' }
     $script:taskStage='restore-save';$state.phase = 'restored'; Save-State $state
     return $state
   } finally { try {$mutex.ReleaseMutex()} catch {}; $mutex.Dispose() }
@@ -80,7 +107,7 @@ function Restore-State {
 if ($Action -eq 'inspect') {
   $script:taskStage='inspect'
   $owner = Get-Process -Id $OwnerProcess
-  @{proxy=Read-Proxy;ownerStarted=$owner.StartTime.ToUniversalTime().Ticks.ToString()} | ConvertTo-Json -Depth 5 -Compress
+  @{proxy=Read-Proxy;ownerStarted=$owner.StartTime.ToUniversalTime().Ticks.ToString();guardedProxy=Read-ProxyGuard} | ConvertTo-Json -Depth 5 -Compress
   exit
 }
 if ($Action -eq 'apply') {
@@ -107,10 +134,12 @@ if ($Action -eq 'apply') {
   if (-not $present) { $script:taskStage='certificate-add';Update-Certificate $true $certificate }
   $store = Open-Root
   try { if (@($store.Certificates | Where-Object Thumbprint -eq $certificate.Thumbprint).Count -eq 0) { throw '本机专用证书尚未完成信任，未切换代理' } } finally { $store.Close() }
-  $script:taskStage='proxy-apply'
-  Set-ItemProperty -LiteralPath $registryPath -Name ProxyServer -Value $state.proxyAddress
-  Set-ItemProperty -LiteralPath $registryPath -Name ProxyEnable -Value 1
-  Notify-Proxy
+  if ($state.mode -ne 'routed') {
+    $script:taskStage='proxy-apply'
+    Set-ItemProperty -LiteralPath $registryPath -Name ProxyServer -Value $state.proxyAddress
+    Set-ItemProperty -LiteralPath $registryPath -Name ProxyEnable -Value 1
+    Notify-Proxy
+  }
   $state.phase='active'; Save-State $state
   @{active=$true} | ConvertTo-Json -Compress
   exit

@@ -1,0 +1,18 @@
+# 审阅片段，尚未实施。不是完整配置，请勿替换现有 Clash 订阅。
+# 合并与回退策略必须结合当前规则模式验证，并先备份本机设置。
+proxies:
+  - name: Fengsha-WeChat-Local
+    type: http
+    server: 127.0.0.1
+    port: 2023
+proxy-groups:
+  - name: Fengsha-WeChat-Route
+    type: fallback
+    proxies:
+      - Fengsha-WeChat-Local
+      - DIRECT
+    url: http://www.qq.com
+    interval: 5
+    lazy: false
+rules:
+  - DOMAIN,channels.weixin.qq.com,Fengsha-WeChat-Route

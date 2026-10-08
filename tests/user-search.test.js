@@ -78,3 +78,10 @@ test('browser verification is a pending action, not an empty success', async () 
   const { search } = service(); search.browser.read = async () => ({ users: [], next: null, status: 'needs-action', partial: true, message: '验证码' });
   const r = await search.start('抖音', 'AI'); assert.equal(r.partial, true); assert.equal(r.canContinue, true); assert.equal(r.status, 'needs-action');
 });
+test('WeChat search prepares the existing connection before checking the page and restores after query', async () => {
+  const { search } = service(); let connected = false; const events = [];
+  search.wechat.test = async () => { events.push('check-page'); return { connected }; };
+  search.creators.connection = { withConnection: async (signal, operation) => { events.push('prepare'); connected = true; try { return await operation(); } finally { connected = false; events.push('restore'); } } };
+  const result = await search.start('视频号', '减肥');
+  assert.equal(result.users.length, 1); assert.deepEqual(events, ['prepare', 'check-page', 'restore']); assert.equal(connected, false);
+});

@@ -6,28 +6,31 @@ export class UserSearch {
   view() { if (!this.record) return null; const { accountId, next, ...publicRecord } = this.record; return { ...publicRecord, canContinue: ['ready', 'browser', 'needs-action', 'interrupted'].includes(this.record.status), busy: Boolean(this.active) }; }
   cancel() { this.active?.abort(); this.browser.close(); }
   async close() { this.cancel(); await this.pending?.catch(() => {}); }
-  async run(fn, preservePrevious = false) {
+  async run(fn, preservePrevious = false, platform = this.record?.platform) {
     if (this.active || this.creators.progress()) throw new Error('正在搜索或读取博主，请先停止当前操作');
-    const previous = this.record; const controller = this.active = new AbortController(); this.changed();
+    const previous = this.record; const controller = this.active = new AbortController(); this.activePlatform = platform; this.changed();
     const pending = this.pending = Promise.resolve().then(() => fn(controller.signal));
     try { const result = await pending; return { ...result, busy: false }; }
     catch (e) { if (this.record && (!preservePrevious || this.record !== previous)) { this.record.status = controller.signal.aborted ? 'cancelled' : 'interrupted'; this.record.message = controller.signal.aborted ? '已停止搜索，当前结果保留。' : e.message; e.details = this.view(); this.changed(); } throw e; }
-    finally { this.active = null; this.pending = null; this.changed(); }
+    finally { this.active = null; this.activePlatform = null; this.pending = null; this.changed(); }
   }
   async start(platform, keyword) {
     keyword = searchInput(platform, keyword);
     return this.run(async signal => {
       if (platform === 'B站') { await this.creators.requireLogin(platform, signal); if (Date.now() < this.cooldown) throw new Error('B站搜索请求受限，请等待冷却结束并完成官方验证后再试；不要连续重复提交。'); }
-      if (platform === '视频号') { const status = await this.wechat.test(); if (!status.connected) throw new Error('请在设置中连接本机视频号服务，并在已登录的微信中保持视频号页面打开，再搜索用户。'); }
-      signal.throwIfAborted(); this.browser.close();
-      this.record = { id: randomUUID(), platform, keyword, accountId: this.accounts.active(platform)?.id || null, users: [], next: platform === 'B站' ? 1 : '', status: 'searching', message: '', searchedAt: Date.now() };
-      return this.read(signal, true);
-    }, true);
+      const operation = async () => {
+        if (platform === '视频号') { const status = await this.wechat.test(); if (!status.connected) throw new Error('微信视频号页面尚未接入，请在电脑微信内关闭并重新进入视频号页面，再搜索用户。'); }
+        signal.throwIfAborted(); this.browser.close();
+        this.record = { id: randomUUID(), platform, keyword, accountId: this.accounts.active(platform)?.id || null, users: [], next: platform === 'B站' ? 1 : '', status: 'searching', message: '', searchedAt: Date.now() };
+        return this.read(signal, true);
+      };
+      return platform === '视频号' && this.creators.connection ? this.creators.connection.withConnection(signal, operation) : operation();
+    }, true, platform);
   }
   async more(id) {
     if (!this.record || this.record.id !== id) throw new Error('本次搜索已结束或被替换，请重新搜索');
     if (['complete', 'cancelled', 'limited'].includes(this.record.status)) throw new Error('本次搜索没有可继续读取的位置，请重新搜索');
-    return this.run(signal => this.read(signal));
+    return this.run(signal => this.record.platform === '视频号' && this.creators.connection ? this.creators.connection.withConnection(signal, () => this.read(signal)) : this.read(signal));
   }
   async read(signal, initial = false) {
     const r = this.record;
