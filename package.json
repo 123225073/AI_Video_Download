@@ -1,6 +1,6 @@
 {
   "name": "fengsha-video-downloader",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "风沙全平台视频下载器：链接识别、批量下载与本地媒体管理",
   "private": true,
   "type": "module",
@@ -86,6 +86,10 @@
       {
         "from": "docs/CLI使用说明.md",
         "to": "CLI使用说明.md"
+      },
+      {
+        "from": "docs/用户搜索.md",
+        "to": "用户搜索.md"
       },
       {
         "from": "docs/安装部署.md",

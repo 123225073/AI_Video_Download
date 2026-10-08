@@ -10,8 +10,9 @@ export const publicItem = item => Object.fromEntries(['key', 'url', 'platform', 
 const publicTask = t => ({ id: t.id, item: publicItem(t.item), status: t.status, progress: t.progress, message: t.message, error: t.error, filePath: t.filePath, size: t.size, duration: t.duration, createdAt: t.createdAt });
 function publicRecord(r) { const { accountId, ...creator } = r.creator; return { id: r.id, creator, total: r.total, scanned: r.scanned, status: r.status, complete: r.complete, restartRequired: Boolean(r.restartRequired), message: r.message, filters: r.filters, skipped: r.skipped, items: r.items.map(publicItem) }; }
 const failure = (message, code = 'INVALID_ARGUMENT', exitCode = 2) => Object.assign(new Error(message), { code, exitCode });
-export function createAgentHandler({ engine, queue, store, accounts, creators, parse, identify, busy, status, stop, creatorChanged }) {
+export function createAgentHandler({ engine, queue, store, accounts, creators, userSearch, parse, identify, busy, status, stop, creatorChanged }) {
   return async ({ command, source, options = {}, items }) => {
+    if (command === 'search') { if (busy('parse')) throw failure('正在识别或搜索，请稍后重试', 'BUSY', 1); if (options.record) return userSearch.more(options.record); return userSearch.start(options.platform, source); }
     if (command === 'environment') return { components: await engine.environment() };
     if (command === 'accounts') return { accounts: accounts.list().map(a => ({ id: a.id, platform: a.platform, name: a.name, status: a.status, active: a.active })) };
     if (command === 'tasks') { const tasks = queue.tasks().filter(t => !options.id || t.id === options.id); if (options.id && !tasks.length) throw failure('任务不存在', 'NOT_FOUND'); return { tasks: tasks.map(publicTask), scheduler: queue.scheduler() }; }
@@ -28,6 +29,7 @@ export function createAgentHandler({ engine, queue, store, accounts, creators, p
       return result;
     }
     if (command === 'creator') {
+      if (userSearch?.active) throw failure('正在搜索用户，请稍后读取博主', 'BUSY', 1);
       if (busy('parse')) throw failure('正在识别链接，请稍后读取博主', 'BUSY', 1);
       let record = options.record ? store.get('creator', options.record) : await identify(source);
       if (!record) throw failure('博主记录不存在', 'NOT_FOUND');

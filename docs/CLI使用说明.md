@@ -1,4 +1,4 @@
-# CLI 与 Agent 使用说明（0.4.3）
+# CLI 与 Agent 使用说明（0.5.0）
 
 Agent 可以直接调用命令识别视频、读取作者作品、下载视频，并取得本地文件路径与媒体信息。所有命令默认输出一个 JSON 对象，退出码标识成功、参数错误、超时或部分失败。
 
@@ -185,3 +185,9 @@ node cli/fengsha.mjs creator --record '博主清单ID' --refresh
 B站 `creator 链接`、`creator --record ID --continue` 和 `creator --record ID --refresh` 在应用未保存可用登录会话时返回 `ok:false`、`error.code:BILIBILI_LOGIN_REQUIRED` 和退出码1。Agent应提示本人进入桌面账号管理完成 B站登录；不要循环重试，也不要把它解释成平台已经拒绝了本次清单请求。
 
 `creator --record ID` 仅读取历史结果，不要求重新登录。单条公开视频的 inspect/download不增加这一博主登录前置限制。账号状态与本机登录资料的存在仅作为前置检查，平台实际有效性仍以请求响应为准。
+
+## 关键词搜索用户（0.5.0）
+
+例如：node cli/fengsha.mjs search 'AI' --platform YouTube。五个平台都可选择；返回 data.users 的公开资料及主页链接。需要人工验证时 status=needs-action，退出码4；不要自动循环重试。继续当前搜索使用 search --record 搜索ID --continue，搜索ID在本机当前进程内有效。浏览器窗口保持打开时后台等待人工处理，不自动按普通空闲退出。
+
+核对用户后把 url 传给 creator，再按原流程选择视频执行 download。完整字段、各平台登录/连接条件和图文操作见 [用户搜索](用户搜索.md)。
