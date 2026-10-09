@@ -23,6 +23,8 @@ import { UserSearchBrowser } from './user-search-browser.js';
 import { ContentSearch } from './content-search.js';
 import { ContentBrowser } from './content-browser.js';
 import { ContentStudio } from './content-studio.js';
+import {SourceWindows} from './source-window.js';
+let sourceWindows;
 import { ContentPublisher } from './content-publisher.js';
 import {CommentWorkflow} from './comment-workflow.js';
 import {ContactMessages} from './contact-messages.js';
@@ -42,9 +44,9 @@ else app.setPath('userData', path.join(localBase, '用户数据'));
 protocol.registerSchemesAsPrivileged([{ scheme: 'fengsha-media', privileges: { secure: true, stream: true, supportFetchAPI: true } }]);
 let win, store, queue, accounts, engine, creators, userSearch, ai, transcriptions, wechatCreators, collectorConnection, environment = [], parseProgress = null, closing = false, quitting = false;
 let agentServer, agentIdleTimer;
-const snapshot = () => ({ version: app.getVersion(), settings: store.settings(), tasks: queue.tasks(), media: queue.media().map(m => ({ ...m, exists: fs.existsSync(m.filePath) })), accounts: accounts.list(), environment, parseProgress, creatorProgress: creators?.progress(), scheduler: queue.scheduler(), ai: ai?.all(), voice:voice?.config(), transcriptions: transcriptions?.list() || [], transcriptionFolders: transcriptions?.folders() || [], speechEnvironment: transcriptions?.environment(), collector: wechatCreators?.config(), collectorConnection:collectorConnection?.status(), contentSearch:contentSearch?.view(), contentProgress:voice?.active?{kind:"voice",message:"正在处理豆包声音…"}:contacts?.active?{kind:"contact",message:"正在准备或提交所选用户的私信…"}:comments?.active?{kind:"comments",message:"正在读取评论与公开用户资料…"}:contentSearch?.active?{kind:"search",message:contentSearch.record?.message||"正在读取作品并筛选发布日期…"}:(contentStudio?.active||contentStudio?.remixController)?{kind:"clone",message:"正在克隆、改图或生成发布素材…"}:null, userSearchProgress:userSearch?.active?{platform:userSearch.activePlatform}:null });
+const snapshot = () => ({ version: app.getVersion(), settings: store.settings(), tasks: queue.tasks(), media: queue.media().map(m => ({ ...m, exists: fs.existsSync(m.filePath) })), accounts: accounts.list(), environment, parseProgress, creatorProgress: creators?.progress(), scheduler: queue.scheduler(), ai: ai?.all(), voice:voice?.config(), transcriptions: transcriptions?.list() || [], transcriptionFolders: transcriptions?.folders() || [], speechEnvironment: transcriptions?.environment(), collector: wechatCreators?.config(), collectorConnection:collectorConnection?.status(), contentSearch:contentSearch?.view(), studioProgress:contentStudio?.progress(),contentDraft:contentStudio?.job?.draftId?contentStudio.get(contentStudio.job.draftId):null,sourceNotice:sourceWindows?.notice, contentProgress:voice?.active?{kind:"voice",message:"正在处理豆包声音…"}:contacts?.active?{kind:"contact",message:"正在准备或提交所选用户的私信…"}:comments?.active?{kind:"comments",message:"正在读取评论与公开用户资料…"}:contentSearch?.active?{kind:"search",message:contentSearch.record?.message||"正在读取作品并筛选发布日期…"}:(contentStudio?.active||contentStudio?.remixController)?{kind:"clone",message:"正在克隆、改图或生成发布素材…"}:null, userSearchProgress:userSearch?.active?{platform:userSearch.activePlatform}:null });
 let changedTimer;
-function changed() { clearTimeout(changedTimer); if (closing || quitting) return; changedTimer = setTimeout(() => { if (!closing && !quitting && win && !win.isDestroyed()) win.webContents.send('fengsha:changed', snapshot()); }, 80); }
+function changed() { if (closing || quitting || changedTimer) return; changedTimer = setTimeout(() => { changedTimer=null;if (!closing && !quitting && win && !win.isDestroyed()) win.webContents.send('fengsha:changed', snapshot()); }, 80); }
 function handle(name, callback) { ipcMain.handle(`fengsha:${name}`, async (event, ...args) => { if (event.sender !== win.webContents) return { ok: false, error: '无效请求' }; try { return { ok: true, value: await callback(...args) }; } catch (e) { return { ok: false, code: e.code, error: classifyError(e.message).category === 'unknown' ? safeLog(e.message) : classifyError(e.message).message }; } }); }
 function mediaById(id) { const m = store.get('media', id); if (!m) throw new Error('媒体记录不存在'); return m; }
 
@@ -95,7 +97,7 @@ else {
   handle('content-last',()=>contentSearch.view());
   handle('content-cancel',()=>{contentSearch.cancel();contentStudio.cancel();comments.cancel();contacts.cancel();voice.cancel();});
   handle('content-show',()=>contentSearch.show());
-  handle('content-clone',(recordId,itemId)=>{if(comments.active||contacts.active||creators.progress()||parseProgress)throw new Error('当前采集或识别正在运行，请等待完成');return contentStudio.clone(recordId,itemId);});
+  handle('content-clone',(recordId,itemId,options={})=>{if(comments.active||contacts.active||creators.progress()||parseProgress)throw new Error('当前采集或识别正在运行，请等待完成');return contentStudio.cloneFlow(recordId,itemId,options,bin);});
   handle('content-drafts',()=>contentStudio.list());
   handle('content-draft-last',()=>{const id=store.get('meta','lastContentDraft')?.id;return id?contentStudio.get(id):null;});
   handle('content-draft-get',id=>contentStudio.get(id));
@@ -179,7 +181,9 @@ else {
   handle('locate-file', id => { if (id) { const m = mediaById(id); if (!fs.existsSync(m.filePath)) throw new Error('文件已移动，请重新定位'); shell.showItemInFolder(m.filePath); } else return shell.openPath(store.settings().savePath); });
   handle('relocate', async id => { const m = mediaById(id); const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: '视频', extensions: ['mp4', 'mkv', 'webm', 'mov'] }] }); if (r.canceled) return; const filePath = r.filePaths[0]; const info = await engine.verify(filePath); store.put('media', id, { ...m, filePath, ...info }); store.flush(); changed(); });
   handle('tags', (id, value) => { const m = mediaById(id); store.put('media', id, { ...m, tags: String(value).split(/[，,]/).map(x => x.trim().slice(0, 20)).filter(Boolean).slice(0, 12) }); changed(); });
-  handle('source', async url => { if (!platformOf(url)) throw new Error('无效平台链接'); await shell.openExternal(url); });
+  sourceWindows=new SourceWindows(accounts,changed);
+  handle('content-source',url=>sourceWindows.open(url));
+  handle('source',async url=>{if(!platformOf(url))throw Error('无效平台链接');await shell.openExternal(url);});
   handle('window', action => { if (action === 'minimize') win.minimize(); if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize(); if (action === 'close') win.close(); });
   handle('clipboard', () => clipboard.readText());
   handle('help', () => shell.openPath(app.isPackaged ? path.join(process.resourcesPath, '使用说明.md') : path.join(root, 'docs', '使用说明.md')));
@@ -190,7 +194,7 @@ else {
   win.on('close', async e => {
     if (closing) return; e.preventDefault();
     if (queue.active.size || transcriptions.active) { const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['继续处理', '暂停任务并退出'], defaultId: 0, cancelId: 0, message: '仍有下载或转录任务，是否暂停并退出？', detail: '任务与已完成文稿保留，下次启动可以继续处理。' }); if (r.response === 0) return; }
-    closing = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); await comments.close(); await contacts.close(); await contentSearch.close(); await contentStudio.close(); await voice.close(); contentPublisher.close(); await userSearch.close(); await creators.close(); await transcriptions.close(); await queue.close(); await collectorConnection.close().catch(()=>{}); await accounts.flushAll(); store.close(); win.destroy(); app.quit();
+    closing = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); await comments.close(); await contacts.close(); await contentSearch.close(); await contentStudio.close(); await voice.close(); contentPublisher.close();sourceWindows?.close(); await userSearch.close(); await creators.close(); await transcriptions.close(); await queue.close(); await collectorConnection.close().catch(()=>{}); await accounts.flushAll(); store.close(); win.destroy(); app.quit();
   });
   app.on('before-quit', e => { if (!closing && !quitting) { e.preventDefault(); quitting = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); void comments.close().then(()=>contacts.close()).then(()=>contentSearch.close()).then(()=>contentStudio.close()).then(()=>voice.close()).then(()=>contentPublisher.close()).then(()=>userSearch.close()).then(() => creators.close()).then(() => transcriptions.close()).then(() => queue.close()).then(()=>collectorConnection.close().catch(()=>{})).then(() => accounts.flushAll()).then(() => { store.close(); closing = true; app.quit(); }); } });
   if (testMode) globalThis.fengshaTest = { store, queue, engine, creators, userSearch, contentSearch, contentStudio, contentPublisher, comments, contacts, voice, accounts, ai, transcriptions, wechatCreators, collectorConnection, snapshot, win };

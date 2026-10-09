@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {CPA_IMAGE_BASE,CPA_IMAGE_MODEL,isImage25,imageConfiguration} from './image-provider.js';
+import {readTextStream} from './ai-stream.js';
 
 export const providerDefaults = { name: 'CPA', baseUrl: 'https://cpa.fengsha.online/v1', model: '', protocol: 'chat', tokenParameter: 'max_tokens', timeout: 120, outputTokens: 3000, chunkChars: 10000 };
 export const speechDefaults = { name: '语音服务', baseUrl: '', model: '', mode: 'local', localModel: 'small', language: 'zh', timeout: 180 };
@@ -44,7 +45,7 @@ export class AIService {
     }
     this.store.put('ai-config', kind, c); this.store.flush(); this.changed(); return this.config(kind);
   }
-  async request(kind, endpoint, body, signal) {
+  async request(kind, endpoint, body, signal, onText) {
     const c = this.config(kind);
     if (!c.baseUrl) throw new Error('请先在 AI 设置填写服务地址');
     const key = this.secret(kind, c.baseUrl);
@@ -55,6 +56,7 @@ export class AIService {
     catch { if (signal?.aborted) throw new Error('已停止处理'); throw new Error(controller.aborted ? '模型服务超时，请检查网络或调高超时后重试' : '无法连接模型服务，请检查地址、网络与证书'); }
     const errors = { 401: '模型密钥无效，请重新配置', 403: '当前密钥没有访问权限', 404: '此服务未提供所选接口，请检查服务地址或切换接口类型', 413: '音频或请求超过服务大小限制', 429: '模型服务限流或额度不足，请稍后重试', 400: '模型或请求参数不被此服务支持，请检查模型与接口类型' };
     if (!response.ok) { const e = new Error(errors[response.status] || `模型服务暂不可用（HTTP ${response.status}），请稍后重试`); e.status = response.status; throw e; }
+    if(onText&&response.headers.get('content-type')?.includes('text/event-stream'))return {streamText:await readTextStream(response,c.protocol,combined,onText)};
     const text = await response.text(); if (text.length > 8 * 1024 * 1024) throw new Error('模型响应过大，请缩小处理范围');
     try { return JSON.parse(text); } catch { throw new Error('模型服务返回了非 JSON 内容，请检查服务地址'); }
   }
@@ -64,12 +66,12 @@ export class AIService {
     if (!list) throw new Error('服务未返回模型列表，可手动填写模型名称');
     return [...new Set(list.map(m => typeof m === 'string' ? m : m.id).filter(x => typeof x === 'string' && x.length < 180 && (kind!=='image'||isImage25(x))))].sort();
   }
-  async chat(system, content, signal) {
+  async chat(system, content, signal, onText) {
     const c = this.config(); if (!c.model) throw new Error('请先在 AI 设置读取并选择文本模型，或手动填写模型名称');
     const data = c.protocol === 'responses'
-      ? await this.request('text', 'responses', { model: c.model, instructions: system, input: content, max_output_tokens: c.outputTokens, store: false }, signal)
-      : await this.request('text', 'chat/completions', { model: c.model, messages: [{ role: 'system', content: system }, { role: 'user', content }], [c.tokenParameter]: c.outputTokens, stream: false }, signal);
-    const text = c.protocol === 'responses' ? data.output_text || data.output?.flatMap(o => o.content || []).filter(o => o.type === 'output_text').map(o => o.text).join('\n') : data.choices?.[0]?.message?.content;
+      ? await this.request('text', 'responses', { model: c.model, instructions: system, input: content, max_output_tokens: c.outputTokens, store: false,...(onText?{stream:true}:{}) }, signal,onText)
+      : await this.request('text', 'chat/completions', { model: c.model, messages: [{ role: 'system', content: system }, { role: 'user', content }], [c.tokenParameter]: c.outputTokens, stream:!!onText }, signal,onText);
+    const text = data.streamText||(c.protocol === 'responses' ? data.output_text || data.output?.flatMap(o => o.content || []).filter(o => o.type === 'output_text').map(o => o.text).join('\n') : data.choices?.[0]?.message?.content);
     if (data.choices?.[0]?.finish_reason === 'length' || data.status === 'incomplete') throw new Error('模型输出达到长度限制，结果未保存；请增加输出长度或减小分段长度后重试');
     if (typeof text !== 'string' || !text.trim()) throw new Error('模型没有返回有效文字，请检查模型和接口类型');
     return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
