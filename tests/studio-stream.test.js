@@ -1,7 +1,8 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
 import vm from 'node:vm';import {randomUUID} from 'node:crypto';
-const sandbox={fs,path,randomUUID,Buffer,URL,Response,AbortController,AbortSignal,fetch};vm.createContext(sandbox);vm.runInContext(fs.readFileSync('electron/content-studio.js','utf8').replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'')+'\nglobalThis.ContentStudio=ContentStudio',sandbox);const {ContentStudio}=sandbox;
+import {buildAssetPairs} from '../electron/remix-policy.js';
+const sandbox={fs,path,randomUUID,Buffer,URL,Response,AbortController,AbortSignal,fetch,buildAssetPairs};vm.createContext(sandbox);vm.runInContext(fs.readFileSync('electron/content-studio.js','utf8').replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'')+'\nglobalThis.ContentStudio=ContentStudio',sandbox);const {ContentStudio}=sandbox;
 test('克隆正文与首张图片应在下一张图片仍等待时持续可见，取消保留部分稿件',async()=>{
   const data=new Map(),events=[];let release;const gate=new Promise(r=>release=r);let calls=0;
   const item={id:'abcdefabcdefabcdefabcdef',platform:'小红书',type:'image',title:'标题',url:'https://www.xiaohongshu.com/explore/abcdefabcdefabcdefabcdef',text:'完整原文',bodyComplete:true,images:['https://sns-webpic.xhscdn.com/1.png','https://sns-webpic.xhscdn.com/2.png']};
