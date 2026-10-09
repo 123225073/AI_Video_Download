@@ -18,13 +18,13 @@ export class ContentPublisher {
     if(!['image','video'].includes(mode))throw new Error('请选择图文或视频发布');
     if(['B站','YouTube','视频号'].includes(platform)&&mode!=='video')throw new Error('此入口需要视频，请先生成发布视频；图文素材仍可导出');
     if(mode==='image'&&!d.assetOrder.length)throw new Error('请先添加至少一张发布图片');
-    if(mode==='video'&&(!d.videoFile||d.videoRevision!==d.revision))throw new Error('请先生成与当前稿件一致的发布视频');
+    if(mode==='video'&&!d.videoCurrent)throw new Error('请先生成与当前稿件及声音设置一致的发布视频');
     const exported=this.studio.export(id);clipboard.writeText(exported.body+'\n\n'+exported.tags);
     this.close();const w=this.window=new BrowserWindow({width:1150,height:850,autoHideMenuBar:true,title:`发布准备 · ${platform} · ${account.name} · 请核对官方账号`,webPreferences:{session:this.accounts.getSession(accountId),sandbox:true,contextIsolation:true,nodeIntegration:false}});w.setMenu(null);w.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     const host=new URL(url).hostname;w.webContents.on('will-navigate',(e,value)=>{try{const u=new URL(value);if(u.protocol!=='https:'||u.hostname!==host)e.preventDefault();}catch{e.preventDefault();}});
-    await w.loadURL(url);return this.prepared={prepared:true,published:false,directory:exported.directory,message:'已打开所选账号的官方发布窗口，正文已复制。完成登录后可点击“填入素材与文案”；话题、可见范围和最终发布请在官方页面核对。',draftId:id,platform,accountId,mode,revision:d.revision};
+    await w.loadURL(url);return this.prepared={prepared:true,published:false,directory:exported.directory,message:'已打开所选账号的官方发布窗口，正文已复制。完成登录后可点击“填入素材与文案”；话题、可见范围和最终发布请在官方页面核对。',draftId:id,platform,accountId,mode,revision:d.revision,videoFile:d.videoFile};
   }
-  async fill(){const info=this.prepared;if(!info)throw new Error("请先打开发布准备窗口");const w=this.window;if(!w||w.isDestroyed())throw new Error('官方发布窗口已关闭');const d=this.studio.get(info.draftId);if(d.revision!==info.revision)throw new Error('稿件已更新，请重新打开发布窗口');
+  async fill(){const info=this.prepared;if(!info)throw new Error("请先打开发布准备窗口");const w=this.window;if(!w||w.isDestroyed())throw new Error('官方发布窗口已关闭');const d=this.studio.get(info.draftId);if(d.revision!==info.revision||info.mode==='video'&&(!d.videoCurrent||d.videoFile!==info.videoFile))throw new Error('稿件已更新，请重新打开发布窗口');
     if(new URL(w.webContents.getURL()).hostname!==new URL(publishURLs[info.platform]).hostname)throw new Error('请先返回官方发布页面');
     const e=this.studio.export(info.draftId);
     const debuggerApi=w.webContents.debugger;if(!debuggerApi.isAttached())debuggerApi.attach('1.3');

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import ImageSettings from './ImageSettings.jsx';
+import VoiceSettings from './VoiceSettings.jsx';
 import { Settings2, KeyRound, RefreshCw, CheckCircle2, LoaderCircle, Link, Mic, ExternalLink } from 'lucide-react';
 
 function Provider({ kind, initial, perform, notify, busyTasks }) {
@@ -24,6 +25,6 @@ function Provider({ kind, initial, perform, notify, busyTasks }) {
   </section>;
 }
 export default function AISettings({state,perform,safe,notify,back,embedded=false}) {
-  const busyTasks=state.transcriptions.some(t=>['preparing','subtitles','transcribing','correcting','summarizing','translating'].includes(t.status));
-  return <>{!embedded && <header className="page-heading"><div><h1>AI 模型设置</h1><p>用于语音转录、文案矫正与多语言翻译；博主下载无需配置 AI。</p></div><button className="button" onClick={back}>去转录与翻译</button></header>}<Provider kind="text" initial={state.ai.text} {...{perform,notify,busyTasks}}/><Provider kind="speech" initial={state.ai.speech} {...{perform,notify,busyTasks}}/><ImageSettings {...{state,perform}}/><details className="panel collector-advanced"><summary>本地语音运行环境</summary><p className="ai-environment">{state.speechEnvironment.runtime?'✓ 语音运行环境已安装':'语音运行环境未安装'} · 已安装模型：{state.speechEnvironment.models.join('、') || '无'}</p><p className="hint">base 更快；small 更适合中文。原文可审阅，原视频保留。</p></details><div className="ai-actions"><button className="text-button" onClick={()=>safe('openGuide','cpa')}>打开 CPA 平台</button><button className="text-button" onClick={()=>safe('openGuide','audio')}>语音接口说明</button></div></>;
+  const busyTasks=!!state.contentProgress||state.transcriptions.some(t=>['preparing','subtitles','transcribing','correcting','summarizing','translating'].includes(t.status));
+  return <>{!embedded && <header className="page-heading"><div><h1>AI 模型设置</h1><p>用于语音转录、文案矫正与多语言翻译；博主下载无需配置 AI。</p></div><button className="button" onClick={back}>去转录与翻译</button></header>}<Provider kind="text" initial={state.ai.text} {...{perform,notify,busyTasks}}/><Provider kind="speech" initial={state.ai.speech} {...{perform,notify,busyTasks}}/><ImageSettings {...{state,perform}}/><VoiceSettings {...{state,perform}}/><details className="panel collector-advanced"><summary>本地语音运行环境</summary><p className="ai-environment">{state.speechEnvironment.runtime?'✓ 语音运行环境已安装':'语音运行环境未安装'} · 已安装模型：{state.speechEnvironment.models.join('、') || '无'}</p><p className="hint">base 更快；small 更适合中文。原文可审阅，原视频保留。</p></details><div className="ai-actions"><button className="text-button" onClick={()=>safe('openGuide','cpa')}>打开 CPA 平台</button><button className="text-button" onClick={()=>safe('openGuide','audio')}>语音接口说明</button></div></>;
 }

@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {CPA_IMAGE_BASE,CPA_IMAGE_MODEL,isImage25,imageConfiguration} from './image-provider.js';
 
 export const providerDefaults = { name: 'CPA', baseUrl: 'https://cpa.fengsha.online/v1', model: '', protocol: 'chat', tokenParameter: 'max_tokens', timeout: 120, outputTokens: 3000, chunkChars: 10000 };
 export const speechDefaults = { name: '语音服务', baseUrl: '', model: '', mode: 'local', localModel: 'small', language: 'zh', timeout: 180 };
-export const imageDefaults = { name:'图片二创', baseUrl:'https://api.openai.com/v1', model:'gpt-image-2.5-sunburst', timeout:300 };
+export const imageDefaults = { name:'CPA 图片服务', baseUrl:CPA_IMAGE_BASE, model:CPA_IMAGE_MODEL, timeout:300 };
 export function apiBase(value) {
   let u; try { u = new URL(String(value).trim()); } catch { throw new Error('请填写有效的模型服务地址'); }
   if (u.username || u.password || u.search || u.hash || (u.protocol !== 'https:' && !(u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)))) throw new Error('服务地址请使用 HTTPS；本机服务可使用 HTTP，不要把密钥放进地址');
@@ -16,10 +17,11 @@ export class AIService {
   constructor(store, directory, vault, changed = () => {}, request = fetch) { this.store = store; this.directory = directory; this.vault = vault; this.changed = changed; this.fetch = request; }
   secretFile(kind) { return path.join(this.directory, `ai-${kind}.encrypted`); }
   secret(kind, base) {
-    try { const value = JSON.parse(this.vault.decryptString(fs.readFileSync(this.secretFile(kind)))); return value.origin === new URL(base).origin ? value.key : ''; } catch { return ''; }
+    try { const value = JSON.parse(this.vault.decryptString(fs.readFileSync(this.secretFile(kind)))); if(value.origin === new URL(base).origin&&value.key)return value.key; } catch { /* Missing or foreign-origin credentials are never forwarded. */ }
+    return kind==='image'&&base===CPA_IMAGE_BASE?this.secret('text',CPA_IMAGE_BASE):'';
   }
   config(kind = 'text') {
-    const c = { ...(kind === 'speech' ? speechDefaults : kind === 'image' ? imageDefaults : providerDefaults), ...this.store.get('ai-config', kind) };
+    const c = kind==='image'?imageConfiguration(this.store.get('ai-config',kind)||{}):{ ...(kind === 'speech' ? speechDefaults : providerDefaults), ...this.store.get('ai-config', kind) };
     return { ...c, hasKey: Boolean(c.baseUrl && this.secret(kind, c.baseUrl)) };
   }
   all() { return { text: this.config('text'), speech: this.config('speech'), image:this.config('image') }; }
@@ -27,7 +29,9 @@ export class AIService {
     if (!['text', 'speech','image'].includes(kind)) throw new Error('请选择文本、语音或图片服务');
     const old = this.config(kind), defaults = kind === 'speech' ? speechDefaults : kind === 'image' ? imageDefaults : providerDefaults;
     const baseUrl = raw.baseUrl?.trim() ? apiBase(raw.baseUrl) : kind === 'speech' ? '' : apiBase(defaults.baseUrl);
-    const c = { name: String(raw.name || defaults.name).slice(0, 40), baseUrl, model: String(raw.model || '').trim().slice(0, 150), timeout: bounded(raw.timeout, defaults.timeout, 30, 600) };
+    if(kind==='image'&&baseUrl!==CPA_IMAGE_BASE)throw new Error('图片服务统一使用 CPA，不再连接其他图片服务器');
+    if(kind==='image'&&!isImage25(raw.model||CPA_IMAGE_MODEL))throw new Error('图片模型请选择 CPA 提供的 GPT Image 2.5 型号');
+    const c = { name: String(raw.name || defaults.name).slice(0, 40), baseUrl, model: String(raw.model || (kind==='image'?CPA_IMAGE_MODEL:'')).trim().slice(0, 150), timeout: bounded(raw.timeout, defaults.timeout, 30, 600) };
     if (kind === 'speech') Object.assign(c, { mode: raw.mode === 'remote' ? 'remote' : 'local', localModel: ['tiny', 'base', 'small'].includes(raw.localModel) ? raw.localModel : speechDefaults.localModel, language: ['auto', 'zh', 'en', 'ja', 'ko', 'de', 'fr', 'es'].includes(raw.language) ? raw.language : speechDefaults.language });
     else Object.assign(c, { protocol: raw.protocol === 'responses' ? 'responses' : 'chat', tokenParameter: raw.tokenParameter === 'max_completion_tokens' ? 'max_completion_tokens' : 'max_tokens', outputTokens: bounded(raw.outputTokens, 3000, 500, 12000), chunkChars: bounded(raw.chunkChars, 10000, 2000, 30000) });
     const key = raw.clearKey ? '' : String(raw.apiKey || '').trim() || (baseUrl ? this.secret(kind, baseUrl) : '');
@@ -58,7 +62,7 @@ export class AIService {
     const data = await this.request(kind, 'models');
     const list = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : null;
     if (!list) throw new Error('服务未返回模型列表，可手动填写模型名称');
-    return [...new Set(list.map(m => typeof m === 'string' ? m : m.id).filter(x => typeof x === 'string' && x.length < 180))].sort();
+    return [...new Set(list.map(m => typeof m === 'string' ? m : m.id).filter(x => typeof x === 'string' && x.length < 180 && (kind!=='image'||isImage25(x))))].sort();
   }
   async chat(system, content, signal) {
     const c = this.config(); if (!c.model) throw new Error('请先在 AI 设置读取并选择文本模型，或手动填写模型名称');

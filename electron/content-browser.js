@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { setTimeout as delay } from 'node:timers/promises';
 import { contentItem, xhsContent, douyinContent } from './content-data.js';
+import {contentLoadMessage} from './content-network.js';
 export function contentSearchURL(platform, keyword) {
   const q = encodeURIComponent(keyword);
   return { '小红书':`https://www.xiaohongshu.com/search_result?keyword=${q}&source=web_explore_feed&type=0`, '抖音':`https://www.douyin.com/search/${q}?type=video`, YouTube:`https://www.youtube.com/results?search_query=${q}&sp=CAI%253D` }[platform];
@@ -81,7 +82,7 @@ export class ContentBrowser {
     void debuggerApi.sendCommand('Network.enable',{maxResourceBufferSize:6*1024*1024,maxTotalBufferSize:12*1024*1024}).catch(()=>{});
     const abort=()=>this.close();signal.addEventListener('abort',abort,{once:true});
     try{signal.throwIfAborted();await w.loadURL(url,{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'});}
-    catch(e){if(signal.aborted)throw new Error('已停止搜索');if(!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(e.message)||w.isDestroyed()||!allowed(w.webContents.getURL())){this.close();throw new Error('官方作品页面未能打开，请检查网络后重试');}}
+    catch(e){if(signal.aborted)throw new Error('已停止搜索');if(!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(e.message)||w.isDestroyed()||!allowed(w.webContents.getURL())){this.close();throw new Error(contentLoadMessage(e));}}
     finally{signal.removeEventListener('abort',abort);}
     return w;
   }

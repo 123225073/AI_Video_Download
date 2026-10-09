@@ -17,7 +17,7 @@ export async function assetBytes(url,fetcher=fetch,signal){
   return Buffer.concat(chunks);
 }
 export class ContentStudio {
-  constructor({store,search,browser,transcriptions,ai,directory,changed=()=>{},fetcher=fetch}){Object.assign(this,{store,search,browser,transcriptions,ai,directory,changed,fetcher});fs.mkdirSync(directory,{recursive:true});this.active=null;}
+  constructor({store,search,browser,transcriptions,ai,voice,directory,changed=()=>{},fetcher=fetch}){Object.assign(this,{store,search,browser,transcriptions,ai,voice,directory,changed,fetcher});fs.mkdirSync(directory,{recursive:true});this.active=null;}
   list(){return this.store.list('content-draft').sort((a,b)=>b.createdAt-a.createdAt).map(d=>({id:d.id,title:d.title,platform:d.source.platform,status:this.get(d.id).status,createdAt:d.createdAt}));}
   get(id){const d=this.store.get('content-draft',id);if(!d)throw new Error('克隆稿不存在');
     if(d.transcriptionId&&d.status==='transcribing'){
@@ -26,25 +26,39 @@ export class ContentStudio {
       else if(['failed','cancelled','no-speech','paused'].includes(t?.status)){d.status='needs-action';d.message=t.message || '视频文字提取未完成';this.store.put('content-draft',id,d);this.store.flush();}
       else d.message=t?.message || '正在提取视频文字';
     }
-    return {...d,assets:d.assets.map(a=>({...a,preview:`fengsha-media://draft-${d.id}/${a.id}`}))};
+    const audio=this.voice?.review(d.body);
+    return {...d,videoCurrent:!!d.videoFile&&d.videoRevision===d.revision&&(!audio||d.videoAudioHash===audio.hash),voiceReview:audio?{...audio,approved:d.voiceApproval?.hash===audio.hash,audioReady:d.generatedAudioHash===audio.audioHash&&!!d.generatedAudioFile&&fs.existsSync(d.generatedAudioFile),preview:`fengsha-media://draft-${d.id}/audio`}:null,assets:d.assets.map(a=>({...a,preview:`fengsha-media://draft-${d.id}/${a.id}`}))};
   }
   save(id,raw){const d=this.get(id);if(this.active||this.remixController)throw new Error('正在克隆或改图，请等待完成');if(raw.revision!==d.revision)throw new Error('稿件已更新，请重新读取后编辑');
     const title=safeTitle(raw.title),body=typeof raw.body==='string'?raw.body:'';
     if(!title||body.length>200000)throw new Error('标题不能为空，正文不能超过 20 万字');
     const assets=raw.assetIds;if(!Array.isArray(assets)||assets.length>50||new Set(assets).size!==assets.length||assets.some(id=>!d.assets.some(a=>a.id===id)))throw new Error('素材排序无效，请重新读取稿件');
     const tags=typeof raw.tags==='string'?raw.tags.trim().slice(0,1000):'';const visibility=['public','private'].includes(raw.visibility)?raw.visibility:'public';
-    const next={...d,title,body,tags,visibility,assetOrder:assets,revision:d.revision+1,updatedAt:Date.now()};delete next.assets;next.assets=d.assets.map(({preview,...a})=>a);
+    const next={...d,title,body,tags,visibility,assetOrder:assets,revision:d.revision+1,updatedAt:Date.now()};delete next.assets;delete next.voiceReview;delete next.videoCurrent;next.assets=d.assets.map(({preview,...a})=>a);
     this.store.put('content-draft',id,next);this.store.flush();this.changed();return this.get(id);
   }
-  async exclusive(fn,remix=false){if(this.active||this.search.active||this.remixController&&!remix)throw new Error('正在搜索、克隆或改图，请等待当前操作结束');const c=this.active=remix?this.remixController:new AbortController();this.changed();try{return await(this.pending=fn(c.signal));}finally{this.active=null;this.pending=null;this.changed();}}
+  async exclusive(fn,remix=false){if(this.active||this.voice?.active||this.search.active||this.remixController&&!remix)throw new Error('正在搜索、克隆或改图，请等待当前操作结束');const c=this.active=remix?this.remixController:new AbortController();this.changed();try{return await(this.pending=fn(c.signal));}finally{this.active=null;this.pending=null;this.changed();}}
   cancel(){this.active?.abort();this.remixController?.abort();this.browser.close();}
   async close(){this.cancel();await this.pending?.catch(()=>{});this.browser.close();}
   async autoRemix(id,bin,instructions=''){
     if(!this.ai.config('text').hasKey&&!this.ai.config('image').hasKey){const d=this.get(id);d.message+=' 请先配置文本或图片服务，再点击“整篇 AI 二创”。';this.store.put('content-draft',id,d);this.store.flush();return this.get(id);}
     await this.exclusive(async signal=>{let d=this.get(id);while(d.status==='transcribing'){signal.throwIfAborted();await delay(1000,undefined,{signal});d=this.get(id);}if(d.status!=='draft')throw new Error(d.message||'请先完成视频转录');});
     if(this.get(id).source.type==='video')await this.videoFrames(id,bin);
-    return this.remix(id,instructions);
+    const result=await this.remix(id,instructions);
+    if(result.source.type==='video'&&this.voice?.config().source==='doubao'&&this.voice.config().execution==='automatic')return this.generateVoice(id);
+    return result;
   }
+  reviewVoice(id){const d=this.get(id);if(d.status!=='draft')throw Error('请先完成正文提取');return {...this.voice.review(d.body),approved:d.voiceApproval?.hash===this.voice.review(d.body).hash};}
+  approveVoice(id,hash){if(this.active||this.remixController||this.voice?.active)throw Error('正在生成素材，请等待完成');const d=this.get(id),review=this.reviewVoice(id);if(hash!==review.hash)throw Error('正文或音色已改变，请重新核对');d.voiceApproval={hash,at:Date.now()};this.store.put('content-draft',id,d);this.store.flush();this.changed();return this.get(id);}
+  async audioFor(d,signal){if(!this.voice||this.voice.config().source!=='doubao')return null;const review=this.voice.review(d.body);
+    if(review.execution==='confirm'&&d.voiceApproval?.hash!==review.hash)throw Object.assign(Error('请先确认二创正文和音色，再生成豆包配音'),{code:'VOICE_CONFIRM_REQUIRED'});
+    if(d.generatedAudioHash===review.audioHash&&d.generatedAudioFile&&fs.existsSync(d.generatedAudioFile))return d.generatedAudioFile;
+    const file=path.join(this.directory,d.id,randomUUID()+'.mp3');await this.voice.synthesize(d.body,file,signal);signal.throwIfAborted();const current=this.get(d.id);
+    if(current.revision!==d.revision||this.voice.review(current.body).hash!==review.hash)throw Error('合成期间正文或音色已改变，未采用过期配音');
+    current.generatedAudioFile=file;current.generatedAudioHash=review.audioHash;current.message='豆包配音已生成，原声音保留，可试听。';this.store.put('content-draft',d.id,current);this.store.flush();this.changed();return file;
+  }
+  generateVoice(id){return this.exclusive(async signal=>{const d=this.get(id);if(d.status!=='draft')throw Error('请先完成正文');if(!this.voice||this.voice.config().source!=='doubao')throw Error('声音设置当前选择保留原声，无需生成配音');await this.audioFor(d,signal);return this.get(id);});}
+  audioAsset(id){const d=this.get(id),r=this.voice?.review(d.body);if(!r||d.generatedAudioHash!==r.audioHash||!d.generatedAudioFile||!fs.existsSync(d.generatedAudioFile))throw Error('当前正文尚未生成对应配音');const rel=path.relative(fs.realpathSync(this.directory),fs.realpathSync(d.generatedAudioFile));if(rel.startsWith('..')||path.isAbsolute(rel))throw Error('配音文件位置无效');return d.generatedAudioFile;}
   async originalMedia(d,signal){
     if(d.originalVideoFile&&fs.existsSync(d.originalVideoFile))return d.originalVideoFile;
     const engine=this.transcriptions.engine,group=await engine.parse(d.source.url,{limit:1,signal}),item=group.items[0];
@@ -105,7 +119,7 @@ export class ContentStudio {
     if(!key||!c.model)throw new Error('请先在 AI 设置保存图片服务密钥和 GPT Image 2.5 模型');
     const form=new FormData();form.set('model',c.model);form.set('prompt',prompt);form.set('image',new Blob([fs.readFileSync(a.file)],{type:'image/png'}),'source.png');form.set('output_format','png');form.set('size','1024x1024');
     const response=await this.fetcher(apiBase(c.baseUrl)+'/images/edits',{method:'POST',headers:{Authorization:`Bearer ${key}`},body:form,redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(c.timeout*1000)])});
-    if(!response.ok)throw new Error(`图片模型未完成修改（HTTP ${response.status}），请检查服务、模型权限或额度；原图保留`);
+    if(!response.ok)throw new Error(response.status>=500?`CPA 图片上游暂不可用（HTTP ${response.status}），请在设置中选择 CPA 可用的 GPT Image 2.5 型号后重试；原图保留`:`图片模型未完成修改（HTTP ${response.status}），请检查服务、模型权限或额度；原图保留`);
     const raw=await response.text();if(raw.length>64*1024*1024)throw new Error('图片模型响应过大');let payload;try{payload=JSON.parse(raw);}catch{throw new Error('图片服务返回了无效响应');}
     const base64=payload.data?.[0]?.b64_json;if(typeof base64!=='string'||!/^[A-Za-z0-9+/\r\n]+={0,2}$/.test(base64)||base64.length>48*1024*1024)throw new Error('图片服务未返回有效的 base64 图片，请检查 Images Edits 兼容性');
     const bytes=Buffer.from(base64,'base64'),image=nativeImage.createFromBuffer(bytes);if(image.isEmpty())throw new Error('模型返回的图片无法读取，原图保留');signal.throwIfAborted();
@@ -114,8 +128,9 @@ export class ContentStudio {
     current.assets.push({id:newId,file,kind:'image',origin:'generated',originalAssetId:assetId,model:c.model,prompt});current.assetOrder=current.assetOrder.map(v=>v===assetId?newId:v);current.revision++;current.message='已生成新图，原图仍保留，可在素材库恢复。';this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
   },remix);}
   async renderVideo(id,bin){return this.exclusive(async signal=>{const d=this.get(id);if(d.status!=='draft'||!d.assetOrder.length)throw new Error('请先完成文字提取并添加至少一张画面图片');
-    const t=d.transcriptionId?this.store.get('transcription',d.transcriptionId):null;let audio=t?.sourceFile;
-    if(d.source.type==='video'&&(!audio||/\.(vtt|srt)$/i.test(audio))){
+    const selectedAudio=this.voice?.review(d.body),doubao=selectedAudio?.source==='doubao';
+    const t=d.transcriptionId?this.store.get('transcription',d.transcriptionId):null;let audio=doubao?await this.audioFor(d,signal):t?.sourceFile;
+    if(!doubao&&d.source.type==='video'&&(!audio||/\.(vtt|srt)$/i.test(audio))){
       audio=await this.originalMedia(d,signal);
     }
     if(d.source.type==='video'&&(!audio||!fs.existsSync(audio)))throw new Error('原视频音频尚未取得，请先完成转录');
@@ -129,11 +144,11 @@ export class ContentStudio {
     args.push('-vf','scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=white,fps=25','-r','25','-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p');
     if(audio)args.push('-map','0:v:0','-map','1:a:0','-c:a','aac');args.push('-t',String(duration),'-movflags','+faststart',file);
     await command(path.join(bin,'ffmpeg','ffmpeg.exe'),args,{signal,timeout:3600000});signal.throwIfAborted();const info=JSON.parse(await command(path.join(bin,'ffmpeg','ffprobe.exe'),['-v','error','-show_streams','-show_format','-of','json',file],{signal}));if(!info.streams?.some(s=>s.codec_type==='video')||Math.abs(Number(info.format?.duration)-duration)>.2||!Number.isFinite(Number(info.format?.duration)))throw new Error('发布视频画面或时长校验失败，原素材保留');
-    const current=this.get(id);if(current.revision!==d.revision)throw new Error('生成期间稿件已更新，请重新生成');current.videoFile=file;current.videoRevision=d.revision;this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
+    const current=this.get(id);if(current.revision!==d.revision||selectedAudio&&this.voice.review(current.body).hash!==selectedAudio.hash)throw new Error('生成期间稿件或声音设置已更新，请重新生成');current.videoFile=file;current.videoRevision=d.revision;current.videoAudioHash=selectedAudio?.hash;this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
   });}
   export(id){const d=this.get(id),dir=path.join(this.directory,id,'发布素材-'+d.revision);fs.mkdirSync(dir,{recursive:true});const files=[];
     for(const [i,assetId] of d.assetOrder.entries()){const a=this.asset(id,assetId),file=path.join(dir,`${String(i+1).padStart(2,'0')}.png`);fs.copyFileSync(a.file,file);files.push(file);}
-    let videoFile=null;if(d.videoFile&&d.videoRevision===d.revision&&fs.existsSync(d.videoFile)){videoFile=path.join(dir,'发布视频.mp4');fs.copyFileSync(d.videoFile,videoFile);}
+    let videoFile=null;if(d.videoCurrent&&fs.existsSync(d.videoFile)){videoFile=path.join(dir,'发布视频.mp4');fs.copyFileSync(d.videoFile,videoFile);}
     const text=`${d.title}\n\n${d.body}\n\n${d.tags}`;fs.writeFileSync(path.join(dir,'正文.txt'),text,'utf8');fs.writeFileSync(path.join(dir,'来源.json'),JSON.stringify({url:d.source.url,author:d.source.author,platform:d.source.platform,publishedAt:d.source.publishedAt},null,2),'utf8');return {directory:dir,files,videoFile,text,title:d.title,body:d.body,tags:d.tags,visibility:d.visibility};
   }
 }

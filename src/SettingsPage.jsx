@@ -6,7 +6,7 @@ import './settings-workflow.css';
 
 const sections = [
   { id: 'download', title: '下载与存储', icon: Download, caption: '目录、画质与下载规则', description: '设置新任务的保存位置、画质与下载规则。' },
-  { id: 'ai', title: 'AI 模型', icon: Sparkles, caption: '转录、矫正与翻译', description: '管理文本 AI 与语音转录服务，配置模型并检查连接。' },
+  { id: 'ai', title: 'AI 模型', icon: Sparkles, caption: 'CPA 生图、豆包配音与转录', description: '管理 CPA 图片二创、豆包声音克隆与合成，以及文本和转录服务。' },
   { id: 'collector', title: '视频号连接', icon: Link, caption: '微信连接与组件检查', description: '管理视频号博主作品读取与下载所需的微信连接。' },
   { id: 'application', title: '应用与组件', icon: SlidersHorizontal, caption: '应用偏好与运行环境', description: '管理应用偏好，查看下载组件与当前版本。' },
 ];

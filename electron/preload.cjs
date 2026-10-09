@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('fengsha', {
   creatorRefresh: invoke('creator-refresh'),
   userSearch: invoke('user-search'), userSearchMore: invoke('user-search-more'), userSearchLast: invoke('user-search-last'), userSearchCancel: invoke('user-search-cancel'), userSearchShow: invoke('user-search-show'),
   action: invoke('action'), saveSettings: invoke('settings'), chooseFolder: invoke('folder'),
+  voiceSave:invoke('voice-save'),voiceClone:invoke('voice-clone'),voiceStatus:invoke('voice-status'),voicePreview:invoke('voice-preview'),contentVoiceReview:invoke('content-voice-review'),contentVoiceApprove:invoke('content-voice-approve'),contentVoiceGenerate:invoke('content-voice-generate'),
   contentRemix:invoke('content-remix'),
   contentAutoRemix:invoke('content-auto-remix'),
   contentVideoFrames:invoke('content-video-frames'),
