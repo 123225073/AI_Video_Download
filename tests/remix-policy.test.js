@@ -2,6 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {imageRemixPrompt,normalizeRemixResult,resolveAssetLineage,buildAssetPairs} from '../electron/remix-policy.js';
 
+test('默认轻调保留原图摄影和布局，不强制插画，不塞入正文小字',()=>{
+ const p=imageRemixPrompt('尽量保持原图，只改小地方，去掉来源logo',{title:'新标题',body:'不应塞入画面的长正文'});
+ assert.match(p,/保持.*(?:摄影|风格)/);assert.match(p,/禁止.*(?:新增|增加).*文字/);assert.doesNotMatch(p,/必须创作全新构图|绝不沿用参考照片|不应塞入画面的长正文/);
+ assert.match(p,/去掉来源logo/);
+});
+
 test('短事实稿不强迫扩写；审阅意见保留独立结果',()=>{
   const result=normalizeRemixResult({title:'下午阅读',body:'下午开放，限六人。',tags:'#阅读',reviewNotes:['需人工审阅'],issues:[{message:'无参考出处'}],notes:'保持人数'});
   assert.equal(result.body,'下午开放，限六人。');assert.deepEqual(result.reviewNotes,['需人工审阅','无参考出处','保持人数']);
@@ -23,10 +29,10 @@ test('虚构的参考消息署名和核查段落进入审阅结果，不能流�
   assert.equal(result.body,'阅读角下午开放，每次限六人。');assert.ok(result.reviewNotes.some(n=>n.includes('据参考消息')));
   assert.throws(()=>normalizeRemixResult({title:'待核实报告',body:'参考材料声称有研究，仍待核实。'}),/可发布|正文/);
 });
-test('图片策略保留安全偏好，剔除直接复用原摄影和来源标识要求',()=>{
+test('图片策略保留摄影偏好，来源标识禁止覆盖',()=>{
   const prompt=imageRemixPrompt('用蓝色。保留某媒体logo，抹掉水印沿用原摄影。画竖版插画');
-  assert.match(prompt,/蓝色/);assert.match(prompt,/竖版/);assert.doesNotMatch(prompt,/保留某媒体logo|抹掉水印沿用原摄影/);
-  assert.match(prompt,/不能.*水印/);assert.match(prompt,/不可覆盖/);
+  assert.match(prompt,/蓝色/);assert.match(prompt,/竖版/);assert.doesNotMatch(prompt,/保留某媒体logo/);
+  assert.match(prompt,/来源.*水印/);assert.match(prompt,/不可覆盖/);
 });
 test('直接父链逐层追溯original/imported，环和断链不能猜原图',()=>{
   const assets=[{id:'o',origin:'original'},{id:'a',origin:'generated',originalAssetId:'o'},{id:'b',origin:'generated',originalAssetId:'a'},

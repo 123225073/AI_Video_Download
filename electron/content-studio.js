@@ -7,7 +7,7 @@ import { command } from './engine.js';
 import { mediaKey } from './core.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import {draftTextPreview} from './ai-stream.js';
-import {textRemixSystemPrompt,normalizeRemixResult,imageRemixPrompt,resolveAssetLineage,buildAssetPairs} from './remix-policy.js';
+import {textRemixSystemPrompt,normalizeRemixResult,imageRemixPrompt,cleanImageInstructions,resolveAssetLineage,buildAssetPairs} from './remix-policy.js';
 const safeTitle = value => String(value || '').trim().slice(0,180);
 const mediaHost = host => /(^|\.)(xhscdn\.com|xiaohongshu\.com|douyinpic\.com|douyinstatic\.com|byteimg\.com|ibytedtos\.com|hdslb\.com|biliimg\.com|ytimg\.com|qpic\.cn|qq\.com)$/.test(host);
 export async function assetBytes(url,fetcher=fetch,signal){
@@ -128,7 +128,7 @@ export class ContentStudio {
     const saveSummary=()=>{const d=this.get(id);d.remixSummary=structuredClone(summary);d.message=summary.status==='completed'?'二创文案与画面已保存，原稿保留，请审阅生成结果。':`二创尚未全部完成：文案${summary.text.status==='generated'?'已生成':'未完成'}，图片 ${summary.images.generated} / ${summary.images.total}${summary.images.missingOriginals?'，部分原图未取得':''}；已有结果和原始素材保留。`;this.checkpoint(d);};
     this.remixController=this.flow||new AbortController();this.step(id,'rewrite','正在准备二创');saveSummary();
     try{if(text.hasKey&&text.model){await this.rewrite(id,instructions,true);summary.text.status='generated';saveSummary();}
-      if(images.hasKey&&images.model){for(const [i,assetId] of before.assetOrder.entries()){this.step(id,'image',`AI 正在重绘画面 ${i+1} / ${before.assetOrder.length}`,{current:i+1,total:before.assetOrder.length,preview:null});this.remixController.signal.throwIfAborted();const result=await this.editImage(id,assetId,instructions||'按主题创作全新原创插画与排版，保持已给事实准确。',true);const generated=result.assets.at(-1);summary.images.generated++;summary.images.generatedAssetIds.push(generated.id);saveSummary();}if(before.assetOrder.length)summary.images.status='generated';}
+      if(images.hasKey&&images.model){for(const [i,assetId] of before.assetOrder.entries()){this.step(id,'image',`AI 正在调整画面 ${i+1} / ${before.assetOrder.length}`,{current:i+1,total:before.assetOrder.length,preview:null});this.remixController.signal.throwIfAborted();const result=await this.editImage(id,assetId,instructions||'尽量保持原图风格和排版，只做局部优化，不增加文字。',true);const generated=result.assets.at(-1);summary.images.generated++;summary.images.generatedAssetIds.push(generated.id);saveSummary();}if(before.assetOrder.length)summary.images.status='generated';}
       this.remixController.signal.throwIfAborted();summary.status=summary.text.status==='generated'&&summary.images.generated===summary.images.total&&!summary.images.missingOriginals?'completed':'partial';saveSummary();
       if(!this.flow)this.finish(summary.status==='completed'?'completed':'needs-action',this.get(id).message);return this.get(id);
     }catch(e){summary.status='partial';if(summary.text.status==='pending')summary.text.status='failed';if(summary.images.status==='pending')summary.images.status='incomplete';saveSummary();throw e;
@@ -139,11 +139,13 @@ export class ContentStudio {
     const additions=files.map(file=>{if(fs.statSync(file).size>30*1024*1024)throw new Error('图片超过 30MB');const image=nativeImage.createFromPath(file);if(image.isEmpty())throw new Error('请选择 PNG、JPG 或 WebP 图片');return {id:randomUUID(),bytes:image.toPNG()};});
     for(const a of additions){const file=path.join(this.directory,id,a.id+'.png');fs.writeFileSync(file,a.bytes);d.assets.push({id:a.id,file,kind:'image',origin:'imported'});d.assetOrder.push(a.id);}d.revision++;this.store.put('content-draft',id,d);this.store.flush();this.changed();return this.get(id);
   }
-  async editImage(id,assetId,prompt,remix=false){if(typeof prompt!=='string'||!prompt.trim()||prompt.length>32000)throw new Error('请输入图片修改要求（最多 32000 字）');return this.exclusive(async signal=>{
+  async editImage(id,assetId,prompt,remix=false,options={}){if(typeof prompt!=='string'||!cleanImageInstructions(prompt)||prompt.length>32000)throw new Error('请输入图片修改要求（最多 32000 字）');prompt=cleanImageInstructions(prompt);if(!['original','current'].includes(options.reference||'original')||!['preserve','redesign'].includes(options.mode||'preserve'))throw new Error('图片编辑方式无效');return this.exclusive(async signal=>{
     this.step(id,'image','AI 正在重绘当前画面');const d=this.get(id),a=this.asset(id,assetId),c=this.ai.config('image');const key=this.ai.secret('image',c.baseUrl);
     if(!key||!c.model)throw new Error('请先在 AI 设置保存图片服务密钥和 GPT Image 2.5 模型');
     const lineage=resolveAssetLineage(d.assets,assetId);if(!lineage.valid)throw new Error('原图关联缺失或循环，不能可靠追溯；原素材保留');
-    const policyPrompt=imageRemixPrompt(prompt,{title:d.title,body:d.body});const form=new FormData();form.set('model',c.model);form.set('prompt',policyPrompt);form.set('image',new Blob([fs.readFileSync(a.file)],{type:'image/png'}),'source.png');form.set('output_format','png');form.set('size','1024x1024');
+    const base=options.reference==='current'?a:this.asset(id,lineage.originalAssetId),dimensions=nativeImage.createFromPath?.(base.file)?.getSize?.()||{};
+    const size=dimensions.height>dimensions.width*1.2?'1024x1536':dimensions.width>dimensions.height*1.2?'1536x1024':'1024x1024';
+    const policyPrompt=imageRemixPrompt(prompt,{title:d.title,mode:options.mode});const form=new FormData();form.set('model',c.model);form.set('prompt',policyPrompt);form.set('image',new Blob([fs.readFileSync(base.file)],{type:'image/png'}),'source.png');form.set('output_format','png');form.set('size',size);
     const response=await this.fetcher(apiBase(c.baseUrl)+'/images/edits',{method:'POST',headers:{Authorization:`Bearer ${key}`},body:form,redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(c.timeout*1000)])});
     if(!response.ok)throw new Error(response.status>=500?`CPA 图片上游暂不可用（HTTP ${response.status}），请在设置中选择 CPA 可用的 GPT Image 2.5 型号后重试；原图保留`:`图片模型未完成修改（HTTP ${response.status}），请检查服务、模型权限或额度；原图保留`);
     const raw=await response.text();if(raw.length>64*1024*1024)throw new Error('图片模型响应过大');let payload;try{payload=JSON.parse(raw);}catch{throw new Error('图片服务返回了无效响应');}
@@ -151,7 +153,7 @@ export class ContentStudio {
     const bytes=Buffer.from(base64,'base64'),image=nativeImage.createFromBuffer(bytes);if(image.isEmpty())throw new Error('模型返回的图片无法读取，原图保留');signal.throwIfAborted();
     const current=this.get(id);if(current.revision!==d.revision)throw new Error('改图期间稿件已改变，请重新操作；原图保留');
     const newId=randomUUID(),file=path.join(this.directory,id,newId+'.png');fs.writeFileSync(file,image.toPNG());
-    current.assets.push({id:newId,file,kind:'image',origin:'generated',originalAssetId:assetId,model:c.model,prompt,policyPrompt});current.assetOrder=current.assetOrder.map(v=>v===assetId?newId:v);current.revision++;current.message='已生成全新构图图片，原图与历次生成图均保留，请对照审阅。';this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
+    current.assets.push({id:newId,file,kind:'image',origin:'generated',originalAssetId:base.id,replacesAssetId:assetId,editMode:options.mode||'preserve',reference:options.reference||'original',size,model:c.model,prompt,policyPrompt});current.assetOrder=current.assetOrder.map(v=>v===assetId?newId:v);current.revision++;current.message='图片调整已保存，原图与历史版本保留，请放大对比检查。';this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
   },remix);}
   async renderVideo(id,bin){return this.exclusive(async signal=>{const d=this.get(id);if(d.status!=='draft'||!d.assetOrder.length)throw new Error('请先完成文字提取并添加至少一张画面图片');
     const selectedAudio=this.voice?.review(d.body),doubao=selectedAudio?.source==='doubao';

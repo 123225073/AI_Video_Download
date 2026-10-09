@@ -85,7 +85,7 @@ test('未返回稳定用户ID时仍保留真实昵称与安全头像，不猜测
 function element(tag,attrs={},text='',children=[]){
   const node={tag,attrs,text,children,parent:null,clicked:0,getClientRects:()=>attrs.hidden?[]:[1],getAttribute:key=>attrs[key]||null,dataset:{commentId:attrs['data-comment-id']},id:attrs.id||'',click(){this.clicked++;}};
   for(const child of children)child.parent=node;
-  Object.defineProperties(node,{innerText:{get:()=>[text,...children.map(c=>c.innerText)].filter(Boolean).join('\n')},href:{get:()=>new URL(attrs.href,work.url).href},src:{get:()=>attrs.src||''}});
+  Object.defineProperties(node,{innerText:{get:()=>tag==='svg'?undefined:[text,...children.map(c=>c.innerText)].filter(Boolean).join('\n')},textContent:{get:()=>[text,...children.map(c=>c.textContent)].filter(Boolean).join('\n')},href:{get:()=>new URL(attrs.href,work.url).href},src:{get:()=>attrs.src||''}});
   const simple=(n,s)=>{
     if(s==='*')return true;
     const name=s.match(/^[\w-]+/);if(name&&name[0]!==n.tag)return false;
@@ -113,6 +113,14 @@ function xhsCard(id,text,{reply=false,user=true}={}){
     element('div',{class:'content'},'',[element('span',{class:'note-text'},text)]),element('img',{src:'https://example.com/avatar.png'}),
   ]);
 }
+
+test('官网评论区含没有innerText的SVG图标，采集与末页判断不能抛异常',()=>{
+  const root=element('div',{class:'comments-container'},'',[xhsCard('visible','保留真实评论'),element('svg',{},'',[]),element('div',{class:'end-container'},'没有更多评论')]);
+  const page=render(root,'小红书',true);assert.equal(page.comments.length,1);assert.equal(page.complete,true);
+});
+test('小红书独立comment-item-sub回复没有comment-item类名也必须读取',()=>{
+ const card=xhsCard('sub-only','独立回复');card.attrs.class='comment-item-sub';const page=render(element('div',{class:'comments-container'},'',[card]));assert.equal(page.comments.length,1);assert.equal(page.comments[0].isReply,true);
+});
 
 test('嵌套评论容器不重复读取主评论，真实回复和匿名昵称归属各自评论',()=>{
   const root=element('div',{class:'comments-container'},'',[element('div',{class:'parent-comment',id:'wrapper'},'',[xhsCard('root','主评论'),xhsCard('reply','真实回复',{reply:true,user:false})])]);

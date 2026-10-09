@@ -7,7 +7,8 @@ export function renderedComments(platform,sourceURL,expand=false){
   const source=new URL(sourceURL),here=new URL(location.href);
   if(here.hostname!==source.hostname||here.pathname!==source.pathname||platform==='YouTube'&&here.searchParams.get('v')!==source.searchParams.get('v'))return {blocked:true,message:'评论窗口已离开所选作品，请重新打开。',comments:[]};
   const visible=e=>e&&e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
-  const selectors={ '小红书':'.comments-container .comment-item,.comments-container .parent-comment,.comments-container .sub-comment','抖音':'[data-e2e="comment-list"] [data-e2e="comment-item"],[data-e2e="comment-item"]','B站':'.reply-list .root-reply,.reply-list .reply-item,.reply-list .sub-reply-item',YouTube:'#comments ytd-comment-view-model,#comments ytd-comment-renderer','视频号':'.comment-list .comment-item' };
+  const textOf=e=>String(e?.innerText??e?.textContent??'').trim();
+  const selectors={ '小红书':'.comments-container .comment-item,.comments-container .parent-comment,.comments-container .sub-comment,.comments-container .comment-item-sub','抖音':'[data-e2e="comment-list"] [data-e2e="comment-item"],[data-e2e="comment-item"]','B站':'.reply-list .root-reply,.reply-list .reply-item,.reply-list .sub-reply-item',YouTube:'#comments ytd-comment-view-model,#comments ytd-comment-renderer','视频号':'.comment-list .comment-item' };
   const selector=selectors[platform]||'.no-supported-comment';
   const cards=[...document.querySelectorAll(selector)].filter(visible);
   if(/验证码|安全限制|unusual traffic/i.test(document.title)||[...document.querySelectorAll('.login-modal,[data-e2e="login-dialog"],[class*="captcha"],iframe[src*="captcha"]')].some(visible))return {blocked:true,message:'官方评论页面要求登录或验证，请完成后继续。',comments:[]};
@@ -23,9 +24,9 @@ export function renderedComments(platform,sourceURL,expand=false){
     comments.push({id:commentId,userId:id,name:(a?.innerText||own('.user-name,.name,.nickname,#author-text,.reply-user-name,.author,.user-info,.reply-user-info')?.innerText)?.trim().slice(0,200)||'匿名或用户资料未返回',text:text.slice(0,20000),avatar:own('img')?.src||'',published:own(platform==='小红书'?'.date span,.date':'.date,.time,.reply-time,#published-time-text')?.innerText?.trim()||'',region:own('.ip-location,.ip-tag,.date .location')?.innerText?.trim()||'',isReply:!!card.closest('.sub-comments,.sub-comment,.comment-item-sub,.sub-reply-list,.sub-reply-item,#replies,ytd-comment-replies-renderer')});
   }
   const root=document.querySelector(platform==='YouTube'?'#comments':platform==='小红书'?'.comments-container':platform==='B站'?'.reply-list':'[data-e2e="comment-list"],.comment-list');
-  const replies=root?[...root.querySelectorAll('button,.show-more,.show-more-reply,.reply-more')].filter(visible).filter(e=>/展开.*回复|更多回复|查看.*回复|(?:view|show|more).*repl|^\d+\s+replies?$/i.test(e.innerText.trim())):[];
-  const end=root&&!replies.length&&[root,...root.querySelectorAll('*')].some(e=>visible(e)&&!e.closest(selector)&&!e.querySelector(selector)&&/^(?:THE END|没有更多评论|没有更多了|暂无评论|这是一片荒地)[。.!！\s]*$/i.test(e.innerText.trim()));
-  if(expand&&root){for(const button of replies.slice(0,3))button.click();const candidates=platform==="小红书"?[document.querySelector(".note-scroller"),root]:[root];const scroller=candidates.find(e=>e&&e.scrollHeight>e.clientHeight+100)||document.scrollingElement;scroller.scrollTop+=Math.max(700,innerHeight*.8);}
+  const replies=root?[...root.querySelectorAll('button,.show-more,.show-more-reply,.reply-more')].filter(visible).filter(e=>/展开.*回复|更多回复|查看.*回复|(?:view|show|more).*repl|^\d+\s+replies?$/i.test(textOf(e))):[];
+  const end=root&&!replies.length&&[root,...root.querySelectorAll('*')].some(e=>visible(e)&&!e.closest(selector)&&!e.querySelector(selector)&&/^(?:THE END|没有更多评论|没有更多了|暂无评论|这是一片荒地)[。.!！\s]*$/i.test(textOf(e)));
+  if(expand&&root){for(const button of replies.slice(0,3))button.click();const candidates=platform==="小红书"?[document.querySelector(".note-scroller"),root]:[root];const scroller=candidates.find(e=>e&&e.scrollHeight>e.clientHeight+100)||document.scrollingElement;if(scroller)scroller.scrollTop+=Math.max(700,innerHeight*.8);}
   return {comments,complete:!!end,message:cards.length?'正在读取公开评论与评论者资料。':'官方页面暂未展示可识别的评论，请打开评论区后继续读取。'};
 }
 export function publicComment(platform,raw){
@@ -66,14 +67,15 @@ export class CommentWorkflow{
       c.signal.throwIfAborted();const w=this.browser.window;w.hide();let stagnant=0;
       for(let i=0;i<40;i++){
         c.signal.throwIfAborted();if((this.accounts.active(r.source.platform)?.id||null)!==r.accountId)throw new Error('评论读取账号已切换，请重新读取');if(w.isDestroyed())throw new Error('官方评论窗口已关闭');
-        const page=await w.webContents.executeJavaScript(`(${renderedComments.toString()})(${JSON.stringify(r.source.platform)},${JSON.stringify(r.source.url)},true)`);
+        const page=await w.webContents.executeJavaScript(`(()=>{try{return (${renderedComments.toString()})(${JSON.stringify(r.source.platform)},${JSON.stringify(r.source.url)},true);}catch(e){return {scriptError:String(e.name||'Error')+': '+String(e.message||'读取异常')};}})()`);
+        if(page?.scriptError)throw new Error('评论页面读取异常：'+page.scriptError.slice(0,300)+'；已有资料保留，可继续读取。');
         c.signal.throwIfAborted();const map=new Map([...r.comments,...(r.pendingComments||[])].map(v=>[v.id,v])),before=map.size;for(const raw of page.comments){const row=publicComment(r.source.platform,raw);if(row)map.set(row.id,row);}const rows=[...map.values()];r.comments=rows.slice(0,r.limit);r.pendingComments=rows.slice(r.limit);r.message=page.message;this.publish();
         if(page.blocked){r.status='needs-action';this.browser.show();break;}if(page.complete&&map.size<=r.limit){r.status='complete';r.message='已读取至页面返回的评论末尾；仅包含平台公开可访问资料。';break;}if(r.comments.length>=r.limit){r.status='limited';r.message='已达到本次读取上限；可提高上限后继续，已有评论会去重。';break;}
         stagnant=map.size===before?stagnant+1:0;if(stagnant>=8){r.status='interrupted';r.message='页面暂未返回新评论，已保留资料；展开评论区后可以继续，不视为全部完成。';break;}
         await delay(1000,undefined,{signal:c.signal});
       }
       if(r.status==='reading')r.status='interrupted';this.publish();return this.view();})());}
-    catch(e){if(this.record){this.record.status='interrupted';this.record.message=c.signal.aborted?'已停止，已有评论资料保留，可继续读取。':e.message;this.publish();}throw e;}
+    catch(e){if(/Script failed to execute|Execution context was destroyed/i.test(e.message))e=new Error('官方评论页面正在更新或跳转，读取暂时中断；已有资料和位置保留，可继续读取。');if(this.record){this.record.status='interrupted';this.record.message=c.signal.aborted?'已停止，已有评论资料保留，可继续读取。':e.message;this.publish();}throw e;}
     finally{this.active=null;this.pending=null;this.changed();}
   }
 }

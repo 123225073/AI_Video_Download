@@ -89,7 +89,7 @@ function policyPrompt(prompt,direction){
   for(const phrase of direction.split('；')[0].split(/[，,]/))assert.ok(prompt.includes(phrase),'Actual multipart prompt must preserve each compatible style/detail direction');
   // Semantic guardrails, deliberately not a byte-exact policy/prompt snapshot.
   assert.match(prompt,/logo/i);assert.match(prompt,/水印/);assert.match(prompt,/署名|账号/);
-  assert.match(prompt,/全新|原创|重新设计/);assert.match(prompt,/最高优先级|不可覆盖|不能覆盖|不得覆盖/);
+  assert.match(prompt,/局部|用户明确要求/);assert.match(prompt,/最高优先级|不可覆盖|不能覆盖|不得覆盖/);
   assert.match(prompt,/(?:不|禁止|不得|去除|排除|避免)[^。\n]{0,160}(?:logo|Logo|署名|账号|水印)/);
   assert.notEqual(prompt,direction,'User instruction must not replace the mandatory image policy');
 }
@@ -305,13 +305,16 @@ try{
   assert.equal(await page.getByLabel('整篇二创要求',{exact:true}).inputValue(),wholeDirection);
   const previousOutput=whole.assets.find(a=>a.id===whole.assetOrder[0]);
   await page.locator('.compare-image-pair').first().getByRole('button',{name:'AI 修改此图',exact:true}).click();await idle();
-  const secondEdit=await current(),latestOutput=secondEdit.assets.find(a=>a.id===secondEdit.assetOrder[0]);
+  const secondEdit=await current();let latestOutput=secondEdit.assets.find(a=>a.id===secondEdit.assetOrder[0]);
   assert.notEqual(latestOutput.id,previousOutput.id);assert.equal(rootOf(secondEdit,latestOutput).id,originalAssets[0].id);
   if(secondEdit.assetPairs)assert.equal(secondEdit.assetPairs[0].originalAssetId,originalAssets[0].id,'Public pairing must resolve to the root original asset');
   assert.ok(secondEdit.assets.some(a=>a.id===previousOutput.id),'Keep prior generated version');await originalsIntact(originalAssets);
   const single=await app.evaluate(()=>globalThis.fengshaTest.compareFixture.imageRequests.at(-1));policyPrompt(single.prompt,imageDirection);
-  assert.equal(single.image,fs.readFileSync(previousOutput.file).toString('base64'),'Edit the selected generated image');
+  assert.equal(single.image,originalAssets[0].bytes,'Default edits must return to the original image');
   checked('second-image-edit-keeps-same-original-root-and-prior-version');
+  await page.getByLabel('图片参考底图').selectOption('current');await page.getByLabel('图片调整方式').selectOption('redesign');
+  const prior=latestOutput;await page.locator('.compare-image-pair').first().getByRole('button',{name:'AI 修改此图',exact:true}).click();await idle();const continued=await current();latestOutput=continued.assets.find(a=>a.id===continued.assetOrder[0]);
+  const currentRequest=await app.evaluate(()=>globalThis.fengshaTest.compareFixture.imageRequests.at(-1));assert.equal(currentRequest.image,fs.readFileSync(prior.file).toString('base64'));assert.equal(latestOutput.originalAssetId,prior.id);assert.equal(latestOutput.editMode,'redesign');assert.match(currentRequest.prompt,/按用户方向重新设计/);await page.getByLabel('图片参考底图').selectOption('original');checked('explicit-current-image-and-redesign-mode-reach-model-request');
 
   const firstPair=page.locator('.compare-image-pair').first();
   await firstPair.getByRole('button',{name:'移除画面1',exact:true}).click();

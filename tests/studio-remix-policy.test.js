@@ -18,7 +18,7 @@ const {ContentStudio} = sandbox;
 
 function fixture(t,{text=true,image=true,response,fetcher}={}) {
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'fengsha-remix-policy-'));
-  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  t.after(()=>{assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(directory,{recursive:true,force:true});});
   fs.mkdirSync(path.join(directory,'draft'));
   const originalFile=path.join(directory,'draft','original.png');fs.writeFileSync(originalFile,'source-image');
   const initial={id:'draft',source:{platform:'小红书',type:'image',url:'https://example.invalid/note'},
@@ -55,11 +55,11 @@ test('只有核查报告的模型结果不能替换原稿或宣称完成',async 
   assert.ok(d.reviewNotes.includes('未输出可发布稿'));assert.ok(d.reviewNotes.some(n=>n.includes('参考稿说')));
 });
 
-for(const entry of ['single','whole'])test(`${entry}图片入口强制原创策略，保留logo/签名/水印的指令不能覆盖`,async t=>{
+for(const entry of ['single','whole'])test(`${entry}图片入口统一轻调和来源标识约束，保留logo/签名/水印的指令不能覆盖`,async t=>{
   const f=fixture(t),instruction='保留来源媒体logo和账号署名，只抹平台水印，沿用摄影构图';
   const d=entry==='single'?await f.studio.editImage('draft','original',instruction):await f.studio.remix('draft',instruction);
   const prompt=f.calls.images[0].prompt;
-  for(const pattern of [/全新/,/插画/,/排版/,/来源媒体/,/账号/,/logo/i,/署名/,/水印/,/不能.*(?:抹|去|移除).*水印/,/最高优先级|不可覆盖/])assert.match(prompt,pattern);
+  for(const pattern of [/局部/,/摄影/,/版式|排版/,/来源媒体/,/账号/,/logo/i,/署名/,/水印/,/不增加|禁止新增/,/最高优先级|不可覆盖/])assert.match(prompt,pattern);
   assert.notEqual(prompt,instruction);assert.equal(fs.readFileSync(f.originalFile,'utf8'),'source-image');assert.equal(d.assets.length,2);
   assert.equal(d.assets[1].policyPrompt,prompt);assert.equal(d.assets[1].prompt,instruction);
 });
@@ -69,7 +69,7 @@ test('连续编辑与旧链都关联最初原图，公开pairing可审阅当前�
   // Legacy drafts store the previous generated id in originalAssetId.
   const legacyId='legacy',legacyFile=path.join(f.studio.directory,'draft','legacy.png');fs.writeFileSync(legacyFile,'legacy-image');
   const stored=f.data.get('draft');stored.assets.push({id:legacyId,file:legacyFile,kind:'image',origin:'generated',originalAssetId:firstId});stored.assetOrder=[legacyId];f.data.set('draft',stored);
-  const second=await f.studio.editImage('draft',legacyId,'换排版');const current=second.assets.find(a=>a.id===second.assetOrder[0]);
+  const second=await f.studio.editImage('draft',legacyId,'换排版',false,{reference:'current'});const current=second.assets.find(a=>a.id===second.assetOrder[0]);
   assert.equal(current.originalAssetId,legacyId);
   const pair=second.assetPairs[0];assert.equal(pair.originalAssetId,'original');assert.equal(pair.generatedAssetId,current.id);assert.equal(pair.status,'generated');
   assert.deepEqual(Array.from(pair.lineageAssetIds),['original',firstId,legacyId,current.id]);
@@ -98,7 +98,7 @@ test('生成文件缺失时公开pairing标记missing，不能声称全部完成
 
 test('整篇改图接收新标题与新正文数据，不继续沿用来源图旧标题',async t=>{
   const f=fixture(t);const d=await f.studio.remix('draft');const prompt=f.calls.images[0].prompt;
-  assert.ok(prompt.includes(d.title));assert.ok(prompt.includes(JSON.stringify(d.body)));assert.match(prompt,/新标题/);assert.match(prompt,/旧标题/);assert.match(prompt,/数据.*不是指令|数据.*不执行/);
+  assert.ok(prompt.includes(d.title));assert.ok(!prompt.includes(JSON.stringify(d.body)));assert.match(prompt,/新标题/);assert.match(prompt,/替换图中文字/);assert.match(prompt,/数据.*不是指令|数据.*不执行/);
   assert.equal(f.calls.images[0].bytes.toString(),'source-image');
 });
 
@@ -139,8 +139,14 @@ test('Images Edits兼容字段不变且新正文中的恶意指令只能作为�
   await f.studio.editImage('draft','original','用浅蓝色');assert.match(f.calls.images[0].prompt,/数据.*不是指令/);assert.match(f.calls.images[0].prompt,/严禁复制来源媒体/);
 });
 
+test('再次单张修改默认回到真正原图，避免拿错误生成图越改越远',async t=>{
+ const f=fixture(t);const first=await f.studio.editImage('draft','original','去掉来源标识，保持摄影');const previous=first.assetOrder[0];
+ const next=await f.studio.editImage('draft',previous,'保持原图排版，微调颜色');
+ assert.equal(f.calls.images[1].bytes.toString(),'source-image');assert.equal(next.assets.at(-1).originalAssetId,'original');assert.equal(next.assets.at(-1).replacesAssetId,previous);
+});
+
 test('整篇完成后再单张重绘，当前有效新图仍算完成且原图父链保持',async t=>{
   const f=fixture(t);const first=await f.studio.remix('draft');const previous=first.assetOrder[0];
   const d=await f.studio.editImage('draft',previous,'改成浅蓝色插画');
-  assert.equal(d.remixSummary.status,'completed');assert.equal(d.assetPairs[0].status,'generated');assert.equal(d.assets.at(-1).originalAssetId,previous);
+  assert.equal(d.remixSummary.status,'completed');assert.equal(d.assetPairs[0].status,'generated');assert.equal(d.assets.at(-1).originalAssetId,'original');assert.equal(d.assets.at(-1).replacesAssetId,previous);
 });
