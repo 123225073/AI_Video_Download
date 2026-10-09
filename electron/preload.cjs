@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('fengsha', {
   contentAutoRemix:invoke('content-auto-remix'),
   contentVideoFrames:invoke('content-video-frames'),
   contentPublishSubmit:invoke('content-publish-submit'),
-  commentsStart:invoke('comments-start'),commentsMore:invoke('comments-more'),commentsLast:invoke('comments-last'),commentsExport:invoke('comments-export'),commentsShow:invoke('comments-show'),contactPrepare:invoke('contact-prepare'),contactSend:invoke('contact-send'),
+  commentsStart:invoke('comments-start'),commentsMore:invoke('comments-more'),commentsLast:invoke('comments-last'),commentsExport:invoke('comments-export'),commentsShow:invoke('comments-show'),commentsCancel:invoke('comments-cancel'),contactPrepare:invoke('contact-prepare'),contactSend:invoke('contact-send'),
   login: invoke('login'), accounts: invoke('accounts'), addAccount: invoke('account-add'), importAccount: invoke('account-import'), accountAction: invoke('account-action'), environment: invoke('environment'),
   openFile: invoke('open-file'), locateFile: invoke('locate-file'), relocate: invoke('relocate'),
   updateTags: invoke('tags'), openSource: invoke('source'), windowAction: invoke('window'),
