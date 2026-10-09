@@ -51,17 +51,20 @@ export class ContentBrowser {
   constructor(accounts){this.accounts=accounts;this.window=null;this.items=new Map();}
   close(){if(this.window&&!this.window.isDestroyed())this.window.close();this.window=null;}
   show(){if(this.window&&!this.window.isDestroyed()){this.window.show();this.window.focus();}}
-  async open(url, record, signal) {
-    this.close();this.items=new Map();this.recordId=record.id;this.complete=false;
+  async open(url, record, signal, {reuse=false,early=false}={}) {
+    const previous=reuse&&this.window&&!this.window.isDestroyed()&&this.accountId===record.accountId?this.window:null;
+    if(!previous)this.close();this.items=new Map();this.recordId=record.id;this.complete=false;this.scope=record;this.accountId=record.accountId;
     const s=record.accountId?this.accounts.getSession(record.accountId):undefined;
-    const w=this.window=new BrowserWindow({show:!this.hidden,width:1100,height:800,autoHideMenuBar:true,title:'作品搜索 · 完成官方登录或验证后继续',webPreferences:{session:s,partition:s?undefined:`fengsha-content-${record.platform}`,sandbox:true,contextIsolation:true,nodeIntegration:false,autoplayPolicy:'document-user-activation-required'}});
+    const w=this.window=previous||new BrowserWindow({show:!this.hidden,width:1100,height:800,autoHideMenuBar:true,title:'作品搜索 · 完成官方登录或验证后继续',webPreferences:{session:s,partition:s?undefined:`fengsha-content-${record.platform}`,sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,autoplayPolicy:'document-user-activation-required'}});
     w.setMenu(null);w.webContents.setAudioMuted(true);w.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     const allowed=value=>contentNavigation(value,url,record.platform).allowed;let upgrade;
-    for(const event of ['will-navigate','will-redirect'])w.webContents.on(event,(e,u)=>{const next=contentNavigation(u,url,record.platform);if(!next.allowed){e.preventDefault();if(next.upgrade)upgrade=next.upgrade;}});
+    this.navigationCleanup?.();const navigate=(e,u)=>{const next=contentNavigation(u,url,record.platform);if(!next.allowed){e.preventDefault();if(next.upgrade)upgrade=next.upgrade;}};
+    for(const event of ['will-navigate','will-redirect'])w.webContents.on(event,navigate);
+    this.navigationCleanup=()=>{if(!w.isDestroyed())for(const event of ['will-navigate','will-redirect'])w.webContents.removeListener(event,navigate);};
     const pending=new Map(), debuggerApi=w.webContents.debugger;
-    debuggerApi.attach('1.3');
+    if(debuggerApi.isAttached())debuggerApi.detach();debuggerApi.removeAllListeners('message');debuggerApi.attach('1.3');
     debuggerApi.on('message',async(_e,method,p)=>{
-      if(w!==this.window||w.isDestroyed())return;
+      if(w!==this.window||w.isDestroyed()||this.scope!==record)return;
       if(method==='Network.requestWillBeSent'){
         try{const u=new URL(p.request.url),post=JSON.parse(p.request.postData || '{}');
           const search=record.platform==='小红书'&&u.hostname==='edith.xiaohongshu.com'&&u.pathname==='/api/sns/web/v1/search/notes'&&post.keyword===record.keyword;
@@ -74,10 +77,11 @@ export class ContentBrowser {
         const scope=pending.get(p.requestId);pending.delete(p.requestId);if(p.encodedDataLength>6*1024*1024)return;
         try{const b=await debuggerApi.sendCommand('Network.getResponseBody',{requestId:p.requestId});if(b.body.length>8*1024*1024)return;
           const data=JSON.parse(b.base64Encoded?Buffer.from(b.body,'base64').toString('utf8'):b.body);
-          if(w!==this.window)return; let items=[];
+          if(w!==this.window||this.scope!==record)return; let items=[];
           if(scope.platform==='小红书'&&data.success===true){items=(data.data?.items||[]).filter(r=>r.model_type!=='rec_query'&&r.model_type!=='hot_query').map(r=>xhsContent(r,scope.token));if(data.data?.has_more===false)this.complete=true;}
           if(scope.platform==='抖音'&&data.status_code===0){items=(data.data||data.aweme_list||[]).map(r=>douyinContent(r.aweme_info||r));if(data.has_more===0)this.complete=true;}
           for(const item of items.filter(Boolean)){this.items.set(item.id,item);if(this.items.size>1000)this.items.delete(this.items.keys().next().value);}
+          if(items.some(Boolean)&&!signal.aborted&&this.scope===record)this.onProgress?.({items:[...this.items.values()]});
         }catch{} // A navigation can dispose a body; renderer fallback remains bounded.
       }
     });
@@ -85,13 +89,14 @@ export class ContentBrowser {
     // Keep navigation independent of that acknowledgment, as CreatorBrowser does.
     void debuggerApi.sendCommand('Network.enable',{maxResourceBufferSize:6*1024*1024,maxTotalBufferSize:12*1024*1024}).catch(()=>{});
     const abort=()=>this.close();signal.addEventListener('abort',abort,{once:true});
-    try{let next=url;const visited=new Set();for(let attempt=0;attempt<4;attempt++){signal.throwIfAborted();if(visited.has(next))throw Error('官方页面重复跳转，请在官方窗口检查登录或验证');visited.add(next);upgrade=null;try{await w.loadURL(next,{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'});if(!upgrade)break;}catch(e){if(!upgrade)throw e;}if(upgrade&&attempt===3)throw Error('官方页面跳转次数过多');next=upgrade;}}
+    try{let next=url;const visited=new Set();for(let attempt=0;attempt<4;attempt++){signal.throwIfAborted();if(visited.has(next))throw Error('官方页面重复跳转，请在官方窗口检查登录或验证');visited.add(next);upgrade=null;let ready,timer;const dom=new Promise(resolve=>{ready=()=>resolve();w.webContents.once('dom-ready',ready);});const timeout=new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ERR_TIMED_OUT')),30000);});try{await Promise.race([w.loadURL(next,{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'}),...(early?[dom]:[]),timeout]);if(!upgrade)break;}catch(e){if(!upgrade)throw e;}finally{clearTimeout(timer);if(!w.isDestroyed())w.webContents.removeListener('dom-ready',ready);}if(upgrade&&attempt===3)throw Error('官方页面跳转次数过多');next=upgrade;}}
     catch(e){if(signal.aborted)throw new Error('已停止搜索');if(!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(e.message)||w.isDestroyed()||!allowed(w.webContents.getURL())){this.close();throw new Error(contentLoadMessage(e));}}
     finally{signal.removeEventListener('abort',abort);}
     return w;
   }
-  async read(record, signal, initial=false){
-    if(initial||!this.window||this.window.isDestroyed()||this.recordId!==record.id)await this.open(contentSearchURL(record.platform,record.keyword),record,signal);
+  async read(record, signal, initial=false,onProgress=()=>{}){
+    this.onProgress=onProgress;
+    try{if(initial||!this.window||this.window.isDestroyed()||this.recordId!==record.id)await this.open(contentSearchURL(record.platform,record.keyword),record,signal,{early:true});}catch(e){this.onProgress=null;throw e;}
     const w=this.window;let snapshot;const seen=new Set(this.items.keys());let stable=0;
     const abort=()=>this.close();signal.addEventListener('abort',abort,{once:true});
     try{
@@ -99,7 +104,8 @@ export class ContentBrowser {
         signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方搜索窗口已关闭，请重新搜索');
         snapshot=await w.webContents.executeJavaScript(`(${renderedContent.toString()})(${JSON.stringify(record.platform)},${JSON.stringify(record.keyword)})`);
         for(const raw of snapshot.items||[]){const item=contentItem(record.platform,raw);if(item&&!this.items.has(item.id))this.items.set(item.id,item);}
-        if(snapshot.blocked||snapshot.empty||snapshot.complete||this.complete)break;
+        const stop=onProgress({items:[...this.items.values()],needsAction:!!snapshot.blocked,message:snapshot.blocked?snapshot.message:undefined});if(snapshot.blocked)this.show();
+        if(stop||snapshot.blocked||snapshot.empty||snapshot.complete||this.complete)break;
         const enough=[...this.items.values()].filter(r=>r.publishedAt?r.publishedAt>=record.options.from&&r.publishedAt<=record.options.to:record.options.includeUnknown).length>=record.options.limit;
         if(enough)break;
         if([...this.items.keys()].every(id=>seen.has(id)))stable++;else stable=0;
@@ -107,12 +113,12 @@ export class ContentBrowser {
         await w.webContents.executeJavaScript('window.scrollBy(0,Math.max(600,window.innerHeight*.8));');await delay(1000,undefined,{signal});
       }
       return {items:[...this.items.values()],complete:!!(snapshot.empty||snapshot.complete||this.complete),needsAction:!!snapshot.blocked,message:snapshot.blocked?snapshot.message:'已读取官方页面展示的作品；未公开日期的条目单独标记。'};
-    }finally{signal.removeEventListener('abort',abort);}
+    }finally{signal.removeEventListener('abort',abort);this.onProgress=null;}
   }
-  async detail(item,accountId,signal){
+  async detail(item,accountId,signal,{metadataOnly=false,reuse=false}={}){
     if(item.platform==='小红书'){
-      const record={id:'detail-'+item.id,detailId:item.id,platform:item.platform,accountId};const w=await this.open(item.url,record,signal);
-      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);if(result.blocked||result.unavailable)throw new Error(result.message);const found=this.items.get(item.id)||xhsContent(result.note)||contentItem(item.platform,result.detail);if(found?.id===item.id&&found.bodyComplete)return found;await delay(800,undefined,{signal});}
+      const record={id:'detail-'+item.id,detailId:item.id,platform:item.platform,accountId};const w=await this.open(item.url,record,signal,{reuse,early:metadataOnly});
+      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);if(result.blocked||result.unavailable){if(result.blocked)this.show();throw new Error(result.message);}const found=this.items.get(item.id)||xhsContent(result.note)||contentItem(item.platform,result.detail);if(found?.id===item.id&&(metadataOnly?found.publishedAt:found.bodyComplete))return found;await delay(metadataOnly?300:800,undefined,{signal});}
       throw new Error('尚未取得这篇笔记的完整正文，请在官方窗口完成登录后重试克隆');
     }
     return item;
