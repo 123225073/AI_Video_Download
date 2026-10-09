@@ -2,9 +2,10 @@ import { BrowserWindow } from 'electron';
 import { setTimeout as delay } from 'node:timers/promises';
 import { contentItem, xhsContent, douyinContent } from './content-data.js';
 import {contentLoadMessage} from './content-network.js';
+import {contentNavigation} from './content-navigation.js';
 export function contentSearchURL(platform, keyword) {
   const q = encodeURIComponent(keyword);
-  return { '小红书':`https://www.xiaohongshu.com/search_result?keyword=${q}&source=web_explore_feed&type=0`, '抖音':`https://www.douyin.com/search/${q}?type=video`, YouTube:`https://www.youtube.com/results?search_query=${q}&sp=CAI%253D` }[platform];
+  return { '小红书':`https://www.xiaohongshu.com/search_result/?keyword=${q}&source=web_explore_feed&type=0`, '抖音':`https://www.douyin.com/search/${q}?type=video`, YouTube:`https://www.youtube.com/results?search_query=${q}&sp=CAI%253D` }[platform];
 }
 // Only fields needed for the selected work are returned; tokens and storage stay in the official session.
 export function renderedContent(platform, keyword, detail = false) {
@@ -14,6 +15,7 @@ export function renderedContent(platform, keyword, detail = false) {
   if (challenge) return {blocked:true,message:'请在官方窗口完成登录或验证，已有结果保留。',items:[]};
   if (detail) {
     if (platform === '小红书') {
+      if(/页面不见了|笔记不存在|笔记已删除|内容不存在/.test(document.title+' '+body))return {unavailable:true,message:'该笔记已失效或不可访问，其他作品可以继续读取'};
       const state = window.__INITIAL_STATE__?.note?.noteDetailMap;
       const id = here.pathname.match(/\/(?:explore|discovery\/item)\/([a-f\d]{24})/i)?.[1];
       const note = state && Object.values(state).find(v => String(v.note?.noteId || v.note?.note_id || '') === id)?.note;
@@ -24,7 +26,7 @@ export function renderedContent(platform, keyword, detail = false) {
     return {items:[]};
   }
   const validPage = platform === 'YouTube' ? here.hostname === 'www.youtube.com' && here.pathname === '/results' && here.searchParams.get('search_query') === keyword
-    : platform === '小红书' ? ['www.xiaohongshu.com','xiaohongshu.com'].includes(here.hostname) && here.pathname === '/search_result' && here.searchParams.get('keyword') === keyword
+    : platform === '小红书' ? ['www.xiaohongshu.com','xiaohongshu.com'].includes(here.hostname) && here.pathname.replace(/\/+$/,'') === '/search_result' && here.searchParams.get('keyword') === keyword
     : here.hostname === 'www.douyin.com' && decodeURIComponent(here.pathname) === `/search/${keyword}` && here.searchParams.get('type') === 'video';
   if (!validPage) return {blocked:true,message:'官方窗口已离开本次作品搜索，请重新搜索。',items:[]};
   const items=[];
@@ -37,9 +39,11 @@ export function renderedContent(platform, keyword, detail = false) {
   };
   const selector=platform==='YouTube'?'ytd-video-renderer':platform==='小红书'?'.feeds-container .note-item,section.note-item':'[data-e2e="search-video-list"] li,[data-e2e="search-video-item"]';
   for(const card of [...document.querySelectorAll(selector)].filter(visible).slice(0,200)) {
-    const a=[...card.querySelectorAll('a[href]')].find(a=>{try{const u=new URL(a.href);return u.origin===here.origin && (platform==='YouTube'?u.pathname==='/watch'&&u.searchParams.has('v'):platform==='小红书'?/\/(?:explore|discovery\/item)\/[a-f\d]{24}/i.test(u.pathname):/\/video\/\d+/.test(u.pathname));}catch{return false;}});
-    if(!a)continue;const u=new URL(a.href),id=platform==='YouTube'?u.searchParams.get('v'):u.pathname.match(platform==='小红书'?/\/(?:explore|discovery\/item)\/([a-f\d]{24})/i:/\/video\/(\d+)/)?.[1];
-    items.push({id,url:a.href,title:card.querySelector('#video-title,.title,[data-e2e="video-desc"]')?.textContent || a.title || '',author:card.querySelector('#channel-name,.author .name,[data-e2e="video-author"]')?.textContent || '',thumbnail:card.querySelector('img')?.src || '',publishedAt:dateText(card.querySelector('#metadata-line,.time,.date')?.innerText || ''),type:platform==='小红书'&&!card.querySelector('.play-icon,.video-icon,[class*="video"],use[href*="video"],use[xlink\\:href*="video"]')?'image':'video'});
+    const links=[...card.querySelectorAll('a[href]')].filter(a=>{try{const u=new URL(a.href);return u.origin===here.origin && (platform==='YouTube'?u.pathname==='/watch'&&u.searchParams.has('v'):platform==='小红书'?/^\/(?:explore|discovery\/item|search_result)\/[a-f\d]{24}\/?$/i.test(u.pathname):/\/video\/\d+/.test(u.pathname));}catch{return false;}});
+    const a=platform==='小红书'?links.find(a=>new URL(a.href).searchParams.has('xsec_token'))||links[0]:links[0];
+    if(!a)continue;const u=new URL(a.href),id=platform==='YouTube'?u.searchParams.get('v'):u.pathname.match(platform==='小红书'?/\/(?:explore|discovery\/item|search_result)\/([a-f\d]{24})/i:/\/video\/(\d+)/)?.[1];
+    if(platform==='小红书'&&u.pathname.startsWith('/search_result/'))u.pathname='/explore/'+id;
+    items.push({id,url:u.href,title:card.querySelector('#video-title,.title,[data-e2e="video-desc"]')?.textContent || a.title || '',author:card.querySelector('#channel-name,.author .name,[data-e2e="video-author"]')?.textContent || '',thumbnail:card.querySelector('img')?.src || '',publishedAt:dateText(card.querySelector('#metadata-line,.time,.date')?.innerText || ''),type:platform==='小红书'&&!card.querySelector('.play-icon,.video-icon,[class*="video"],use[href*="video"],use[xlink\\:href*="video"]')?'image':'video'});
   }
   return {items,empty:/没有搜索结果|没有找到相关笔记|No results found/.test(body)&&!items.length,complete:/没有更多了|没有更多作品/.test(body)};
 }
@@ -52,8 +56,8 @@ export class ContentBrowser {
     const s=record.accountId?this.accounts.getSession(record.accountId):undefined;
     const w=this.window=new BrowserWindow({show:!this.hidden,width:1100,height:800,autoHideMenuBar:true,title:'作品搜索 · 完成官方登录或验证后继续',webPreferences:{session:s,partition:s?undefined:`fengsha-content-${record.platform}`,sandbox:true,contextIsolation:true,nodeIntegration:false,autoplayPolicy:'document-user-activation-required'}});
     w.setMenu(null);w.webContents.setAudioMuted(true);w.webContents.setWindowOpenHandler(()=>({action:'deny'}));
-    const host=new URL(url).hostname,allowed=value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&(u.hostname===host || record.platform==='小红书'&&u.hostname==='xiaohongshu.com');}catch{return false;}};
-    for(const event of ['will-navigate','will-redirect'])w.webContents.on(event,(e,u)=>{if(!allowed(u))e.preventDefault();});
+    const allowed=value=>contentNavigation(value,url,record.platform).allowed;let upgrade;
+    for(const event of ['will-navigate','will-redirect'])w.webContents.on(event,(e,u)=>{const next=contentNavigation(u,url,record.platform);if(!next.allowed){e.preventDefault();if(next.upgrade)upgrade=next.upgrade;}});
     const pending=new Map(), debuggerApi=w.webContents.debugger;
     debuggerApi.attach('1.3');
     debuggerApi.on('message',async(_e,method,p)=>{
@@ -81,7 +85,7 @@ export class ContentBrowser {
     // Keep navigation independent of that acknowledgment, as CreatorBrowser does.
     void debuggerApi.sendCommand('Network.enable',{maxResourceBufferSize:6*1024*1024,maxTotalBufferSize:12*1024*1024}).catch(()=>{});
     const abort=()=>this.close();signal.addEventListener('abort',abort,{once:true});
-    try{signal.throwIfAborted();await w.loadURL(url,{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'});}
+    try{let next=url;const visited=new Set();for(let attempt=0;attempt<4;attempt++){signal.throwIfAborted();if(visited.has(next))throw Error('官方页面重复跳转，请在官方窗口检查登录或验证');visited.add(next);upgrade=null;try{await w.loadURL(next,{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'});if(!upgrade)break;}catch(e){if(!upgrade)throw e;}if(upgrade&&attempt===3)throw Error('官方页面跳转次数过多');next=upgrade;}}
     catch(e){if(signal.aborted)throw new Error('已停止搜索');if(!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(e.message)||w.isDestroyed()||!allowed(w.webContents.getURL())){this.close();throw new Error(contentLoadMessage(e));}}
     finally{signal.removeEventListener('abort',abort);}
     return w;
@@ -108,7 +112,7 @@ export class ContentBrowser {
   async detail(item,accountId,signal){
     if(item.platform==='小红书'){
       const record={id:'detail-'+item.id,detailId:item.id,platform:item.platform,accountId};const w=await this.open(item.url,record,signal);
-      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);if(result.blocked)throw new Error(result.message);const found=this.items.get(item.id)||xhsContent(result.note)||contentItem(item.platform,result.detail);if(found?.id===item.id&&found.bodyComplete)return found;await delay(800,undefined,{signal});}
+      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);if(result.blocked||result.unavailable)throw new Error(result.message);const found=this.items.get(item.id)||xhsContent(result.note)||contentItem(item.platform,result.detail);if(found?.id===item.id&&found.bodyComplete)return found;await delay(800,undefined,{signal});}
       throw new Error('尚未取得这篇笔记的完整正文，请在官方窗口完成登录后重试克隆');
     }
     return item;

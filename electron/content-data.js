@@ -46,9 +46,16 @@ export function contentItem(platform, raw) {
 export function xhsContent(raw, token = '') {
   const r = raw?.note_card || raw?.noteCard || raw; if (!r) return null;
   const id = String(raw.id || r.note_id || r.noteId || '');
-  const images = (r.image_list || r.imageList || []).map(i => i.info_list?.find(v => v.image_scene === 'WB_DFT')?.url || i.url_default || i.urlDefault || i.url);
-  const security = raw.xsec_token || token;
+  const images = (r.image_list || r.imageList || []).map(i => (i.info_list||i.infoList)?.find(v => (v.image_scene||v.imageScene) === 'WB_DFT')?.url || i.url_default || i.urlDefault || i.url);
+  const security = raw.xsec_token || r.xsecToken || token;
   return contentItem('小红书', { id, url:`https://www.xiaohongshu.com/explore/${id}${security ? '?xsec_token='+encodeURIComponent(security)+'&xsec_source=pc_search' : ''}`, title:r.title || r.display_title || r.desc?.slice(0,80), text:r.desc || '', author:r.user?.nickname, images, thumbnail:r.cover?.url_default || r.cover?.url || images[0], type:r.type === 'normal' ? 'image' : 'video', publishedAt:r.time || r.create_time, likes:Number(r.interact_info?.liked_count), bodyComplete:!!r.desc && !!r.time });
+}
+export function mergeContent(previous,item){
+  if(!previous)return item;
+  const keep=previous.bodyComplete&&!item.bodyComplete;
+  return {...previous,...item,publishedAt:item.publishedAt||previous.publishedAt,bodyComplete:previous.bodyComplete||item.bodyComplete,
+    text:keep?previous.text:item.text||previous.text,images:keep?previous.images:item.images?.length?item.images:previous.images,
+    url:item.url.includes('xsec_token=')?item.url:previous.url.includes('xsec_token=')?previous.url:item.url};
 }
 export function douyinContent(r) {
   if (!r) return null; const id = String(r.aweme_id || ''), images = (r.images || r.image_post_info?.images || []).map(i=>i.url_list?.[0] || i.display_image?.url_list?.[0]);

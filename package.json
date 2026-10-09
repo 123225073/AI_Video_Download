@@ -1,6 +1,6 @@
 {
   "name": "fengsha-video-downloader",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "风沙全平台视频下载器：链接识别、批量下载与本地媒体管理",
   "private": true,
   "type": "module",
@@ -26,7 +26,8 @@
     "cli": "node cli/fengsha.mjs",
     "test:cli": "node scripts/cli-e2e.mjs",
     "test:content": "node scripts/content-e2e.mjs",
-    "test:voice": "node scripts/voice-e2e.mjs"
+    "test:voice": "node scripts/voice-e2e.mjs",
+    "test:navigation": "node scripts/content-navigation-e2e.mjs"
   },
   "dependencies": {
     "yaml": "^2.9.1",

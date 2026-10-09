@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { contentOptions, matchingContent, biliContent, wechatContent } from './content-data.js';
+import { contentOptions, matchingContent, biliContent, wechatContent,mergeContent } from './content-data.js';
 export class ContentSearch {
   constructor({accounts,creators,userSearch,bilibili,wechat,browser,changed=()=>{},store}){Object.assign(this,{accounts,creators,userSearch,bilibili,wechat,browser,changed,store});const last=store.get('meta','lastContentSearch');this.record=last?store.get('content-search',last.id):null;if(this.record?.status==='searching')this.record.status='interrupted';this.active=null;}
   view(){if(!this.record)return null;const {accountId,next,all,...r}=this.record;return {...r,busy:!!this.active,items:matchingContent(all,r.options),unknown:all.filter(i=>!i.publishedAt).length,canContinue:['ready','needs-action','interrupted'].includes(r.status)};}
@@ -15,14 +15,15 @@ export class ContentSearch {
   async read(signal,initial=false){const r=this.record;const check=()=>{signal.throwIfAborted();if((this.accounts.active(r.platform)?.id||null)!==r.accountId)throw new Error('账号已切换，请重新搜索，避免混合不同账号的数据');};
     check();let complete=false,needsAction=false,message='';const map=new Map(r.all.map(i=>[i.id,i]));
     if(['小红书','抖音','YouTube'].includes(r.platform)){
-      const page=await this.browser.read(r,signal,initial);check();for(const item of page.items)map.set(item.id,item);complete=page.complete;needsAction=page.needsAction;message=page.message;
+      const page=await this.browser.read(r,signal,initial);check();for(const item of page.items)map.set(item.id,mergeContent(map.get(item.id),item));complete=page.complete;needsAction=page.needsAction;message=page.message;
+      r.all=[...map.values()];r.scanned=r.all.length;this.store.put('content-search',r.id,r);this.store.put('meta','lastContentSearch',{id:r.id});this.store.flush();this.changed();
       // Publication time is in the note detail, not necessarily the search card.
       if(r.platform==='小红书'&&!needsAction){
         const unknown=[...map.values()].filter(i=>!i.publishedAt).slice(0,r.options.limit);
         const detailBrowser=new this.browser.constructor(this.accounts);detailBrowser.hidden=true;
         try{for(const item of unknown){check();if(matchingContent([...map.values()],r.options).length>=r.options.limit)break;
           try{const detail=await detailBrowser.detail(item,r.accountId,signal);map.set(item.id,{...item,...detail});}
-          catch(e){if(signal.aborted)throw e;message='部分笔记未能确认发布时间；日期未知的条目未计入时间范围。';break;}
+          catch(e){if(signal.aborted)throw e;message='部分笔记未能确认发布时间；日期未知的条目未计入时间范围。';if(/登录|验证|限制|429/.test(e.message))break;}
         }}finally{detailBrowser.close();}
       }
     }else{
