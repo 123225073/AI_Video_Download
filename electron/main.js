@@ -101,7 +101,8 @@ else {
   handle('content-search',(platform,keyword,options)=>{if(parseProgress||(contentStudio.active||contentStudio.remixController||comments.active||contacts.active))throw new Error('正在识别或二创，请等待完成');return contentSearch.start(platform,keyword,options);});
   handle('content-more',id=>{if(parseProgress||(contentStudio.active||contentStudio.remixController||comments.active||contacts.active))throw new Error('正在识别或二创，请等待完成');return contentSearch.more(id);});
   handle('content-last',()=>contentSearch.view());
-  handle('content-cancel',()=>{contentSearch.cancel();contentStudio.cancel();comments.cancel();contacts.cancel();voice.cancel();});
+  handle('content-cancel',async(_id)=>{contentSearch.cancel();comments.cancel();contacts.cancel();voice.cancel();await contentStudio.cancel(_id);});
+  handle('content-transcript-resume',id=>contentStudio.resumeTranscript(id));
   handle('content-show',()=>contentSearch.show());
   handle('content-clone',(recordId,itemId,options={})=>{if(comments.active||contacts.active||creators.progress()||parseProgress)throw new Error('当前采集或识别正在运行，请等待完成');return contentStudio.cloneFlow(recordId,itemId,options,bin);});
   handle('content-drafts',()=>contentStudio.list());

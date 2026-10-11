@@ -29,10 +29,21 @@ export class ContentStudio {
   get(id){const d=this.store.get('content-draft',id);if(!d)throw new Error('克隆稿不存在');
     if(d.transcriptionId&&d.status==='transcribing'){
       const t=this.store.get('transcription',d.transcriptionId);
-      if(t?.status==='completed'&&t.transcript){d.body=t.transcript;d.original.text=t.transcript;d.transcriptPartial=false;d.status='draft';d.message='视频口播文字已提取，可编辑内容。';d.revision++;this.store.put('content-draft',id,d);this.store.flush();}
-      else if(['failed','cancelled','no-speech','paused'].includes(t?.status)){d.status='needs-action';d.message=t.message || '视频文字提取未完成';this.store.put('content-draft',id,d);this.store.flush();}
-      else{d.message=t?.message || '正在提取视频文字';if(t?.transcript){d.body=t.transcript;d.transcriptPartial=true;}};
+      const running=['queued','preparing','subtitles','transcribing','correcting','summarizing','translating'].includes(t?.status);
+      const complete=!!t?.transcript?.trim()&&!t.transcriptPartial&&['ready','archived','completed','ai-failed'].includes(t.status);
+      const previousText=d.original.text||'';
+      if(t?.transcript){
+        // Only advance an untouched editable copy; preserve any user-written body.
+        if(!d.body||d.body===previousText)d.body=t.transcript;
+        d.original.text=t.transcript;d.transcriptPartial=!complete;
+      }
+      if(complete||!running){
+        d.status=complete?'draft':'needs-action';d.extractionEndedAt=t?.completedAt||t?.updatedAt||Date.now();
+        d.message=complete?'原视频文案已提取，右侧为可编辑副本；尚未执行 AI 二创。':(t?.message||'关联转录记录不存在，请重新克隆原作品');
+        d.revision++;this.store.put('content-draft',id,d);this.store.flush();
+      }else d.message=t?.message||'正在提取视频文字';
     }
+    const extractionProgress=d.transcriptionId?{draftId:d.id,startedAt:d.extractionStartedAt||d.createdAt,endedAt:d.extractionEndedAt,state:d.status==='transcribing'?'running':d.status==='needs-action'?'needs-action':'completed',running:d.status==='transcribing',stage:'source',label:d.message,visited:['source','assets']}:null;
     const audio=this.voice?.review(d.body),assets=d.assets.map(a=>({...a,preview:`fengsha-media://draft-${d.id}/${a.id}`}));
     const assetPairs=buildAssetPairs(assets,d.assetOrder,a=>!!a.file&&fs.existsSync(a.file));
     let remixSummary=d.remixSummary,message=d.message;
@@ -40,19 +51,36 @@ export class ContentStudio {
       const generated=assetPairs.filter(p=>p.status==='generated').length;
       if(generated<remixSummary.images.total||assetPairs.some(p=>p.status!=='generated')){remixSummary={...remixSummary,status:'partial',images:{...remixSummary.images,generated}};message='部分二创图片缺失或未生成，尚未全部完成；原始素材保留。';}
     }
-    return {...d,message,remixSummary,assetPairs,videoCurrent:!!d.videoFile&&d.videoRevision===d.revision&&(!audio||d.videoAudioHash===audio.hash),voiceReview:audio?{...audio,approved:d.voiceApproval?.hash===audio.hash,audioReady:d.generatedAudioHash===audio.audioHash&&!!d.generatedAudioFile&&fs.existsSync(d.generatedAudioFile),preview:`fengsha-media://draft-${d.id}/audio`}:null,assets};
+    return {...d,message,remixSummary,assetPairs,extractionProgress,videoCurrent:!!d.videoFile&&d.videoRevision===d.revision&&(!audio||d.videoAudioHash===audio.hash),voiceReview:audio?{...audio,approved:d.voiceApproval?.hash===audio.hash,audioReady:d.generatedAudioHash===audio.audioHash&&!!d.generatedAudioFile&&fs.existsSync(d.generatedAudioFile),preview:`fengsha-media://draft-${d.id}/audio`}:null,assets};
   }
   save(id,raw){const d=this.get(id);if(this.active||this.remixController)throw new Error('正在克隆或改图，请等待完成');if(raw.revision!==d.revision)throw new Error('稿件已更新，请重新读取后编辑');
     const title=safeTitle(raw.title),body=typeof raw.body==='string'?raw.body:'';
     if(!title||body.length>200000)throw new Error('标题不能为空，正文不能超过 20 万字');
     const assets=raw.assetIds;if(!Array.isArray(assets)||assets.length>50||new Set(assets).size!==assets.length||assets.some(id=>!d.assets.some(a=>a.id===id)))throw new Error('素材排序无效，请重新读取稿件');
     const tags=typeof raw.tags==='string'?raw.tags.trim().slice(0,1000):'';const visibility=['public','private'].includes(raw.visibility)?raw.visibility:'public';
-    const next={...d,title,body,tags,visibility,assetOrder:assets,revision:d.revision+1,updatedAt:Date.now()};delete next.assets;delete next.voiceReview;delete next.videoCurrent;delete next.assetPairs;next.assets=d.assets.map(({preview,...a})=>a);
+    const next={...d,title,body,tags,visibility,assetOrder:assets,revision:d.revision+1,updatedAt:Date.now()};delete next.extractionProgress;delete next.assets;delete next.voiceReview;delete next.videoCurrent;delete next.assetPairs;next.assets=d.assets.map(({preview,...a})=>a);
     this.store.put('content-draft',id,next);this.store.flush();this.changed();return this.get(id);
   }
   async exclusive(fn,remix=false){if(this.active||this.voice?.active||this.search.active||this.remixController&&!remix)throw new Error('正在搜索、克隆或改图，请等待当前操作结束');const c=this.active=remix?this.remixController:this.flow||new AbortController();this.changed();try{const result=await(this.pending=fn(c.signal));if(!this.flow&&!this.remixController)this.finish('completed','当前内容已保存');return result;}catch(e){this.finish(c.signal.aborted?'cancelled':'failed',c.signal.aborted?'已停止，已取得内容保留':e.message);throw e;}finally{this.active=null;this.pending=null;this.changed();}}
-  cancel(){this.flow?.abort();this.active?.abort();this.remixController?.abort();this.browser.close();}
-  async close(){this.cancel();await this.pending?.catch(()=>{});this.browser.close();}
+  async cancel(id){
+    this.flow?.abort();this.active?.abort();this.remixController?.abort();this.browser.close();
+    const drafts=id?[this.store.get('content-draft',id)]:this.store.list('content-draft');
+    for(const raw of drafts){
+      if(raw?.status!=='transcribing')continue;
+      const d=this.get(raw.id);if(d.status!=='transcribing')continue;
+      d.status='needs-action';d.extractionEndedAt=Date.now();d.message='已停止提取，已取得的原文和素材保留；可继续提取。';d.revision++;
+      this.checkpoint(d);
+      await this.transcriptions.action(d.transcriptionId,'cancel');
+    }
+    this.changed();
+  }
+  resumeTranscript(id){
+    const d=this.get(id);if(d.status!=='needs-action'||!d.transcriptionId)throw Error('当前稿件无需继续提取');
+    this.transcriptions.get(d.transcriptionId);
+    d.status='transcribing';d.extractionStartedAt=Date.now();delete d.extractionEndedAt;d.revision++;this.checkpoint(d);
+    return this.transcriptions.action(d.transcriptionId,'retry').then(()=>this.get(id));
+  }
+  async close(){await this.cancel();await this.pending?.catch(()=>{});this.browser.close();}
   async autoRemix(id,bin,instructions=''){
     if(!this.ai.config('text').hasKey&&!this.ai.config('image').hasKey){const d=this.get(id);d.message='二创未执行，原稿已保存。请先配置文本或图片服务，再点击“整篇 AI 二创”。';d.remixSummary={status:'partial',text:{status:'not-configured'},images:{total:d.assetOrder.length,generated:0,generatedAssetIds:[],status:'not-configured',missingOriginals:0}};this.checkpoint(d);return this.get(id);}
     await this.exclusive(async signal=>{let d=this.get(id);while(d.status==='transcribing'){signal.throwIfAborted();await delay(1000,undefined,{signal});d=this.get(id);}if(d.status!=='draft')throw new Error(d.message||'请先完成视频转录');});
@@ -102,7 +130,7 @@ export class ContentStudio {
       const urls=item.images.length?item.images:item.thumbnail?[item.thumbnail]:[];const problems=[];
       this.step(id,'assets','正在逐张保存原作品画面',{current:0,total:urls.length});
       for(const url of urls){signal.throwIfAborted();try{const bytes=await assetBytes(url,this.fetcher,signal);const assetId=randomUUID(),file=path.join(dir,assetId+'.png');await this.writeImage(bytes,file,signal);signal.throwIfAborted();draft.assets.push({id:assetId,file,kind:'image',source:url,origin:'original'});draft.assetOrder.push(assetId);draft.revision++;this.checkpoint(draft);}catch(e){if(signal.aborted)throw e;problems.push(e.message);}this.job.current++;this.job.label=`正在保存原画面 ${this.job.current} / ${urls.length}`;this.changed();}
-      if(item.type==='video'){const t=this.transcriptions.start({url:item.url,title:item.title});draft.transcriptionId=t.id;draft.status='transcribing';draft.message='正在提取视频口播文字；画面素材与文案分别保留。';this.step(id,'transcript','正在提取视频口播文字');}
+      if(item.type==='video'){const t=this.transcriptions.start({url:item.url,title:item.title});draft.transcriptionId=t.id;draft.extractionStartedAt=Date.now();draft.status='transcribing';draft.message='正在提取视频口播文字；画面素材与文案分别保留。';this.step(id,'transcript','正在提取视频口播文字');}
       else{draft.status='draft';draft.message=problems.length?`${problems.length} 张图片未取得，可添加自己的图片；原始素材链接保留。`:'已克隆正文和图片，可进行二创修改。';}
       if(problems.length)draft.assetWarnings=problems;draft.revision++;this.checkpoint(draft);return this.get(id);
     }catch(e){draft.status='needs-action';draft.message=signal.aborted?'克隆已停止，已取得正文和图片保留；可重新克隆原作品':e.message;this.checkpoint(draft);throw e;}
