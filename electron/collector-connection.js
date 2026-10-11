@@ -34,7 +34,7 @@ export class CollectorConnection {
   constructor(store, bin, directory, changed, options = {}) {
     this.store=store; this.bin=bin; this.directory=directory; this.changed=changed; this.fetch=options.request || fetch; this.system=options.system || this.runSystem.bind(this); this.guard=options.guard || this.startGuard.bind(this); this.consent=options.consent || (async()=>false); this.waitMs=options.waitMs ?? 120000; this.members=new Set(); this.state={phase:'idle',label:'未使用时保持原网络设置'}; this.started=null; this.ending=null; this.leaseFile=null; this.controller=null; this.closed=false; this.worker=null;
     fs.mkdirSync(directory,{recursive:true});
-    this.routing=options.routing || new ClashRoute();
+    this.routing=options.routing || new ClashRoute();this.openPage=options.openPage;
   }
   config() { return { enabled: true, automatic: true, baseUrl:'http://127.0.0.1:2022', ...this.store.get('collector-config','wechat') }; }
   status() { const policy=this.store.get('collector-policy','automatic');return {...this.state, activeTasks:this.members.size, bundled:fs.existsSync(path.join(this.bin,'collector','wx_video_download.exe')), allowed:Boolean(policy?.allowed && (!this.certificate || policy.certificateFingerprint===this.certificate.fingerprint))}; }
@@ -147,6 +147,7 @@ export class CollectorConnection {
     if(plan){if(JSON.stringify(applied.proxy)!==JSON.stringify(inspected.proxy))throw new Error('连接准备期间系统代理发生变化，视频号采集已停止，请重试');}
     else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('系统代理切换未生效或已被其他程序修改，微信采集已停止；请检查代理软件的系统代理设置后再试');
     this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续');
+    if(this.openPage){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续搜索。若未自动进入，请在连接提示中打开视频号。',{needsPage:true});try{await this.openPage(signal);}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号；无需关闭现有代理。',{needsPage:true});}}
     const deadline=Date.now()+this.waitMs;
     do { if(signal.aborted) throw new Error('CANCELLED');if(await this.online()){this.update('connected','微信已连接 · 当前任务结束后自动恢复原网络');return;}await delay(1000,signal); } while(Date.now()<deadline);
     throw new Error('未等到微信视频号页面连接，原网络将自动恢复；请重新进入微信视频号页面后再试');

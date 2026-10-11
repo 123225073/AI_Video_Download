@@ -5,7 +5,7 @@ export class ContentSearch {
   view(){if(!this.record)return null;const {accountId,next,all,...r}=this.record;return {...r,busy:!!this.active,items:matchingContent(all,r.options),unknown:all.filter(i=>!i.publishedAt).length,canContinue:['ready','needs-action','interrupted'].includes(r.status)};}
   publish(){if(!this.record)return;this.store.put('content-search',this.record.id,this.record);this.store.put('meta','lastContentSearch',{id:this.record.id});this.store.flush();this.changed();}
   show(){(this.actionBrowser||this.browser).show();}
-  cancel(){this.active?.abort();this.browser.close();this.actionBrowser?.close();this.actionBrowser=null;}
+  cancel(){const running=!!this.active;this.active?.abort();this.browser.close();this.detailBrowser?.close();this.actionBrowser?.close();this.actionBrowser=null;if(running&&this.record){this.record.status='interrupted';this.record.message='已停止，已有结果保留，可继续读取。';this.publish();}}
   async close(){this.cancel();await this.pending?.catch(()=>{});}
   async run(fn){if(this.active||this.creators.progress()||this.userSearch.active)throw new Error('正在搜索或读取作品，请先停止当前操作');const c=this.active=new AbortController();try{return await(this.pending=fn(c.signal));}catch(e){if(this.record){this.record.status='interrupted';this.record.message=c.signal.aborted?'已停止，已有结果保留，可继续读取。':e.message;this.store.put('content-search',this.record.id,this.record);this.store.put('meta','lastContentSearch',{id:this.record.id});this.store.flush();this.changed();}throw e;}finally{this.active=null;this.pending=null;this.changed();}}
   start(platform,keyword,options){const valid=contentOptions(platform,keyword,options);return this.run(async signal=>{
@@ -20,20 +20,21 @@ export class ContentSearch {
     if(['小红书','抖音','YouTube'].includes(r.platform)){
       // One detail reader overlaps the list reader; no burst of parallel detail requests.
       let worker=null,detailError=null,listFailed=false;const checked=new Set();
-      const detailBrowser=r.platform==='小红书'?new this.browser.constructor(this.accounts):null;
+      const detailBrowser=['小红书','YouTube'].includes(r.platform)&&typeof this.browser.detail==='function'?new this.browser.constructor(this.accounts):null;
+      this.detailBrowser=detailBrowser;
       if(detailBrowser)detailBrowser.hidden=true;
       const pump=()=>{if(!detailBrowser||worker||needsAction||listFailed||signal.aborted)return;
         worker=(async()=>{for(;;){check();if(needsAction||listFailed||checked.size>=r.options.limit||matchingContent([...map.values()],r.options).length>=r.options.limit)break;
           const item=[...map.values()].find(i=>!i.publishedAt&&!checked.has(i.id));if(!item)break;checked.add(item.id);
           try{const detail=await detailBrowser.detail(item,r.accountId,signal,{metadataOnly:true,reuse:true});check();map.set(item.id,mergeContent(map.get(item.id),detail));}
-          catch(e){if(signal.aborted)throw e;message='部分笔记未能确认发布时间；日期未知的条目未计入时间范围。';if(/登录|验证|限制|429/.test(e.message)){needsAction=true;message=e.message;this.actionBrowser=detailBrowser;detailBrowser.show();}}
+          catch(e){if(signal.aborted)throw e;message='部分作品未能确认发布时间；日期未知的条目未计入时间范围。';if(/登录|验证|限制|429/.test(e.message)){needsAction=true;message=e.message;this.actionBrowser=detailBrowser;detailBrowser.show();}}
           progress({message:needsAction?message:`正在后台读取并确认日期：已读取 ${map.size} 条，符合条件 ${matchingContent([...map.values()],r.options).length} 条…`});
         }})().catch(e=>{detailError=e;}).finally(()=>{worker=null;});
       };
-      const incremental=page=>{progress(page);if(page.needsAction)needsAction=true;pump();return needsAction||matchingContent([...map.values()],r.options).length>=r.options.limit;};
+      const incremental=page=>{progress(page);if(page.needsAction)needsAction=true;if(!page.metadataPending)pump();return needsAction||matchingContent([...map.values()],r.options).length>=r.options.limit;};
       try{const page=await this.browser.read(r,signal,initial,incremental);check();progress(page);complete=page.complete;needsAction=needsAction||page.needsAction;message=needsAction?message||page.message:message||page.message;
         pump();while(worker)await worker;if(detailError)throw detailError;
-      }catch(e){listFailed=true;throw e;}finally{if(worker)await worker;if(detailBrowser&&this.actionBrowser!==detailBrowser)detailBrowser.close();}
+      }catch(e){listFailed=true;detailBrowser?.close();throw e;}finally{if(worker)await worker;if(detailBrowser&&this.actionBrowser!==detailBrowser)detailBrowser.close();if(this.detailBrowser===detailBrowser)this.detailBrowser=null;}
     }else{
       for(let p=0;p<10;p++){
         check();let items,next;

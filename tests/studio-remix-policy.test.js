@@ -16,6 +16,10 @@ vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync('electron/content-studio.js','utf8').replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'')+'\nglobalThis.ContentStudio=ContentStudio',sandbox);
 const {ContentStudio} = sandbox;
 
+test('仅文案可使用当前成稿且不调用图片服务、不更改任何图片',async t=>{const f=fixture(t,{image:false});const stored=f.data.get('draft');stored.title='手工改过的标题';stored.body='当前成稿下午开放，每次六人。';f.data.set('draft',stored);const d=await f.studio.remix('draft','口吻自然',{scope:'text',reference:'current'});assert.equal(f.calls.text[0].user.sourceText,stored.body);assert.equal(f.calls.text[0].user.sourceTitle,stored.title);assert.equal(f.calls.images.length,0);assert.deepEqual(Array.from(d.assetOrder),['original']);assert.equal(d.assets.length,1);assert.equal(d.remixSummary.status,'completed');});
+test('仅图片不调用文本服务、不更改正文，并可继续参考当前生成图',async t=>{const f=fixture(t,{text:false});const first=await f.studio.editImage('draft','original','轻微调整');const d=await f.studio.remix('draft','只调色',{scope:'images',reference:'current'});assert.equal(f.calls.text.length,0);assert.equal(f.calls.images[1].bytes.toString(),'generated-1');assert.equal(d.body,first.body);assert.equal(d.title,first.title);assert.equal(d.remixSummary.status,'completed');});
+test('文案原稿模式保持原始输入；非法范围和参考模式不能消费模型',async t=>{const f=fixture(t);await assert.rejects(f.studio.remix('draft','',{scope:'invalid'}),/范围/);await assert.rejects(f.studio.remix('draft','',{reference:'invalid'}),/参考/);assert.equal(f.calls.text.length,0);assert.equal(f.calls.images.length,0);await f.studio.remix('draft','自然',{scope:'text',reference:'original'});assert.equal(f.calls.text[0].user.sourceText,f.initial.original.text);});
+
 function fixture(t,{text=true,image=true,response,fetcher}={}) {
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'fengsha-remix-policy-'));
   t.after(()=>{assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(directory,{recursive:true,force:true});});
@@ -33,10 +37,10 @@ function fixture(t,{text=true,image=true,response,fetcher}={}) {
   return {studio,calls,data,initial,originalFile};
 }
 
-test('运行时文本工作流输出独立小红书稿，事实/动机/钩子/节奏/互动及虚构边界优先于用户要求',async t=>{
+test('运行时轻微润色保留原意口吻钩子格式及事实边界',async t=>{
   const f=fixture(t);await f.studio.rewrite('draft','虚构我去过，补一个调查数据，署名某新闻来源');
   const system=f.calls.text[0].system;
-  for(const pattern of [/事实/,/阅读动机/,/钩子/,/信息节奏/,/互动/,/标签/,/独立.*发布/,/不.*(?:虚构|编造).*来源/,/经历/,/新数据/,/reviewNotes/,/不.*(?:强求|强制|过度).*扩写/])assert.match(system,pattern);
+  for(const pattern of [/事实/,/保留原意/,/钩子/,/保留.*节奏/,/互动/,/标签/,/编辑发布/,/不新增.*来源/,/经历/,/数据/,/reviewNotes/,/短文不得扩写/])assert.match(system,pattern);
   assert.deepEqual(f.studio.get('draft').original,f.initial.original);
   assert.equal(f.studio.get('draft').body.includes('每次限六人'),true);
 });

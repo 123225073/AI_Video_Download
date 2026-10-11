@@ -1,3 +1,14 @@
+export const officialUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
+// Runs inside the official page. Never return Cookie values or private page data.
+export function xhsLoginState() {
+  const visible = el => !!el?.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
+  const modal = [...document.querySelectorAll('.login-modal, [class*="login-container"], [class*="login-modal"]')].find(visible);
+  const text = modal?.innerText || '';
+  if (/设备登录超限/.test(text)) return { loggedIn: false, blocked: true, reason: 'device-limit', message: '小红书提示电脑设备登录超限，当前会话已被平台拒绝，请在官方窗口重新登录。' };
+  if (modal) return { loggedIn: false, blocked: true, reason: 'login', message: '请先在小红书官方窗口完成登录，再点击完成登录。' };
+  const me = [...document.querySelectorAll('.side-bar a[href*="/user/profile/"],nav a[href*="/user/profile/"],aside a[href*="/user/profile/"]')].some(el => visible(el) && /^我$/.test(el.innerText.trim()));
+  return { loggedIn: me, blocked: !me, reason: me ? '' : 'unconfirmed', message: me ? '' : '尚未确认小红书登录，请在官方窗口完成登录后再试。' };
+}
 const domains = {
   '视频号': ['tencent.com', 'qq.com', 'weixin.qq.com'],
   '抖音': ['douyin.com', 'iesdouyin.com'],

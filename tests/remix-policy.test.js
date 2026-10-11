@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {imageRemixPrompt,normalizeRemixResult,resolveAssetLineage,buildAssetPairs} from '../electron/remix-policy.js';
+import {textRemixSystemPrompt,imageRemixPrompt,normalizeRemixResult,resolveAssetLineage,buildAssetPairs} from '../electron/remix-policy.js';
 
 test('默认轻调保留原图摄影和布局，不强制插画，不塞入正文小字',()=>{
  const p=imageRemixPrompt('尽量保持原图，只改小地方，去掉来源logo',{title:'新标题',body:'不应塞入画面的长正文'});
@@ -48,3 +48,8 @@ test('pairing按当前排序返回原图/生成图，未生成、断链和文件
   assert.deepEqual(pairs.map(p=>p.status),['missing','not-generated','untraceable','missing']);
   assert.equal(pairs[0].original.preview,'original');assert.equal(pairs[0].generated.preview,'generated');assert.equal(pairs[2].original,null);
 });
+
+test('默认文案只轻微润色，保留原意口吻钩子和排版，拒绝强制新角度',()=>{assert.match(textRemixSystemPrompt,/轻微(?:润色|调整)/);assert.match(textRemixSystemPrompt,/保留.*(?:钩子|爆款)/);assert.match(textRemixSystemPrompt,/不得.*(?:重构|重写|新角度)/);assert.match(textRemixSystemPrompt,/段落|换行/);assert.match(textRemixSystemPrompt,/短文.*(?:扩写|长度)/);});
+test('输出清理平台话题编码、表情标记和重复空行，不丢合法正文',()=>{const d=normalizeRemixResult({title:' 求推荐减肥产品！ ',body:'想变瘦的心达到巅峰！[捂脸R]\n\n\n靠自己有点难，求推荐。\n#一起变瘦变美吧[话题]#',tags:'#一起变瘦变美吧[话题]# #产品建议'});assert.equal(d.body,'想变瘦的心达到巅峰！😅\n\n靠自己有点难，求推荐。');assert.equal(d.tags,'#一起变瘦变美吧 #产品建议');});
+
+test('短篇求推荐不能无要求扩成长篇科普，明确扩写才允许',()=>{const r={title:'求推荐',body:'这是一段全新科普内容。'.repeat(25),tags:''};assert.throws(()=>normalizeRemixResult(r,{sourceText:'求一个好用的产品，靠自己有点难。',instructions:'更自然，简短一点'}),/扩写过多/);assert.ok(normalizeRemixResult(r,{sourceText:'求一个好用的产品，靠自己有点难。',instructions:'详细扩写'}).body);});

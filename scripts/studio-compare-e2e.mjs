@@ -259,17 +259,19 @@ try{
   let transport=await app.evaluate(()=>{const f=globalThis.fengshaTest.compareFixture;return {text:f.textRequests,image:f.imageRequests};});
   assert.equal(transport.text.length,0);assert.equal(transport.image.length,0);checked('manual-clone-keeps-originals-and-does-not-auto-create');
   assert.equal(await page.getByLabel('整篇二创要求',{exact:true}).inputValue(),'');
-  assert.equal(await page.getByLabel('图片二创要求',{exact:true}).inputValue(),'');
-  const start=page.getByRole('button',{name:'整篇 AI 二创',exact:true});assert.equal(await start.isDisabled(),true);
+  await page.getByRole('tab',{name:'仅图片',exact:true}).click();assert.equal(await page.getByLabel('图片二创要求',{exact:true}).inputValue(),'');await page.getByRole('tab',{name:'文案＋图片',exact:true}).click();
+  const start=page.getByRole('button',{name:'文案＋图片一起二创',exact:true});assert.equal(await start.isDisabled(),true);
   for(const button of await page.getByRole('button',{name:'AI 修改此图',exact:true}).all())assert.equal(await button.isDisabled(),true);
   await page.getByLabel('整篇二创要求',{exact:true}).fill('   ');assert.equal(await start.isDisabled(),true);
-  await page.getByLabel('图片二创要求',{exact:true}).fill('   ');
+  await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片二创要求',{exact:true}).fill('   ');
   for(const button of await page.getByRole('button',{name:'AI 修改此图',exact:true}).all())assert.equal(await button.isDisabled(),true);
+  await page.getByRole('tab',{name:'文案＋图片',exact:true}).click();
   // The direction form must precede copy/images in normal document flow.
   assert.equal(await page.evaluate(()=>!!(document.querySelector('[aria-label="整篇二创要求"]').compareDocumentPosition(document.querySelector('[aria-label="原文案"]'))&Node.DOCUMENT_POSITION_FOLLOWING)),true);
+  assert.equal(await page.locator('[role=tabpanel]').count(),1);assert.equal(await page.locator('.creation-reference').count(),0);checked('one-compact-tab-panel-with-independent-directions');
   checked('top-direction-required-empty-and-whitespace-block-start');
 
-  await page.getByLabel('图片二创要求',{exact:true}).fill('');
+  await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片二创要求',{exact:true}).fill('');await page.getByRole('tab',{name:'文案＋图片',exact:true}).click();
   await page.getByLabel('整篇二创要求',{exact:true}).fill(wholeDirection);assert.equal(await start.isDisabled(),false);await start.click();
   await page.waitForFunction(()=>document.querySelector('[aria-label="克隆稿正文"]').value.includes('想安排一个安静'));
   assert.equal(await page.getByLabel('克隆稿正文',{exact:true}).isDisabled(),true);
@@ -301,8 +303,9 @@ try{
   await capture('whole-remix-completed.png');checked('whole-remix-real-sse-and-gpt-image-2.5-edits-contract');
 
   // Fill both directions differently to detect accidental shared prompt state.
-  await page.getByLabel('图片二创要求',{exact:true}).fill(imageDirection);
+  await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片二创要求',{exact:true}).fill(imageDirection);await page.getByRole('tab',{name:'文案＋图片',exact:true}).click();
   assert.equal(await page.getByLabel('整篇二创要求',{exact:true}).inputValue(),wholeDirection);
+  await page.getByRole('tab',{name:'仅图片',exact:true}).click();
   const previousOutput=whole.assets.find(a=>a.id===whole.assetOrder[0]);
   await page.locator('.compare-image-pair').first().getByRole('button',{name:'AI 修改此图',exact:true}).click();await idle();
   const secondEdit=await current();let latestOutput=secondEdit.assets.find(a=>a.id===secondEdit.assetOrder[0]);
@@ -312,9 +315,9 @@ try{
   const single=await app.evaluate(()=>globalThis.fengshaTest.compareFixture.imageRequests.at(-1));policyPrompt(single.prompt,imageDirection);
   assert.equal(single.image,originalAssets[0].bytes,'Default edits must return to the original image');
   checked('second-image-edit-keeps-same-original-root-and-prior-version');
-  await page.getByLabel('图片参考底图').selectOption('current');await page.getByLabel('图片调整方式').selectOption('redesign');
+  await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片参考底图').selectOption('current');await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片调整方式').selectOption('redesign');
   const prior=latestOutput;await page.locator('.compare-image-pair').first().getByRole('button',{name:'AI 修改此图',exact:true}).click();await idle();const continued=await current();latestOutput=continued.assets.find(a=>a.id===continued.assetOrder[0]);
-  const currentRequest=await app.evaluate(()=>globalThis.fengshaTest.compareFixture.imageRequests.at(-1));assert.equal(currentRequest.image,fs.readFileSync(prior.file).toString('base64'));assert.equal(latestOutput.originalAssetId,prior.id);assert.equal(latestOutput.editMode,'redesign');assert.match(currentRequest.prompt,/按用户方向重新设计/);await page.getByLabel('图片参考底图').selectOption('original');checked('explicit-current-image-and-redesign-mode-reach-model-request');
+  const currentRequest=await app.evaluate(()=>globalThis.fengshaTest.compareFixture.imageRequests.at(-1));assert.equal(currentRequest.image,fs.readFileSync(prior.file).toString('base64'));assert.equal(latestOutput.originalAssetId,prior.id);assert.equal(latestOutput.editMode,'redesign');assert.match(currentRequest.prompt,/按用户方向重新设计/);await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片参考底图').selectOption('original');checked('explicit-current-image-and-redesign-mode-reach-model-request');
 
   const firstPair=page.locator('.compare-image-pair').first();
   await firstPair.getByRole('button',{name:'移除画面1',exact:true}).click();
@@ -354,6 +357,21 @@ try{
   await page.waitForTimeout(200);result.narrowLayout=await assertLayout();await visiblePairsInViewport();await capture('studio-1080.png');
   await page.getByLabel('原文案',{exact:true}).scrollIntoViewIfNeeded();await capture('studio-1080-copy.png');checked('1080-window-paired-columns-without-horizontal-overflow');
 
+  // Separate scopes must use the selected base and never consume the other model.
+  const scopeBefore=await current(),countsBefore=await app.evaluate(()=>{const f=globalThis.fengshaTest.compareFixture;return {text:f.textRequests.length,images:f.imageRequests.length};});
+  await page.getByRole('tab',{name:'文案＋图片',exact:true}).click();await page.getByLabel('整篇创作依据').selectOption('current');
+  await page.getByRole('tab',{name:'仅文案',exact:true}).click();await page.getByLabel('文案创作依据').selectOption('current');await page.getByRole('tab',{name:'仅文案',exact:true}).click();await page.getByLabel('文案优化要求').fill('只优化文案，不改图片');
+  await page.getByRole('button',{name:'仅优化文案',exact:true}).click();await waitGate('text-eof');await release('text-eof');await idle();
+  const textOnly=await current(),textOnlyCalls=await app.evaluate(()=>{const f=globalThis.fengshaTest.compareFixture;return {text:f.textRequests.length,images:f.imageRequests.length,user:JSON.parse(f.textRequests.at(-1).body.messages.find(m=>m.role==='user').content)};});
+  assert.equal(textOnlyCalls.text,countsBefore.text+1);assert.equal(textOnlyCalls.images,countsBefore.images);assert.equal(textOnlyCalls.user.sourceText,scopeBefore.body);assert.equal(textOnlyCalls.user.sourceTitle,scopeBefore.title);assert.deepEqual(textOnly.assetOrder,scopeBefore.assetOrder);assert.equal(textOnly.assets.length,scopeBefore.assets.length);checked('text-only-uses-current-copy-with-zero-image-requests');
+  await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片参考底图').selectOption('current');await page.getByRole('tab',{name:'仅图片',exact:true}).click();await page.getByLabel('图片二创要求').fill('只调图片配色，不改文案');
+  await page.getByRole('button',{name:'仅优化全部图片',exact:true}).click();await idle();
+  const imagesOnly=await current(),imageOnlyCalls=await app.evaluate(()=>{const f=globalThis.fengshaTest.compareFixture;return {text:f.textRequests.length,images:f.imageRequests.length,last:f.imageRequests.slice(-2)};});
+  assert.equal(imageOnlyCalls.text,textOnlyCalls.text);assert.equal(imageOnlyCalls.images,textOnlyCalls.images+2);assert.equal(imagesOnly.body,textOnly.body);assert.equal(imagesOnly.title,textOnly.title);
+  for(const [i,id] of textOnly.assetOrder.entries())assert.equal(imageOnlyCalls.last[i].image,fs.readFileSync(textOnly.assets.find(a=>a.id===id).file).toString('base64'));
+  assert.equal(imagesOnly.remixSummary.status,'completed');checked('images-only-uses-current-images-with-zero-text-requests');
+  await page.getByLabel('克隆稿标题',{exact:true}).fill(dirtyTitle);await page.getByLabel('克隆稿正文',{exact:true}).fill(dirtyBody);await page.getByLabel('克隆稿话题').fill('#用户未保存');await page.getByRole('button',{name:'保存修改',exact:true}).click();await idle();
+  await page.getByRole('tab',{name:'文案＋图片',exact:true}).click();await page.getByLabel('整篇创作依据').scrollIntoViewIfNeeded();await capture('separate-controls-1080.png');
   // Exercise cancellation against an actively waiting image fetch, not just cleanup.
   await app.evaluate(()=>{globalThis.fengshaTest.compareFixture.holdNextImage=true;});
   const beforeCancel=await current();await page.locator('.compare-image-pair').first().getByRole('button',{name:'AI 修改此图',exact:true}).click();

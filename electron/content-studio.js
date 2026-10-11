@@ -36,7 +36,7 @@ export class ContentStudio {
     const audio=this.voice?.review(d.body),assets=d.assets.map(a=>({...a,preview:`fengsha-media://draft-${d.id}/${a.id}`}));
     const assetPairs=buildAssetPairs(assets,d.assetOrder,a=>!!a.file&&fs.existsSync(a.file));
     let remixSummary=d.remixSummary,message=d.message;
-    if(remixSummary?.status==='completed'){
+    if(remixSummary?.status==='completed'&&remixSummary.scope!=='text'){
       const generated=assetPairs.filter(p=>p.status==='generated').length;
       if(generated<remixSummary.images.total||assetPairs.some(p=>p.status!=='generated')){remixSummary={...remixSummary,status:'partial',images:{...remixSummary.images,generated}};message='部分二创图片缺失或未生成，尚未全部完成；原始素材保留。';}
     }
@@ -112,24 +112,29 @@ export class ContentStudio {
     if(bytes.subarray(0,4).toString()!=='RIFF'||bytes.subarray(8,12).toString()!=='WEBP')throw Error('素材不是可读取的图片');
     const input=file+'.webp';try{fs.writeFileSync(input,bytes);await command(path.join(this.transcriptions.engine.bin,'ffmpeg','ffmpeg.exe'),['-hide_banner','-loglevel','error','-i',input,'-frames:v','1',file],{signal,timeout:30000});if(nativeImage.createFromPath(file).isEmpty())throw Error('WebP 图片转换后校验失败');}finally{try{fs.unlinkSync(input);}catch{}}
   }
-  async rewrite(id,instructions='',remix=false){return this.exclusive(async signal=>{const d=this.get(id);if(d.status!=='draft'||!d.original.text.trim())throw new Error('请先完成原始文字提取');
-    if(d.original.text.length>30000)throw new Error('原文超过三万字，请先在转录页面分段处理');
-    this.step(id,'rewrite','AI 正在生成新的文案',{preview:{}});const response=await this.ai.chat(textRemixSystemPrompt,JSON.stringify({sourceTitle:d.original.title,sourceText:d.original.text,instructions:String(instructions).slice(0,4000)}),signal,value=>{if(signal.aborted)return;this.job.preview=draftTextPreview(value);this.changed();});
+  async rewrite(id,instructions='',remix=false,options={}){return this.exclusive(async signal=>{const d=this.get(id),sourceText=options.reference==='current'?d.body:d.original.text,sourceTitle=options.reference==='current'?d.title:d.original.title;if(d.status!=='draft'||!sourceText.trim())throw new Error('请先完成原始文字提取');
+    if(sourceText.length>30000)throw new Error('原文超过三万字，请先在转录页面分段处理');
+    this.step(id,'rewrite','AI 正在生成新的文案',{preview:{}});const response=await this.ai.chat(textRemixSystemPrompt,JSON.stringify({sourceTitle,sourceText,reference:options.reference||'original',instructions:String(instructions).slice(0,4000)}),signal,value=>{if(signal.aborted)return;this.job.preview=draftTextPreview(value);this.changed();});
     let result;try{result=JSON.parse(response.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''));}catch{throw new Error('文本模型未返回完整二创稿，原内容保留');}
-    try{result=normalizeRemixResult(result);}catch(e){if(e.reviewNotes?.length){const current=this.get(id);if(current.revision===d.revision){current.reviewNotes=e.reviewNotes;this.checkpoint(current);}}throw e;}
+    try{result=normalizeRemixResult(result,{sourceText,instructions});}catch(e){if(e.reviewNotes?.length){const current=this.get(id);if(current.revision===d.revision){current.reviewNotes=e.reviewNotes;this.checkpoint(current);}}throw e;}
     signal.throwIfAborted();const current=this.get(id);if(current.revision!==d.revision)throw new Error('生成期间稿件已修改，请重新操作');
     current.history=[...(current.history||[]),{title:d.title,body:d.body,tags:d.tags,reviewNotes:d.reviewNotes||[],at:Date.now()}].slice(-20);current.title=safeTitle(result.title);current.body=result.body;current.tags=result.tags;current.reviewNotes=result.reviewNotes;current.revision++;current.message='已生成独立二创文案，原文和审阅意见分别保留，请核对内容后发布。';this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
   },remix);}
-  async remix(id,instructions=''){
+  async remix(id,instructions='',options={}){
+    const scope=options.scope||'all',reference=options.reference||'original';
+    if(!['all','text','images'].includes(scope))throw new Error('二创范围无效');
+    if(!['original','current'].includes(reference))throw new Error('二创参考内容无效');
+    if(!['preserve','redesign'].includes(options.mode||'preserve'))throw new Error('图片编辑方式无效');
+    const useText=scope!=='images',useImages=scope!=='text';
     if(this.active||this.remixController||this.search.active)throw new Error('正在处理其他任务，请等待完成');
     const before=this.get(id),text=this.ai.config('text'),images=this.ai.config('image');
-    if(!text.hasKey&&!images.hasKey)throw new Error('请先在 AI 设置配置文本或图片服务；克隆原稿已保存');
-    const summary={status:'running',text:{status:text.hasKey&&text.model?'pending':'not-configured'},images:{total:before.assetOrder.length,generated:0,generatedAssetIds:[],status:before.assetOrder.length?(images.hasKey&&images.model?'pending':'not-configured'):'not-needed',missingOriginals:before.source.type==='image'?Math.max(0,(before.original.images?.length||0)-before.assets.filter(a=>a.origin==='original').length):0}};
-    const saveSummary=()=>{const d=this.get(id);d.remixSummary=structuredClone(summary);d.message=summary.status==='completed'?'二创文案与画面已保存，原稿保留，请审阅生成结果。':`二创尚未全部完成：文案${summary.text.status==='generated'?'已生成':'未完成'}，图片 ${summary.images.generated} / ${summary.images.total}${summary.images.missingOriginals?'，部分原图未取得':''}；已有结果和原始素材保留。`;this.checkpoint(d);};
-    this.remixController=this.flow||new AbortController();this.step(id,'rewrite','正在准备二创');saveSummary();
-    try{if(text.hasKey&&text.model){await this.rewrite(id,instructions,true);summary.text.status='generated';saveSummary();}
-      if(images.hasKey&&images.model){for(const [i,assetId] of before.assetOrder.entries()){this.step(id,'image',`AI 正在调整画面 ${i+1} / ${before.assetOrder.length}`,{current:i+1,total:before.assetOrder.length,preview:null});this.remixController.signal.throwIfAborted();const result=await this.editImage(id,assetId,instructions||'尽量保持原图风格和排版，只做局部优化，不增加文字。',true);const generated=result.assets.at(-1);summary.images.generated++;summary.images.generatedAssetIds.push(generated.id);saveSummary();}if(before.assetOrder.length)summary.images.status='generated';}
-      this.remixController.signal.throwIfAborted();summary.status=summary.text.status==='generated'&&summary.images.generated===summary.images.total&&!summary.images.missingOriginals?'completed':'partial';saveSummary();
+    if(!(useText&&text.hasKey)&&!(useImages&&images.hasKey))throw new Error('请先在 AI 设置配置文本或图片服务；克隆原稿已保存');
+    const summary={status:'running',scope,reference,text:{status:!useText?'unchanged':text.hasKey&&text.model?'pending':'not-configured'},images:{total:useImages?before.assetOrder.length:0,generated:0,generatedAssetIds:[],status:!useImages?'unchanged':before.assetOrder.length?(images.hasKey&&images.model?'pending':'not-configured'):'not-needed',missingOriginals:useImages&&before.source.type==='image'?Math.max(0,(before.original.images?.length||0)-before.assets.filter(a=>a.origin==='original').length):0}};
+    const saveSummary=()=>{const d=this.get(id);d.remixSummary=structuredClone(summary);d.message=summary.status==='completed'?(scope==='text'?'文案优化已保存，图片保持不变。':scope==='images'?'图片优化已保存，文案保持不变。':'二创文案与画面已保存，原稿保留，请审阅生成结果。'):`二创尚未全部完成：文案${summary.text.status==='generated'?'已生成':'未完成'}，图片 ${summary.images.generated} / ${summary.images.total}${summary.images.missingOriginals?'，部分原图未取得':''}；已有结果和原始素材保留。`;this.checkpoint(d);};
+    this.remixController=this.flow||new AbortController();this.step(id,useText?'rewrite':'image',`正在准备${scope==='text'?'文案优化':scope==='images'?'图片优化':'文案与图片二创'}`);saveSummary();
+    try{if(useText&&text.hasKey&&text.model){await this.rewrite(id,instructions,true,{reference});summary.text.status='generated';saveSummary();}
+      if(useImages&&images.hasKey&&images.model){for(const [i,assetId] of before.assetOrder.entries()){this.step(id,'image',`AI 正在调整画面 ${i+1} / ${before.assetOrder.length}`,{current:i+1,total:before.assetOrder.length,preview:null});this.remixController.signal.throwIfAborted();const result=await this.editImage(id,assetId,instructions||'尽量保持原图风格和排版，只做局部优化，不增加文字。',true,{reference,mode:options.mode||'preserve'});const generated=result.assets.at(-1);summary.images.generated++;summary.images.generatedAssetIds.push(generated.id);saveSummary();}if(before.assetOrder.length)summary.images.status='generated';}
+      this.remixController.signal.throwIfAborted();summary.status=(!useText||summary.text.status==='generated')&&(!useImages||summary.images.generated===summary.images.total&&!summary.images.missingOriginals)?'completed':'partial';saveSummary();
       if(!this.flow)this.finish(summary.status==='completed'?'completed':'needs-action',this.get(id).message);return this.get(id);
     }catch(e){summary.status='partial';if(summary.text.status==='pending')summary.text.status='failed';if(summary.images.status==='pending')summary.images.status='incomplete';saveSummary();throw e;
     }finally{this.remixController=null;this.changed();}

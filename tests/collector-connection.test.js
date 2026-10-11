@@ -113,3 +113,5 @@ test('死亡组件 PID 记录可恢复启动；保留旧记录，不杀活进程
   const retired=fs.readdirSync(connection.directory).find(n=>n.startsWith('wx_video_download.pid.stale-'));assert.equal(fs.readFileSync(path.join(connection.directory,retired),'utf8'),'16100');
   assert.equal(retireStaleComponentPid(connection.directory),false);await connection.close();store.close();
 });
+
+test('微信未连接时先自动打开视频号，再检测连接；已连接不重复打开',async()=>{const {connection,store}=await fixture();let opened=0;connection.openPage=async()=>{opened++;};let checks=0;connection.online=async()=>++checks>1;await connection.withConnection(undefined,async()=>{});assert.equal(opened,1);await connection.withConnection(undefined,async()=>{});assert.equal(opened,1);await connection.close();store.close();});

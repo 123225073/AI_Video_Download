@@ -14,6 +14,7 @@ import { linksFromText, platformOf, classifyError, safeLog } from './core.js';
 import { AIService } from './ai.js';
 import { Transcriptions, transcriptionUrl } from './transcription.js';
 import { WeChatCreators } from './wechat-creators.js';
+import {openWeChatChannels} from './wechat-page.js';
 import { CollectorConnection } from './collector-connection.js';
 import { createAgentHandler, startAgentServer } from './agent.js';
 import { Bilibili } from './bilibili.js';
@@ -77,7 +78,7 @@ else {
   handle('user-search-show', () => userSearch.browser.show());
   // Automatic temporary connection was explicitly requested. Certificate identity,
   // CurrentUser scope, per-task leases and recovery remain enforced by the helper.
-  collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true});
+  collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true,openPage:signal=>openWeChatChannels(uri=>shell.openExternal(uri),signal)});
   creators.connection=collectorConnection;wechat.collector=wechatCreators;wechat.connection=collectorConnection;
   contentSearch=new ContentSearch({accounts,creators,userSearch,bilibili:engine.bilibili,wechat:wechatCreators,browser:new ContentBrowser(accounts),store,changed});
   voice=new VoiceService({store,directory:path.join(app.getPath('userData'),'声音资料'),vault:safeStorage,bin,changed});
@@ -118,7 +119,7 @@ else {
   handle('content-voice-review',id=>contentStudio.reviewVoice(id));
   handle('content-voice-approve',(id,hash)=>contentStudio.approveVoice(id,hash));
   handle('content-voice-generate',id=>contentStudio.generateVoice(id));
-  handle('content-remix',(id,prompt)=>contentStudio.remix(id,prompt));
+  handle('content-remix',(id,prompt,options)=>contentStudio.remix(id,prompt,options));
   handle('content-auto-remix',(id,prompt)=>contentStudio.autoRemix(id,bin,prompt));
   handle('content-video-frames',id=>contentStudio.videoFrames(id,bin));
   handle('content-render-video',id=>contentStudio.renderVideo(id,bin));
@@ -163,6 +164,7 @@ else {
   const connectionNotBusy=()=>{if(userSearch.active || creators.progress() || collectorConnection.status().activeTasks)throw new Error('视频号任务正在使用连接，请停止后更改连接设置');};
   handle('collector-prepare',()=>{connectionNotBusy();return collectorConnection.prepare();});
   handle('collector-allow',()=>{connectionNotBusy();return collectorConnection.allow();});
+  handle('collector-open-page',()=>openWeChatChannels(uri=>shell.openExternal(uri)));
   handle('collector-restore',()=>collectorConnection.restore());
   handle('collector-status',async()=>{let ready=false,connected=false;try{const channel=await wechatCreators.test();ready=true;connected=channel.connected;}catch{}return {...collectorConnection.status(),ready,connected};});
   const guides = { cpa: 'https://cpa.fengsha.online/', collector: 'https://ltaoo.github.io/wx_channels_download/', transcriber: 'https://github.com/wendy7756/AI-Video-Transcriber', audio: 'https://platform.openai.com/docs/guides/speech-to-text' };

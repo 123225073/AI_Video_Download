@@ -1,0 +1,3 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {openWeChatChannels} from '../electron/wechat-page.js';
+test('视频号自动打开只调用固定微信协议，不携带数据或任意地址',async()=>{let uri;assert.deepEqual(await openWeChatChannels(async u=>{uri=u;}),{attempted:true});assert.equal(uri,'weixin://dl/channels');});
+test('停止后不再唤起微信，打开失败明确说明',async()=>{const c=new AbortController();c.abort();let called=false;await assert.rejects(openWeChatChannels(async()=>{called=true;},c.signal));assert.equal(called,false);await assert.rejects(openWeChatChannels(async()=>{throw Error('unsupported');}),/未能自动打开.*已安装.*登录/);});

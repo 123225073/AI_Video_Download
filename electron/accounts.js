@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow, session, safeStorage } from 'electron';
 import { platforms } from './core.js';
-import { allowedCookie, cookieDetails, parseCookieFile, hasBilibiliLoginCookie } from './account-session.js';
+import { allowedCookie, cookieDetails, parseCookieFile, hasBilibiliLoginCookie, officialUserAgent, xhsLoginState } from './account-session.js';
 
 const websites = { '视频号': 'https://yuanbao.tencent.com/', '抖音': 'https://www.douyin.com/', '小红书': 'https://www.xiaohongshu.com/', 'B站': 'https://www.bilibili.com/', 'YouTube': 'https://www.youtube.com/' };
 export class AccountManager {
@@ -27,6 +27,7 @@ export class AccountManager {
   getSession(id) {
     if (this.sessions.has(id)) return this.sessions.get(id);
     const s = session.fromPath(path.join(this.directory, 'sessions', id));
+    s.setUserAgent(officialUserAgent);
     this.sessions.set(id, s);
     s.cookies.on('changed', () => {
       clearTimeout(this.timers.get(id));
@@ -55,8 +56,11 @@ export class AccountManager {
         const cookies = JSON.parse(safeStorage.decryptString(fs.readFileSync(file)));
         const s = this.getSession(a.id);
         const valid = cookies.filter(c => allowedCookie(a.platform, c) && (!c.expirationDate || c.expirationDate > Date.now() / 1000));
-        for (const c of valid) await s.cookies.set(cookieDetails(c));
-        if (cookies.length && !valid.length || a.platform === 'B站' && !await this.bilibiliLoginReady(a.id)) this.markExpired(a.platform, a.id);
+        const current = (await s.cookies.get({})).filter(c => allowedCookie(a.platform, c));
+        const cookieKey = c => JSON.stringify([c.domain,c.path||'/',c.name]);
+        const existing = new Set(current.map(cookieKey));
+        for (const c of valid) if (!existing.has(cookieKey(c))) await s.cookies.set(cookieDetails(c));
+        if (cookies.length && !valid.length && !current.length || a.platform === 'B站' && !await this.bilibiliLoginReady(a.id)) this.markExpired(a.platform, a.id);
       } catch { this.save({ ...a, status: '需要重新登录', message: '本机会话无法恢复，请重新登录' }); }
     }
   }
@@ -80,7 +84,7 @@ export class AccountManager {
     w.webContents.on('will-navigate', (e, url) => { if (!allowed(url)) e.preventDefault(); });
     w.on('closed', () => { this.windows.delete(id); const latest = this.account(id); if (latest.status === '登录中') this.save({ ...latest, status: latest.lastSync ? '会话已保存' : '未登录' }); });
     this.save({ ...a, status: '登录中' });
-    try { await w.loadURL(websites[a.platform]); } catch { if (!w.isDestroyed()) w.close(); throw new Error('network 官方登录页加载失败，请检查网络后重试'); }
+    try { await w.loadURL(websites[a.platform], { userAgent: officialUserAgent }); } catch { if (!w.isDestroyed()) w.close(); throw new Error('network 官方登录页加载失败，请检查网络后重试'); }
   }
   async complete(id) {
     const a = this.account(id);
@@ -88,10 +92,19 @@ export class AccountManager {
     await s.cookies.flushStore();
     const cookies = await s.cookies.get({});
     if (!cookies.length) throw new Error('尚未获取会话，请先在官方页面完成登录');
+    const w = this.windows.get(id);
+    let verified = false;
+    if (a.platform === '小红书') {
+      if (w && !w.isDestroyed()) {
+        const state = await w.webContents.executeJavaScript(`(${xhsLoginState.toString()})()`);
+        if (!state.loggedIn) { if (state.reason === 'device-limit') this.markExpired(a.platform, id, state.message); throw new Error(state.message || '请先完成小红书登录'); }
+        verified = true;
+      } else if (!cookies.some(c => allowedCookie(a.platform, c) && c.name === 'web_session' && c.value)) throw new Error('请先在小红书官方页面完成登录，访客会话不能作为登录会话保存');
+    }
     if (a.platform === 'B站' && !await this.bilibiliLoginReady(id)) throw new Error('尚未检测到 B站登录会话，请先在官方窗口完成扫码或登录，再回到这里点击“完成登录”');
-    this.save({ ...a, status: '会话已保存', lastSync: Date.now(), message: '实际登录有效性由下一次解析或下载验证' });
+    this.save({ ...a, status: '会话已保存', lastSync: Date.now(), ...(verified ? { lastVerified: Date.now() } : {}), message: verified ? '已在官方页面确认登录；平台会话过期或设备超限时仍需重新登录' : '已保存本机会话，平台有效性待下次使用验证' });
     await this.persist(id);
-    const w = this.windows.get(id); if (w && !w.isDestroyed()) w.close();
+    if (w && !w.isDestroyed()) w.close();
     return { saved: true };
   }
   async cookieFile(platform, accountId) {
@@ -107,8 +120,8 @@ export class AccountManager {
     fs.writeFileSync(file, '# Netscape HTTP Cookie File\n' + lines.join('\n'), { mode: 0o600 });
     return file;
   }
-  markExpired(platform, id) { const a = id ? this.store.get('account', id) : this.active(platform); if (a) this.save({ ...a, status: '需要重新登录', message: '平台拒绝当前会话，请重新登录' }); }
-  markVerified(platform, id) { const a = id ? this.store.get('account', id) : this.active(platform); if (a?.lastSync) this.save({ ...a, status: '最近解析成功', lastVerified: Date.now(), message: '仅代表最近一次解析成功，不保证所有内容均可访问' }); }
+  markExpired(platform, id, message = '平台拒绝当前会话，请重新登录') { const a = id ? this.store.get('account', id) : this.active(platform); if (a) this.save({ ...a, status: '需要重新登录', message }); }
+  markVerified(platform, id, message = '仅代表最近一次解析成功，不保证所有内容均可访问') { const a = id ? this.store.get('account', id) : this.active(platform); if (a?.lastSync) this.save({ ...a, status: '最近解析成功', lastVerified: Date.now(), message }); }
   async logout(id) {
     const a = this.account(id);
     const w = this.windows.get(id); if (w && !w.isDestroyed()) w.close();

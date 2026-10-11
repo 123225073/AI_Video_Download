@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld('fengsha', {
   aiSave: invoke('ai-save'), aiModels: invoke('ai-models'), aiTest: invoke('ai-test'),
   transcriptionFolder: invoke('transcription-folder'), transcriptionChoose: invoke('transcription-choose'), transcriptionStart: invoke('transcription-start'), transcriptionGet: invoke('transcription-get'), transcriptionAction: invoke('transcription-action'), transcriptionArchive: invoke('transcription-archive'), transcriptionUnarchive: invoke('transcription-unarchive'), transcriptionExport: invoke('transcription-export'),
   collectorSave: invoke('collector-save'), collectorTest: invoke('collector-test'), openGuide: invoke('guide'),
-  collectorPrepare:invoke('collector-prepare'),collectorAllow:invoke('collector-allow'),collectorRestore:invoke('collector-restore'),collectorStatus:invoke('collector-status'),
+  collectorOpenPage:invoke('collector-open-page'),collectorPrepare:invoke('collector-prepare'),collectorAllow:invoke('collector-allow'),collectorRestore:invoke('collector-restore'),collectorStatus:invoke('collector-status'),
   transcriptionSearch: invoke('transcription-search'),
   transcriptionDraft: invoke('transcription-draft'),
   transcriptionSource: invoke('transcription-source'),
