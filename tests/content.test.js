@@ -39,6 +39,24 @@ test('作品搜索获取多页、去重、严格数量上限与发布日期筛�
 test('缺少微信适配标志或缺少有效分页时不能显示搜索完成',async()=>{
   const s=searchFixture(async()=>({objectList:[],continueFlag:0}));await assert.rejects(s.start('视频号','AI',{from:'2026-09-09',to:'2026-10-09'}),/未加载作品搜索适配/);assert.equal(s.view().status,'interrupted');
 });
+
+test('微信作品使用官方objectContinueFlag与组合游标翻页，每批先显示且requestId稳定',async()=>{
+  const requests=[],counts=[];const cursor='fengsha-page:'+JSON.stringify({offset:20,lastBuff:'next',requestId:'search'});
+  const s=searchFixture(async(_url,p)=>{requests.push(p);return {fengshaVersion:1,objectList:[{id:String(requests.length),objectNonceId:'n',objectDesc:{description:'作品'+requests.length,media:[{}]},createtime:1790812800,contact:{nickname:'作者'}}],objectContinueFlag:requests.length===1?1:0,fengshaNextMarker:requests.length===1?cursor:null};});
+  s.changed=()=>{if(s.view()?.items.length)counts.push(s.view().items.length);};
+  const r=await s.start('视频号','AI',{from:'2026-09-09',to:'2026-10-09'});
+  assert.equal(r.status,'complete');assert.equal(r.items.length,2);assert.ok(counts.includes(1));
+  assert.equal(decodeURIComponent(requests[1].next_marker),cursor);
+  const inputs=requests.map(p=>JSON.parse(p.keyword.slice(20)));assert.equal(inputs[0].requestId,inputs[1].requestId);assert.notEqual(inputs[0].nonce,inputs[1].nonce);
+});
+
+test('微信搜索取消后忽略晚到页面并保留已发布首批',async()=>{
+  let release,started;const secondStarted=new Promise(r=>started=r);let n=0;
+  const s=searchFixture(async()=>{n++;if(n===2){started();await new Promise(r=>release=r);}return {fengshaVersion:1,objectList:[{id:String(n),objectNonceId:'n',objectDesc:{description:'作品',media:[{}]},createtime:1790812800}],objectContinueFlag:n===1?1:0,lastBuff:'next'};});
+  const running=s.start('视频号','AI',{from:'2026-09-09',to:'2026-10-09'});
+  await secondStarted;assert.equal(s.view().items.length,1);s.cancel();release();await assert.rejects(running);
+  assert.equal(s.view().items.length,1);assert.equal(s.view().status,'interrupted');assert.equal(s.view().canContinue,true);
+});
 test('同一微信API对象同时含评论、用户主页和搜索时，扩展仍能搜索并保留this与场景',async()=>{
   let listener;const calls=[],sent=[];const owner={finderGetCommentDetail(){},finderSearch:async function(p){assert.equal(this,owner);calls.push(p);return {errCode:0,data:{objectList:[],continueFlag:0}};}};
   const sandbox={window:{},WXU:{API:owner,onAPILoaded(fn){listener=fn;}},ws_client$:{methods:{__wx_handle_api_call:async()=>{throw new Error('其他分支失败');}}},setInterval,clearInterval,setTimeout};vm.createContext(sandbox);vm.runInContext(fs.readFileSync('electron/collector-content.js','utf8'),sandbox);

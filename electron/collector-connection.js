@@ -46,6 +46,15 @@ export class CollectorConnection {
     const result=await response.json(); if(Number(result.code)!==0) throw new Error('微信连接组件未完成请求，请重新准备连接'); return result.data;
   }
   async online() { try{return (await this.api('/api/channels/status',null,2500)).available === true;}catch{return false;} }
+  async adapterReady() {
+    try {
+      // A connected page may still run an adapter from before an app upgrade.
+      // The probe is handled locally by our extension, never by official search.
+      const keyword='__fengsha_content__:'+JSON.stringify({probe:true,nonce:randomUUID()});
+      const result=await this.api('/api/channels/contact/search?keyword='+encodeURIComponent(keyword),null,8000);
+      return result?.errCode===0&&result?.data?.fengshaAdapterVersion===3;
+    }catch{return false;}
+  }
   runSystem(action,stateFile=null,signal=null) {
     const systemScript=path.join(this.bin,'collector','collector-system.ps1');
     return new Promise((resolve,reject)=>{
@@ -133,7 +142,7 @@ export class CollectorConnection {
   }
   async begin(signal) {
     if(!this.certificate)await this.prepare(); if(signal.aborted) throw new Error('CANCELLED');
-    if(await this.online()){this.update('connected','微信已连接；当前任务无需切换系统代理');return;}
+    if(await this.online()&&await this.adapterReady()){this.update('connected','微信页面适配已就绪；当前任务无需切换系统代理');return;}
     const inspected=await this.system('inspect');const plan=await this.routing.discover(inspected.proxy);const upstream=plan?'':upstreamProxy(inspected.proxy,inspected.guardedProxy);
     const id=randomUUID(); this.leaseFile=path.join(this.directory,`lease-${id}.json`);
     fs.writeFileSync(this.leaseFile,JSON.stringify({schema:1,id,mode:plan?'routed':'system',routing:plan,owner:process.pid,ownerStarted:inspected.ownerStarted,before:inspected.proxy,proxyAddress:'127.0.0.1:2023',certificateName:this.certificate.name,certificateFile:this.certificate.file,certificateFingerprint:this.certificate.fingerprint,certificateThumbprint:'',certificateAdded:false,phase:'prepared'}));
@@ -149,8 +158,8 @@ export class CollectorConnection {
     this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续');
     if(this.openPage){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续搜索。若未自动进入，请在连接提示中打开视频号。',{needsPage:true});try{await this.openPage(signal);}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号；无需关闭现有代理。',{needsPage:true});}}
     const deadline=Date.now()+this.waitMs;
-    do { if(signal.aborted) throw new Error('CANCELLED');if(await this.online()){this.update('connected','微信已连接 · 当前任务结束后自动恢复原网络');return;}await delay(1000,signal); } while(Date.now()<deadline);
-    throw new Error('未等到微信视频号页面连接，原网络将自动恢复；请重新进入微信视频号页面后再试');
+    do { if(signal.aborted) throw new Error('CANCELLED');if(await this.online()){if(await this.adapterReady()){this.update('connected','微信页面适配已就绪 · 当前任务结束后自动恢复原网络');return;}this.update('waiting','微信页面仍在使用旧的采集适配。请在视频号页面刷新一次以载入更新；已有内容和登录保留。',{needsPage:true});}await delay(1000,signal); } while(Date.now()<deadline);
+    throw new Error('微信页面适配未就绪，原网络将自动恢复；请在视频号页面刷新以载入当前适配后重试');
   }
   async withConnection(signal,operation) {
     if(this.closed) throw new Error('应用正在退出');

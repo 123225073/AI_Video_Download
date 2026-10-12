@@ -32,9 +32,33 @@ async function fixture(options={}) {
   store.put('collector-policy','automatic',{allowed:true,certificateFingerprint:'unit'});store.flush();
   const connection=new CollectorConnection(store,'',directory,()=>{},{routing:{discover:async()=>null},waitMs:20,guard:async()=>calls.push('guard'),system:async(action,file)=>{calls.push(action);if(action==='inspect')return {proxy:online?{...before,ProxyServer:{present:true,value:'127.0.0.1:2023'}}:before,ownerStarted:'start'};if(action==='apply')online=true;if(action==='restore'){online=false;const state=JSON.parse(fs.readFileSync(file));state.phase='restored';fs.writeFileSync(file,JSON.stringify(state));}return {};},...options});
   connection.prepare=async()=>{connection.certificate={name:'Fengsha-WeChat-unit',file:'test-public-certificate',fingerprint:'unit'};return connection.status();};
-  connection.online=async()=>online;connection.api=async(route,body)=>{calls.push(body.values['proxy.enabled']?'start-proxy':'stop-proxy');return {};};
+  connection.online=async()=>online;connection.adapterReady=async()=>true;connection.api=async(route,body)=>{calls.push(body.values['proxy.enabled']?'start-proxy':'stop-proxy');return {};};
   return {connection,store,calls};
 }
+
+test('已连接的旧页面不能跳过适配准备，等待新版本后才开始采集',async()=>{
+  const {connection,store,calls}=await fixture();let ready=false;
+  connection.online=async()=>true;connection.adapterReady=async()=>ready;
+  const system=connection.system;connection.system=async(action,file)=>{const r=await system(action,file);if(action==='inspect'&&calls.includes('apply'))r.proxy={...before,ProxyServer:{present:true,value:'127.0.0.1:2023'}};return r;};
+  connection.openPage=async()=>{calls.push('open-page');ready=true;};
+  await connection.withConnection(undefined,async()=>{assert.equal(ready,true);calls.push('collect');});
+  assert.ok(calls.indexOf('apply')>=0);assert.ok(calls.indexOf('open-page')<calls.indexOf('collect'));assert.ok(calls.includes('restore'));store.close();
+});
+
+test('已连接且适配版本匹配时复用页面，不切换网络或打开窗口',async()=>{
+  const {connection,store,calls}=await fixture();connection.online=async()=>true;connection.adapterReady=async()=>true;
+  await connection.withConnection(undefined,async()=>calls.push('collect'));
+  assert.ok(calls.includes('collect'));assert.ok(!calls.includes('apply'));assert.ok(!calls.includes('guard'));store.close();
+});
+
+test('连接探针仅接受当前适配版本，每次请求避免复用上游旧缓存',async()=>{
+  const requests=[];const connection=Object.create(CollectorConnection.prototype);
+  connection.api=async url=>{requests.push(new URL(url,'http://127.0.0.1:2022'));return {errCode:0,data:{fengshaAdapterVersion:3}};};
+  assert.equal(await connection.adapterReady(),true);assert.equal(await connection.adapterReady(),true);
+  const inputs=requests.map(u=>JSON.parse(u.searchParams.get('keyword').slice(20)));
+  assert.equal(inputs[0].probe,true);assert.equal(inputs[0].query,undefined);assert.notEqual(inputs[0].nonce,inputs[1].nonce);
+  for(const response of [{errCode:1009},{errCode:0,data:{fengshaAdapterVersion:1}},{available:true}]){connection.api=async()=>response;assert.equal(await connection.adapterReady(),false);}
+});
 test('按任务自动切换：并发任务共享一次连接，最后一个任务完成才恢复',async()=>{
   const {connection,store,calls}=await fixture();let releaseA,releaseB;const waitA=new Promise(r=>releaseA=r),waitB=new Promise(r=>releaseB=r);
   const a=connection.withConnection(undefined,()=>waitA),b=connection.withConnection(undefined,()=>waitB);await new Promise(r=>setTimeout(r,20));

@@ -31,7 +31,7 @@ function fixture(t,{text=true,image=true,response,fetcher}={}) {
     assetOrder:['original'],status:'draft',revision:1,createdAt:1};
   const data=new Map([['draft',structuredClone(initial)]]),calls={text:[],images:[]};
   const studio=new ContentStudio({directory,store:{get:(_k,id)=>structuredClone(data.get(id)),list:()=>[],put:(_k,id,v)=>data.set(id,structuredClone(v)),flush(){}},
-    search:{active:null},browser:{close(){}},ai:{config:kind=>({hasKey:kind==='text'?text:image,model:kind==='text'?'text-fixture':'image-fixture',baseUrl:'https://example.invalid',timeout:10}),
+    search:{active:null,item:()=>({item:{...initial.source,id:'item'}})},browser:{close(){}},ai:{config:kind=>({hasKey:kind==='text'?text:image,model:kind==='text'?'text-fixture':'image-fixture',baseUrl:'https://example.invalid',timeout:10}),
       secret:()=> 'fixture-not-a-real-key',async chat(system,user,signal,onText){calls.text.push({system,user:JSON.parse(user)});const result=response||{title:'下午想读书？试试这个阅读角',body:'想找个下午读书的地方？\n\n阅读角下午开放，每次限六人。你更喜欢独自读书还是一起交流？',tags:'#阅读 #阅读角'};const raw=JSON.stringify(result);onText?.(raw);return raw;}},
     fetcher:async(url,options)=>{calls.images.push({url,prompt:options.body.get('prompt'),bytes:Buffer.from(await options.body.get('image').arrayBuffer())});return fetcher?fetcher(url,options):new Response(JSON.stringify({data:[{b64_json:Buffer.from('generated-'+calls.images.length).toString('base64')}]}));}});
   return {studio,calls,data,initial,originalFile};

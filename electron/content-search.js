@@ -43,9 +43,12 @@ export class ContentSearch {
           if(!Array.isArray(data.result)||Number(data.page)!==r.next||!Number.isInteger(Number(data.numPages)))throw new Error('B站未返回有效作品分页，已有结果保留');
           items=data.result.map(biliContent).filter(Boolean);next=r.next<Number(data.numPages)?r.next+1:null;
         }else{
-          const data=await this.wechat.request('/api/channels/contact/search',{keyword:'__fengsha_content__:'+JSON.stringify({query:r.keyword,requestId:randomUUID()}),next_marker:encodeURIComponent(r.next)},signal);
+          const data=await this.wechat.request('/api/channels/contact/search',{keyword:'__fengsha_content__:'+JSON.stringify({query:r.keyword,requestId:r.id,nonce:randomUUID()}),next_marker:encodeURIComponent(r.next)},signal);
           if(data.fengshaVersion!==1||!Array.isArray(data.objectList))throw new Error('当前微信页面未加载作品搜索适配，请重新进入微信视频号页面后重试');
-          items=data.objectList.map(wechatContent).filter(Boolean);const more=data.continueFlag??data.hasMore;next=more===0||more===false?null:data.lastBuff||data.lastBuffer||null;
+          items=data.objectList.map(raw=>{const item=wechatContent(raw);if(item)this.wechat.remember?.(raw);return item;}).filter(Boolean);const more=data.objectContinueFlag??data.continueFlag??data.hasMore;
+          if(![0,1,false,true].includes(more))throw new Error('微信未返回明确的作品分页状态，已有结果保留');
+          next=more===0||more===false?null:data.fengshaNextMarker||data.lastBuff||data.lastBuffer||null;
+          if((more===1||more===true)&&!next)throw new Error('微信未返回下一页位置，已有结果保留');
           if(next&&next===r.next)throw new Error('微信没有返回新的作品分页，已停止重复读取');
         }
         check();const before=map.size;for(const item of items)map.set(item.id,item);

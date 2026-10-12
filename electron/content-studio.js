@@ -24,8 +24,12 @@ export class ContentStudio {
   step(id,stage,label,extra={}){if(!this.job||this.job.draftId!==id||this.job.state!=='running')this.job={id:randomUUID(),draftId:id,startedAt:Date.now(),visited:[]};const canonical=['frames'].includes(stage)?'assets':stage==='transcript'?'source':stage;if(!this.job.visited.includes(canonical))this.job.visited.push(canonical);Object.assign(this.job,{stage,label,state:'running',endedAt:null,...extra});this.changed();}
   checkpoint(d){this.store.put('content-draft',d.id,d);this.store.flush();this.changed();}
   finish(state,label){if(this.job){Object.assign(this.job,{state,label,endedAt:Date.now()});this.changed();}}
-  async cloneFlow(recordId,itemId,options={},bin){if(this.flow||this.active||this.remixController||this.search.active)throw Error('正在处理，请等待当前操作结束');this.flow=new AbortController();try{let d=await this.clone(recordId,itemId);this.flow.signal.throwIfAborted();if(options.autoCreate)d=await this.autoRemix(d.id,bin,options.prompt||'');this.flow.signal.throwIfAborted();const partial=options.autoCreate&&d.remixSummary?.status!=='completed';this.finish(partial?'needs-action':'completed',partial?d.message:d.status==='transcribing'?'原素材已保存，视频文案正在后台提取':'克隆稿已保存，可以查看、编辑与发布准备');return d;}catch(e){this.finish(this.flow.signal.aborted?'cancelled':'failed',this.flow.signal.aborted?'已停止，已取得内容保留':e.message);throw e;}finally{this.flow=null;this.changed();}}
-  list(){return this.store.list('content-draft').sort((a,b)=>b.createdAt-a.createdAt).map(d=>({id:d.id,title:d.title,platform:d.source.platform,status:this.get(d.id).status,createdAt:d.createdAt}));}
+  async cloneFlow(recordId,itemId,options={},bin){
+    const item=this.search.item(recordId,itemId).item;
+    if(!options.fresh){const existing=this.store.list('content-draft').filter(d=>d.source.platform===item.platform&&d.source.id===item.id).sort((a,b)=>b.createdAt-a.createdAt)[0];if(existing)return {...this.get(existing.id),reused:true};}
+    if(this.flow||this.active||this.remixController||this.search.active)throw Error('正在处理，请等待当前操作结束');this.flow=new AbortController();try{let d=await this.clone(recordId,itemId);this.flow.signal.throwIfAborted();if(options.autoCreate)d=await this.autoRemix(d.id,bin,options.prompt||'');this.flow.signal.throwIfAborted();const partial=options.autoCreate&&d.remixSummary?.status!=='completed';this.finish(partial?'needs-action':'completed',partial?d.message:d.status==='transcribing'?'原素材已保存，视频文案正在后台提取':'克隆稿已保存，可以查看、编辑与发布准备');return d;}catch(e){this.finish(this.flow.signal.aborted?'cancelled':'failed',this.flow.signal.aborted?'已停止，已取得内容保留':e.message);throw e;}finally{this.flow=null;this.changed();}
+  }
+  list(){return this.store.list('content-draft').sort((a,b)=>b.createdAt-a.createdAt).map(d=>({id:d.id,title:d.title,platform:d.source.platform,sourceId:d.source.id,status:this.get(d.id).status,createdAt:d.createdAt}));}
   get(id){const d=this.store.get('content-draft',id);if(!d)throw new Error('克隆稿不存在');
     if(d.transcriptionId&&d.status==='transcribing'){
       const t=this.store.get('transcription',d.transcriptionId);
@@ -39,6 +43,7 @@ export class ContentStudio {
       }
       if(complete||!running){
         d.status=complete?'draft':'needs-action';d.extractionEndedAt=t?.completedAt||t?.updatedAt||Date.now();
+        if(complete&&t.sourceFile&&/\.(mp4|webm|mkv|mov)$/i.test(t.sourceFile)&&fs.existsSync(t.sourceFile))d.originalVideoFile=t.sourceFile;
         d.message=complete?'原视频文案已提取，右侧为可编辑副本；尚未执行 AI 二创。':(t?.message||'关联转录记录不存在，请重新克隆原作品');
         d.revision++;this.store.put('content-draft',id,d);this.store.flush();
       }else d.message=t?.message||'正在提取视频文字';
@@ -80,11 +85,26 @@ export class ContentStudio {
     d.status='transcribing';d.extractionStartedAt=Date.now();delete d.extractionEndedAt;d.revision++;this.checkpoint(d);
     return this.transcriptions.action(d.transcriptionId,'retry').then(()=>this.get(id));
   }
+  async useCollected(id){
+    if((this.active||this.flow||this.remixController)&&this.job?.draftId!==id)throw Error('正在处理其他稿件，请先停止或完成');
+    const d=this.get(id);if(d.source.platform!=='视频号'||!d.source.text?.trim())throw Error('此作品没有已采集文案');
+    if(d.status==='transcribing'){await this.cancel(id);}
+    const current=this.get(id);current.original.description=current.source.text;current.original.text=current.source.text;current.originalTextKind='description';if(!current.body)current.body=current.source.text;current.status='draft';current.extractionEndedAt=Date.now();current.message='已使用采集的作品说明，口播提取可稍后单独进行。';current.revision++;this.checkpoint(current);return this.get(id);
+  }
+  extractTranscript(id){
+    if(this.active||this.flow||this.remixController||this.search.active)throw Error('正在处理，请等待当前操作结束');
+    const d=this.get(id);if(d.source.type!=='video'||d.status==='transcribing')throw Error('当前稿件无需开始提取');
+    if(d.transcriptionId&&d.status==='needs-action')return this.resumeTranscript(id);
+    const media=this.store.list('media').find(m=>m.platform===d.source.platform&&(m.sourceId===d.source.id||m.url===d.source.url)&&m.filePath&&fs.existsSync(m.filePath));
+    const file=d.originalVideoFile&&fs.existsSync(d.originalVideoFile)?d.originalVideoFile:media?.filePath;
+    const input=file?this.transcriptions.choose(file):null,t=this.transcriptions.start(input?{inputId:input.id}:{url:d.source.url,title:d.title});
+    d.original.description=d.original.description||d.original.text;d.originalTextKind='transcript';d.transcriptionId=t.id;d.extractionStartedAt=Date.now();delete d.extractionEndedAt;d.status='transcribing';d.message=file?'正在从已有本地视频提取口播，不重复下载':'正在按需取得音轨并提取口播，已采集的作品说明保留。';d.revision++;this.checkpoint(d);return this.get(id);
+  }
   async close(){await this.cancel();await this.pending?.catch(()=>{});this.browser.close();}
   async autoRemix(id,bin,instructions=''){
     if(!this.ai.config('text').hasKey&&!this.ai.config('image').hasKey){const d=this.get(id);d.message='二创未执行，原稿已保存。请先配置文本或图片服务，再点击“整篇 AI 二创”。';d.remixSummary={status:'partial',text:{status:'not-configured'},images:{total:d.assetOrder.length,generated:0,generatedAssetIds:[],status:'not-configured',missingOriginals:0}};this.checkpoint(d);return this.get(id);}
     await this.exclusive(async signal=>{let d=this.get(id);while(d.status==='transcribing'){signal.throwIfAborted();await delay(1000,undefined,{signal});d=this.get(id);}if(d.status!=='draft')throw new Error(d.message||'请先完成视频转录');});
-    if(this.get(id).source.type==='video')await this.videoFrames(id,bin);
+    if(this.get(id).source.type==='video'&&this.get(id).originalVideoFile)await this.videoFrames(id,bin);
     const result=await this.remix(id,instructions);
     if(result.source.type==='video'&&this.voice?.config().source==='doubao'&&this.voice.config().execution==='automatic')return this.generateVoice(id);
     return result;
@@ -130,7 +150,8 @@ export class ContentStudio {
       const urls=item.images.length?item.images:item.thumbnail?[item.thumbnail]:[];const problems=[];
       this.step(id,'assets','正在逐张保存原作品画面',{current:0,total:urls.length});
       for(const url of urls){signal.throwIfAborted();try{const bytes=await assetBytes(url,this.fetcher,signal);const assetId=randomUUID(),file=path.join(dir,assetId+'.png');await this.writeImage(bytes,file,signal);signal.throwIfAborted();draft.assets.push({id:assetId,file,kind:'image',source:url,origin:'original'});draft.assetOrder.push(assetId);draft.revision++;this.checkpoint(draft);}catch(e){if(signal.aborted)throw e;problems.push(e.message);}this.job.current++;this.job.label=`正在保存原画面 ${this.job.current} / ${urls.length}`;this.changed();}
-      if(item.type==='video'){const t=this.transcriptions.start({url:item.url,title:item.title});draft.transcriptionId=t.id;draft.extractionStartedAt=Date.now();draft.status='transcribing';draft.message='正在提取视频口播文字；画面素材与文案分别保留。';this.step(id,'transcript','正在提取视频口播文字');}
+      if(item.platform==='视频号'&&item.type==='video'&&item.text?.trim()){draft.body=item.text;draft.original.description=item.text;draft.originalTextKind='description';draft.status='draft';draft.message='已复用采集的作品说明与封面，可直接二创；需要视频口播时再单独提取，不自动下载原视频。';}
+      else if(item.type==='video'){const t=this.transcriptions.start({url:item.url,title:item.title});draft.transcriptionId=t.id;draft.extractionStartedAt=Date.now();draft.status='transcribing';draft.message='正在提取视频口播文字；画面素材与文案分别保留。';this.step(id,'transcript','正在提取视频口播文字');}
       else{draft.status='draft';draft.message=problems.length?`${problems.length} 张图片未取得，可添加自己的图片；原始素材链接保留。`:'已克隆正文和图片，可进行二创修改。';}
       if(problems.length)draft.assetWarnings=problems;draft.revision++;this.checkpoint(draft);return this.get(id);
     }catch(e){draft.status='needs-action';draft.message=signal.aborted?'克隆已停止，已取得正文和图片保留；可重新克隆原作品':e.message;this.checkpoint(draft);throw e;}

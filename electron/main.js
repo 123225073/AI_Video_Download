@@ -66,7 +66,7 @@ else {
   engine.douyinBrowser = () => new CreatorBrowser(accounts, engine);
   ai = new AIService(store, path.join(app.getPath('userData'), 'ai'), safeStorage, changed);
   transcriptions = new Transcriptions(store, engine, ai, path.join(app.getPath('userData'), '转录资料'), changed, { testing: testMode });
-  wechatCreators = new WeChatCreators(store, engine);
+  wechatCreators = new WeChatCreators(store, engine, fetch, {encode:value=>{if(!safeStorage.isEncryptionAvailable())throw Error('本地媒体缓存加密暂不可用');return safeStorage.encryptString(value).toString('base64');},decode:value=>safeStorage.decryptString(Buffer.from(value,'base64'))});
   creators = new Creators(store, engine, new CreatorBrowser(accounts, engine), changed, wechatCreators);
   userSearch = new UserSearch({ accounts, creators, bilibili: engine.bilibili, wechat: wechatCreators, browser: new UserSearchBrowser(accounts), changed });
   const searchNotBusy = () => { if (userSearch.active || contentSearch?.active || contentStudio?.active || contentStudio?.remixController || comments?.active || contacts?.active) throw new Error('正在搜索或二创，请停止或等操作结束后再操作'); };
@@ -103,6 +103,8 @@ else {
   handle('content-last',()=>contentSearch.view());
   handle('content-cancel',async(_id)=>{contentSearch.cancel();comments.cancel();contacts.cancel();voice.cancel();await contentStudio.cancel(_id);});
   handle('content-transcript-resume',id=>contentStudio.resumeTranscript(id));
+  handle('content-transcript-start',id=>contentStudio.extractTranscript(id));
+  handle('content-use-collected',id=>contentStudio.useCollected(id));
   handle('content-show',()=>contentSearch.show());
   handle('content-clone',(recordId,itemId,options={})=>{if(comments.active||contacts.active||creators.progress()||parseProgress)throw new Error('当前采集或识别正在运行，请等待完成');return contentStudio.cloneFlow(recordId,itemId,options,bin);});
   handle('content-drafts',()=>contentStudio.list());

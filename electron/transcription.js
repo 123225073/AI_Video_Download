@@ -93,10 +93,10 @@ export class Transcriptions {
   async sourceText(t, signal, update) {
     const dir = path.join(this.directory, t.id); fs.mkdirSync(dir, { recursive: true });
     if (t.source.kind === 'text') return { text: t.source.text, segments: [], language: 'auto', method: '文本导入' };
-    let file = t.source.file;
+    let file = t.source.file || (t.sourceFile&&fs.existsSync(t.sourceFile)?t.sourceFile:null);
     const ext = t.source.ext || path.extname(file || '').slice(1).toLowerCase();
     if (['txt', 'md', 'srt', 'vtt'].includes(ext)) { const text = fs.readFileSync(file, 'utf8'); return { ...(['srt', 'vtt'].includes(ext) ? parseSubtitles(text) : { text: text.trim(), segments: [], language: 'auto' }), method: ['srt', 'vtt'].includes(ext) ? '字幕导入' : '文本导入' }; }
-    if (t.source.kind === 'url') {
+    if (t.source.kind === 'url'&&!file) {
       const platform = platformOf(t.source.url);
       update({ status: 'subtitles', message: '正在读取视频资料与原字幕', progress: 5 });
       if (platform === '视频号') {
@@ -121,7 +121,7 @@ export class Transcriptions {
         file = result.trim().split(/\r?\n/).at(-1); if (!file || !fs.existsSync(file) || path.relative(dir, file).startsWith('..')) throw new Error('未取得音频文件，请检查原链接和平台登录');
       }
     }
-    update({ status: 'preparing', message: '正在提取语音，原文件保留', progress: 15 });
+    update({ status: 'preparing', message: '正在提取语音，原文件保留', progress: 15, sourceFile:file });
     const audio = path.join(dir, 'normalized.wav');
     await command(path.join(this.engine.bin, 'ffmpeg', 'ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', audio], { signal, timeout: 3600000 });
     const metadata = JSON.parse(await command(path.join(this.engine.bin, 'ffmpeg', 'ffprobe.exe'), ['-v', 'error', '-show_format', '-of', 'json', audio], { signal })); const duration = Number(metadata.format?.duration);

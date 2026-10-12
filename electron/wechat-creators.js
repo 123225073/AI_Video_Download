@@ -17,7 +17,7 @@ export function wechatMetadata(feed = {}, parsed = {}) {
   return { ...author, name: author.name || parsed.author || '未知作者', thumbnail: object?.objectDesc?.media?.[0]?.thumbUrl || object?.objectDesc?.media?.[0]?.coverUrl || info.coverUrl || info.coverurl || '', sourceId: typeof object?.id === 'string' ? object.id : null, publishedAt: Number(object?.createtime || info.createTime || info.createtime) ? new Date(Number(object?.createtime || info.createTime || info.createtime) * 1000).toISOString().slice(0, 10).replaceAll('-', '') : null };
 }
 export class WeChatCreators {
-  constructor(store, engine, request = fetch) { this.store = store; this.engine = engine; this.fetch = request; }
+  constructor(store, engine, request = fetch, codec = null) { this.store = store; this.engine = engine; this.fetch = request; this.codec=codec;this.mediaCache=new Map(); }
   config() { return { enabled: true, automatic:true, baseUrl: 'http://127.0.0.1:2022', ...this.store.get('collector-config', 'wechat') }; }
   save(raw) { const c = { enabled: Boolean(raw.enabled), automatic:raw.automatic !== false, baseUrl: collectorBase(raw.baseUrl) }; if(c.automatic && c.baseUrl!=='http://127.0.0.1:2022') throw new Error('自动连接使用内置本机地址；自定义服务请选择手动连接'); this.store.put('collector-config', 'wechat', c); this.store.flush(); return c; }
   async request(route, params = {}, signal) {
@@ -34,10 +34,17 @@ export class WeChatCreators {
     if (payload?.data?.BaseResponse?.Ret) throw new Error('微信官方接口拒绝了本次请求，请检查官方页面的登录或验证状态');
     return payload?.data || payload;
   }
-  async test() { const data = await this.request('/api/channels/status'); if (typeof data?.available !== 'boolean') throw new Error('服务未返回微信连接状态，请检查采集服务版本'); return { connected: data.available, detail: data.available ? '微信已连接，可以识别博主和下载作品' : '微信页面未连接；请开始识别以自动准备连接，再在微信进入视频号页面' }; }
+  async test() { const data = await this.request('/api/channels/status'); if (typeof data?.available !== 'boolean') throw new Error('服务未返回微信连接状态，请检查采集服务版本'); return { connected: data.available, detail: data.available ? '微信页面已连接；搜索和作品读取能力将在实际请求时验证' : '微信页面未连接；请开始识别以自动准备连接，再在微信进入视频号页面' }; }
   async resolve(item, signal) {
+    const saved=this.cached(item);if(saved)return saved;
     const data = await this.request('/api/channels/feed/profile', item.acquisition === 'wechat-collector' ? { oid: item.sourceId, nid: item.objectNonceId || '' } : { url: item.url }, signal);
-    const object = data.object;
+    const result=this.media(data.object,item);this.remember(data.object);return result;
+  }
+  remember(object){
+    try{const selected={acquisition:'wechat-collector',sourceId:object?.id};this.media(object,selected);const m=object.objectDesc.media[0],author=identity(object.contact),record={capturedAt:Date.now(),object:{id:object.id,objectNonceId:object.objectNonceId||'',contact:{username:author.id,nickname:author.name,headUrl:author.avatar},objectDesc:{mediaType:4,description:object.objectDesc.description,media:[{url:m.url,urlToken:m.urlToken||'',decodeKey:m.decodeKey,thumbUrl:m.thumbUrl,coverUrl:m.coverUrl,videoPlayLen:m.videoPlayLen}]}}};this.mediaCache.set(object.id,record);if(this.codec)this.store.put('wechat-media',object.id,{encrypted:this.codec.encode(JSON.stringify(record))});return true;}catch{return false;}
+  }
+  cached(item){const id=item.sourceId||item.id;if(!id)return null;let record=this.mediaCache.get(id);if(!record&&this.codec){const saved=this.store.get('wechat-media',id);if(saved?.encrypted)try{record=JSON.parse(this.codec.decode(saved.encrypted));this.mediaCache.set(id,record);}catch{return null;}}return record?this.media(record.object,{...item,acquisition:'wechat-collector',sourceId:id}):null;}
+  media(object,item){
     if (!object || !object.id || (item.acquisition === 'wechat-collector' && String(object.id) !== item.sourceId)) throw new Error('返回的视频与所选作品不一致，已停止下载');
     const author = identity(object.contact);
     if (item.creatorId && author.id !== item.creatorId) throw new Error('下载时作者身份不一致，已停止');

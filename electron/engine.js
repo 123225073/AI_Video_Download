@@ -65,10 +65,16 @@ export class Engine {
       return { url, platform, title: data.title, total: 1, complete: true, items: [this.item(data, data.webpage_url, platform)], accountId: account?.id || null };
     }
     if (platform === '视频号') {
-      if (!account?.lastSync && this.wechat.collector?.config().enabled) {
-        const run=async()=>{const result=await this.wechat.collector.resolve({url},signal);return {url,platform,title:result.info.title,total:1,complete:true,items:[{...this.item(result.info,url,platform),acquisition:'wechat-collector',objectNonceId:result.objectNonceId}]};};
+      const source=new URL(url),collected=source.hostname==='channels.weixin.qq.com'&&source.pathname==='/web/pages/feed';
+      const sourceId=source.searchParams.get('oid');
+      if(collected&&(!sourceId||!/^[\w=-]{1,280}$/.test(sourceId)))throw new Error('视频号作品标识无效，请从搜索结果重新选择原作品');
+      if(collected){const saved=this.wechat.collector?.cached?.({sourceId});if(saved)return {url,platform,title:saved.info.title,total:1,complete:true,items:[{...this.item(saved.info,url,platform),acquisition:'wechat-collector',objectNonceId:saved.objectNonceId}]};}
+      if ((collected || !account?.lastSync) && this.wechat.collector?.config().enabled) {
+        const selected=collected?{url,acquisition:'wechat-collector',sourceId,objectNonceId:source.searchParams.get('nid')||''}:{url};
+        const run=async()=>{const result=await this.wechat.collector.resolve(selected,signal);return {url,platform,title:result.info.title,total:1,complete:true,items:[{...this.item(result.info,url,platform),acquisition:'wechat-collector',objectNonceId:result.objectNonceId}]};};
         return this.wechat.connection ? this.wechat.connection.withConnection(signal,run) : run();
       }
+      if(collected)throw new Error('请在设置启用视频号采集连接，搜索作品使用该连接取得原素材');
       if (!account?.lastSync) throw new Error('WECHAT_LOGIN_REQUIRED');
       const result = await this.wechat.resolve(url, account.id, signal);
       return { url, platform, title: result.info.title, total: 1, complete: true, items: [this.item(result.info, url, platform)] };
@@ -136,7 +142,7 @@ export class Engine {
     fs.mkdirSync(directory, { recursive: true });
     if (task.item.platform === '视频号') {
       const run=()=>this.wechat.download(task,directory,signal,progress,this);
-      return task.item.acquisition === 'wechat-collector' && this.wechat.connection ? this.wechat.connection.withConnection(signal,run) : run();
+      return task.item.acquisition === 'wechat-collector' && this.wechat.connection && !this.wechat.collector?.cached?.(task.item) ? this.wechat.connection.withConnection(signal,run) : run();
     }
     const args = await this.arguments(task.item.platform, task.item.accountId);
     const cap = task.options.quality === 'best' ? '' : `[height<=${Number(task.options.quality)}]`;

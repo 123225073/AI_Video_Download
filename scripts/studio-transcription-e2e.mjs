@@ -22,6 +22,12 @@ try{
   await enter();await page.getByRole('checkbox',{name:/克隆后自动二创/}).uncheck();await page.getByRole('button',{name:'一键克隆',exact:true}).click();
   await poll(async()=>await page.getByLabel('原文案').inputValue()==='第一批原文');
   assert.equal(await page.getByLabel('克隆稿正文').inputValue(),'第一批原文');result.bothColumnsStream=true;
+  const firstDraft=await app.evaluate(()=>globalThis.fengshaTest.store.get('meta','lastContentDraft').id);
+  await page.getByRole('button',{name:'返回搜索',exact:true}).click();
+  await page.getByRole('button',{name:/我的克隆任务/}).click();
+  await page.getByRole('button',{name:'打开任务',exact:true}).click();assert.equal(await page.getByLabel('原文案').inputValue(),'第一批原文');
+  await page.getByRole('button',{name:'返回搜索',exact:true}).click();await page.getByRole('button',{name:'打开已有任务',exact:true}).click();
+  assert.equal(await app.evaluate(()=>globalThis.fengshaTest.store.list('content-draft').length),1);assert.equal(await app.evaluate(()=>globalThis.fengshaTest.store.get('meta','lastContentDraft').id),firstDraft);result.reentryNoDuplicate=true;
   await page.waitForTimeout(1200);const before=await page.getByTestId('studio-elapsed').textContent();assert.notEqual(before,'00:00');
   await page.reload();await enter();await page.getByRole('button',{name:'打开当前二创稿',exact:true}).click();assert.notEqual(await page.getByTestId('studio-elapsed').textContent(),'00:00');result.reloadKeepsTimer=true;
   await page.getByRole('button',{name:'停止处理',exact:true}).click();await poll(async()=>!(await page.getByRole('button',{name:'停止处理',exact:true}).count()));
