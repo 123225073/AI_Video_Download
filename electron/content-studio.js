@@ -122,13 +122,16 @@ export class ContentStudio {
   audioAsset(id){const d=this.get(id),r=this.voice?.review(d.body);if(!r||d.generatedAudioHash!==r.audioHash||!d.generatedAudioFile||!fs.existsSync(d.generatedAudioFile))throw Error('当前正文尚未生成对应配音');const rel=path.relative(fs.realpathSync(this.directory),fs.realpathSync(d.generatedAudioFile));if(rel.startsWith('..')||path.isAbsolute(rel))throw Error('配音文件位置无效');return d.generatedAudioFile;}
   async originalMedia(d,signal){
     if(d.originalVideoFile&&fs.existsSync(d.originalVideoFile))return d.originalVideoFile;
-    const engine=this.transcriptions.engine,group=await engine.parse(d.source.url,{limit:1,signal}),item=group.items[0];
+    const saved=d.transcriptionId?this.store.get('transcription',d.transcriptionId)?.sourceFile:null;
+    if(saved&&/\.(mp4|mkv|webm|mov)$/i.test(saved)&&fs.existsSync(saved)){const current=this.get(d.id);current.originalVideoFile=saved;this.checkpoint(current);return saved;}
+    const engine=this.transcriptions.engine,group=await engine.parse(d.source.url,{limit:1,signal,allowCollector:false}),item=group.items[0];
     if(!item)throw new Error('尚未取得原视频，请检查登录或原链接');
-    const media=await engine.download({id:d.id,item:{...item,key:item.key||mediaKey(item)},options:{quality:'best'}},path.join(this.directory,d.id,'原视频'),signal,()=>{});
+    const media=await engine.download({id:d.id,item:{...item,key:item.key||mediaKey(item)},options:{quality:'best',allowCollector:false}},path.join(this.directory,d.id,'原视频'),signal,()=>{});
     const current=this.get(d.id);current.originalVideoFile=media.filePath;this.store.put('content-draft',d.id,current);this.store.flush();return media.filePath;
   }
   async videoFrames(id,bin){return this.exclusive(async signal=>{
     const d=this.get(id);if(d.source.type!=='video'||d.videoFramesReady)return d;
+    fs.mkdirSync(path.join(this.directory,id),{recursive:true});
     const file=await this.originalMedia(d,signal),probe=JSON.parse(await command(path.join(bin,'ffmpeg','ffprobe.exe'),['-v','error','-show_format','-show_streams','-of','json',file],{signal}));
     const duration=Number(probe.format?.duration);if(!probe.streams?.some(s=>s.codec_type==='video')||!Number.isFinite(duration)||duration<=0||duration>7200)throw new Error('原视频没有有效画面，或超过两小时');
     const frames=[],count=Math.min(8,Math.max(1,Math.ceil(duration/10)));for(let i=0;i<count;i++){

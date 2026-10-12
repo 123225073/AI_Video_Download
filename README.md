@@ -1,10 +1,10 @@
 # 风沙全平台视频下载器
 
-0.6.13 直接复用视频号已采集的作品说明和封面进行克隆，不默认连接微信或下载视频。口播提取按需执行，优先复用本地视频及加密媒体缓存；旧失败稿可切换回已采集内容。搜索页“我的克隆任务”可重新进入，同一作品重复点击打开已有稿件。见 [0.6.13 验收](docs/验收-0.6.13.md)。
+0.7.0 将图文复刻与视频复刻分开。视频公开分享链接直接下载、语音转文字和可选 AI 校对；原文、校对稿和二创文案独立保留。已有视频、关键帧和任务直接复用，此路径不打开电脑微信。真实视频号下载、204 字本地转录、219 字 AI 校对和播放已验证。见 [0.7.0 验收](docs/验收-0.7.0.md)。
 
 Windows 桌面应用，提供 **视频链接识别与下载、博主作品批量下载、本地媒体管理、语音转录、AI 文案矫正和多语言翻译**。
 
-当前版本：**0.6.13**。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
+当前版本：**0.7.0**。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
 
 “全平台”是产品名称，当前接入 YouTube、B站、抖音、小红书、微信视频号；实际可用性受登录状态、访问权限、地区、限流与平台接口变化影响。各平台的实测范围见下表。
 
@@ -189,9 +189,9 @@ node cli/fengsha.mjs media
 
 ### 使用现成安装包
 
-取得可信的 `FengshaVideoDownloader-0.4.3-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
+取得可信的 `FengshaVideoDownloader-0.7.0-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
 
-完整安装包见 [v0.4.3 Release](https://github.com/123225073/AI_Video_Download/releases/tag/v0.4.3)；私有仓库需登录具有访问权限的账号。源码仓库仍排除大型运行组件与模型，源码部署按下面步骤准备。
+完整安装包见 [v0.7.0 Release](https://github.com/123225073/AI_Video_Download/releases/tag/v0.7.0)；私有仓库需登录具有访问权限的账号。源码仓库仍排除大型运行组件与模型，源码部署按下面步骤准备。
 
 ### 从源码运行
 
@@ -223,7 +223,7 @@ pnpm test:settings
 pnpm dist
 ```
 
-`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.4.3-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
+`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.7.0-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
 
 ## 典型使用顺序
 

@@ -55,7 +55,7 @@ export class Engine {
     if (platform !== '视频号') { const cookie = await this.accounts?.cookieFile(platform, accountId); if (cookie) args.push('--cookies', cookie); }
     return args;
   }
-  async parse(url, { limit = 30, signal } = {}) {
+  async parse(url, { limit = 30, signal, allowCollector = true } = {}) {
     validSource(url);
     const platform = platformOf(url);
     const account = this.accounts?.active(platform);
@@ -69,6 +69,8 @@ export class Engine {
       const sourceId=source.searchParams.get('oid');
       if(collected&&(!sourceId||!/^[\w=-]{1,280}$/.test(sourceId)))throw new Error('视频号作品标识无效，请从搜索结果重新选择原作品');
       if(collected){const saved=this.wechat.collector?.cached?.({sourceId});if(saved)return {url,platform,title:saved.info.title,total:1,complete:true,items:[{...this.item(saved.info,url,platform),acquisition:'wechat-collector',objectNonceId:saved.objectNonceId}]};}
+      if(!allowCollector&&collected)throw Object.assign(new Error('旧记录没有可下载媒体。请粘贴原视频的公开分享链接，或导入本地视频；视频处理不会打开微信页面等待。'),{code:'VIDEO_SHARE_REQUIRED'});
+      if(!allowCollector&&!account?.lastSync)throw new Error('WECHAT_LOGIN_REQUIRED');
       if ((collected || !account?.lastSync) && this.wechat.collector?.config().enabled) {
         const selected=collected?{url,acquisition:'wechat-collector',sourceId,objectNonceId:source.searchParams.get('nid')||''}:{url};
         const run=async()=>{const result=await this.wechat.collector.resolve(selected,signal);return {url,platform,title:result.info.title,total:1,complete:true,items:[{...this.item(result.info,url,platform),acquisition:'wechat-collector',objectNonceId:result.objectNonceId}]};};
@@ -142,6 +144,7 @@ export class Engine {
     fs.mkdirSync(directory, { recursive: true });
     if (task.item.platform === '视频号') {
       const run=()=>this.wechat.download(task,directory,signal,progress,this);
+      if(task.options?.allowCollector===false){if(task.item.acquisition==='wechat-collector'&&!this.wechat.collector?.cached?.(task.item))throw Object.assign(new Error('已保存媒体地址不可用，请补充公开分享链接或本地视频'),{code:'VIDEO_SHARE_REQUIRED'});return run();}
       return task.item.acquisition === 'wechat-collector' && this.wechat.connection && !this.wechat.collector?.cached?.(task.item) ? this.wechat.connection.withConnection(signal,run) : run();
     }
     const args = await this.arguments(task.item.platform, task.item.accountId);

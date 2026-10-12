@@ -8,7 +8,7 @@ import { wechatMetadata } from './wechat-creators.js';
 // Protocol reference: ltaoo/wx_channels_download and the user's prior implementation.
 // Only the explicitly selected account's dedicated session is used.
 export class WeChat {
-  constructor(accounts, bin) { this.accounts = accounts; this.bin = bin; }
+  constructor(accounts, bin) { this.accounts = accounts; this.bin = bin; this.resolved=new Map(); }
   async request(id, url, body, authenticated, signal) {
     const response = await this.accounts.getSession(id).fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(url).origin, Referer: `${new URL(url).origin}/` }, credentials: authenticated ? 'include' : 'omit', redirect: 'error', body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
     if (response.status === 401 || response.status === 403) throw new Error('WECHAT_LOGIN_REQUIRED');
@@ -17,6 +17,7 @@ export class WeChat {
     return JSON.parse(text);
   }
   async resolve(source, id, signal) {
+    const cached=this.resolved.get(id+':'+source);if(cached&&Date.now()-cached.at<5*60*1000){signal?.throwIfAborted();return cached.result;}
     const input = new URL(source);
     if (!((input.hostname === 'weixin.qq.com' && /^\/sph\/[a-zA-Z0-9_-]{1,100}\/?$/.test(input.pathname)) || (input.hostname === 'channels.weixin.qq.com' && input.pathname === '/finder-preview/pages/sph'))) throw new Error('WECHAT_INVALID_LINK');
     const parsed = await this.request(id, 'https://yuanbao.tencent.com/api/weixin/get_parse_result', { type: 'video_channel_url', url: source, scene: 1 }, true, signal);
@@ -35,7 +36,7 @@ export class WeChat {
     const decodeKey = String(media.decodeKey || ''); if (decodeKey && !/^\d{1,20}$/.test(decodeKey)) throw new Error('WECHAT_INVALID_RESPONSE');
     this.accounts.markVerified('视频号', id);
     const author = wechatMetadata(feed, parsed.data);
-    return { url: url.href, decodeKey, info: { id: author.sourceId || createHash('sha256').update(source).digest('hex').slice(0, 24), title: object?.description || preview?.description || parsed.data.desc || '视频号视频', uploader: author.name, thumbnail: author.thumbnail, uploader_id: author.id || '', uploader_avatar: author.avatar, upload_date: author.publishedAt, duration: media.videoPlayLen } };
+    const result={ url: url.href, decodeKey, info: { id: author.sourceId || createHash('sha256').update(source).digest('hex').slice(0, 24), title: object?.description || preview?.description || parsed.data.desc || '视频号视频', uploader: author.name, thumbnail: author.thumbnail, uploader_id: author.id || '', uploader_avatar: author.avatar, upload_date: author.publishedAt, duration: media.videoPlayLen } };this.resolved.set(id+':'+source,{at:Date.now(),result});return result;
   }
   async download(task, directory, signal, progress, engine) {
     const collected = task.item.acquisition === 'wechat-collector';

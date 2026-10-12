@@ -17,6 +17,10 @@ async function fixture(request = async () => new Response(JSON.stringify({ choic
   return { dir, store, ai, service };
 }
 async function settle(service, id) { for (let i = 0; i < 400; i++) { const t = service.get(id); if (!['queued', 'preparing', 'subtitles', 'transcribing', 'correcting', 'summarizing', 'translating'].includes(t.status)) return t; await new Promise(r => setTimeout(r, 10)); } throw new Error('Task did not settle'); }
+test('视频号登录失败指出官方链接解析登录，而非裸错误或电脑微信', async () => {
+  const {store,service}=await fixture();service.engine.parse=async()=>{throw Error('WECHAT_LOGIN_REQUIRED');};
+  try{const {id}=service.start({url:'https://weixin.qq.com/sph/test'});const result=await settle(service,id);assert.equal(result.status,'failed');assert.match(result.message,/腾讯元宝官方登录/);assert.match(result.message,/无需打开电脑微信/);assert.ok(!result.message.includes('WECHAT_LOGIN_REQUIRED'));}finally{await service.close();store.close();}
+});
 async function correctAndConfirm(service, ai, id) {
   await settle(service, id); const chat = ai.chat;
   ai.chat = async (_system, body) => JSON.parse(body).textToCorrect;

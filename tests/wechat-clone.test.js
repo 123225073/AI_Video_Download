@@ -7,6 +7,10 @@ import {ContentSearch} from '../electron/content-search.js';
 const fixtureCodec={encode:value=>Buffer.from(value).toString('base64'),decode:value=>Buffer.from(value,'base64').toString()};
 function cachedFixture(){const rows=new Map(),store={get:(k,id)=>rows.get(k+':'+id),put:(k,id,v)=>rows.set(k+':'+id,v),flush(){}};const collector=new WeChatCreators(store,null,()=>{throw Error('Must not reconnect to WeChat');},fixtureCodec);return {store,collector};}
 const rawVideo=()=>({id:'18446744073709551615',objectNonceId:'selected-nonce',createtime:1790812800,contact:{username:'author@finder',nickname:'原作者'},objectDesc:{mediaType:4,description:'已经采集到的原说明',media:[{url:'https://finder.video.qq.com/selected',urlToken:'?token=fixture',decodeKey:'918273645546372819',videoPlayLen:12}]}});
+test('视频处理没有缓存时立即说明缺少媒体，不再连接微信页面等待',async()=>{
+ let opened=0;const engine=new Engine('',{active:()=>({id:'saved',lastSync:1})},{collector:{config:()=>({enabled:true}),cached:()=>null,resolve:()=>{throw Error('Re-fetch');}},connection:{withConnection:()=>{opened++;throw Error('WeChat popup');}}});
+ await assert.rejects(engine.parse('https://channels.weixin.qq.com/web/pages/feed?oid=12345',{allowCollector:false}),e=>e.code==='VIDEO_SHARE_REQUIRED');assert.equal(opened,0);
+});
 
 test('搜索保存已取得的媒体信息，卡片不暴露媒体令牌，重启后不需要微信页面',async()=>{
  const f=cachedFixture();const search=new ContentSearch({store:f.store,accounts:{active:()=>null},creators:{progress:()=>null,connection:{withConnection:async(_s,fn)=>fn()}},userSearch:{},browser:{close(){}},wechat:f.collector});f.collector.request=async()=>({fengshaVersion:1,objectList:[rawVideo()],continueFlag:0});

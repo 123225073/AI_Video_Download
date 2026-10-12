@@ -100,10 +100,10 @@ export class Transcriptions {
       const platform = platformOf(t.source.url);
       update({ status: 'subtitles', message: '正在读取视频资料与原字幕', progress: 5 });
       if (platform === '视频号') {
-        const group = await this.engine.parse(t.source.url, { limit: 1, signal }), item = group.items[0];
+        const group = await this.engine.parse(t.source.url, { limit: 1, signal, allowCollector:false }), item = group.items[0];
         update({ title: item.title, author: item.author });
-        const task = { id: t.id, item: { ...item, key: mediaKey(item) }, options: { quality: 'best' } };
-        const data = await this.engine.download(task, dir, signal, () => {}); file = data.filePath;
+        const task = { id: t.id, item: { ...item, key: mediaKey(item) }, options: { quality: 'best', allowCollector:false } };
+        const data = await this.engine.download(task, dir, signal, p => update({status:'preparing',message:p.status==='processing'?'正在校验已下载视频':'正在下载原视频，下载后复用音轨和关键帧',downloadProgress:p,progress:p.total?Math.min(14,5+Math.floor(p.bytes/p.total*9)):5})); file = data.filePath;
       } else {
         const args = platform ? await this.engine.arguments(platform) : ['--no-warnings', '--no-playlist'];
         const meta = JSON.parse(await command(path.join(this.engine.bin, 'yt-dlp.exe'), [...args, '--dump-single-json', '--skip-download', '--no-playlist', '--', t.source.url], { signal, timeout: 120000 }));
@@ -180,7 +180,8 @@ export class Transcriptions {
       update({ status: t.archivedAt ? 'archived' : 'ready', message: t.correctionOnly ? 'AI 矫正完成，可并排核对原文与矫正文案' : '转录完成，两种格式已保存；可 AI 矫正或选择文案翻译', progress: 100, completedAt: Date.now(), correctionOnly: false });
     } catch (error) {
       const cancelled = signal.aborted;
-      const message = cancelled ? '已停止，已有文案与译文保留' : String(error.message).includes('模型') || String(error.message).includes('语音') || String(error.message).includes('请') ? String(error.message) : '素材处理失败，请检查链接、平台账号、音轨和本机磁盘后重试';
+      const wechatErrors={WECHAT_LOGIN_REQUIRED:'请在账号管理完成腾讯元宝官方登录后重试，视频处理无需打开电脑微信',WECHAT_LINK_UNAVAILABLE:'视频分享链接当前不可解析，请使用最新公开分享链接或导入本地视频',WECHAT_INVALID_LINK:'请使用视频号公开分享链接；内部页面地址需要已保存的媒体信息',WECHAT_NO_DOWNLOADABLE_MEDIA:'分享页没有返回可下载视频，请更换链接或导入本地视频'};
+      const message = cancelled ? '已停止，已有文案与译文保留' : (wechatErrors[error.message] || ((String(error.message).includes('模型') || String(error.message).includes('语音') || String(error.message).includes('请')) ? String(error.message) : '素材处理失败，请检查链接、平台账号、音轨和本机磁盘后重试'));
       this.save({ ...t, status: cancelled ? 'cancelled' : t.transcript && !t.transcriptPartial ? 'ai-failed' : 'failed', message });
     } finally { this.store.flush(); }
   }

@@ -33,6 +33,9 @@ test('按需提取口播优先复用媒体库文件，完成后更新原文且�
  const f=fixture(t,'ready',{status:'draft',transcriptionId:null,source:{id:'same',platform:'视频号',type:'video',url:'https://channels.weixin.qq.com/web/pages/feed?oid=same'},body:'作品说明',original:{title:'视频',text:'作品说明'}});const file=path.join(f.studio.directory,'existing.mp4');fs.writeFileSync(file,'fixture');f.store.put('media','m',{platform:'视频号',sourceId:'same',filePath:file});
  f.studio.transcriptions.choose=p=>{assert.equal(p,file);return {id:'input'};};f.studio.transcriptions.start=p=>{assert.equal(p.inputId,'input');assert.equal(p.url,undefined);return {id:'t'};};const d=f.studio.extractTranscript('d');assert.equal(d.status,'draft');assert.equal(d.original.description,'作品说明');assert.equal(d.original.text,'已取得的原视频口播。');assert.equal(d.body,d.original.text);
 });
+test('停止后提取关键帧也必须复用已下载视频，不重新解析或下载',async t=>{
+ const f=fixture(t,'cancelled',{status:'needs-action'}),file=path.join(f.studio.directory,'downloaded.mp4');fs.writeFileSync(file,'fixture');const tr=f.store.get('transcription','t');tr.sourceFile=file;f.store.put('transcription','t',tr);f.studio.transcriptions.engine={parse:()=>{throw Error('Must not re-fetch');}};assert.equal(await f.studio.originalMedia(f.studio.get('d'),new AbortController().signal),file);
+});
 for(const status of ['ready','archived','completed'])test(`完成状态 ${status} 回填原文、解锁且重复读取不改版本`,t=>{
   const f=fixture(t,status),d=f.studio.get('d');assert.equal(d.status,'draft');assert.equal(d.original.text,'已取得的原视频口播。');assert.equal(d.body,d.original.text);assert.equal(d.transcriptPartial,false);assert.equal(f.studio.get('d').revision,d.revision);
 });
