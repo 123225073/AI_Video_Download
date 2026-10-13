@@ -2,10 +2,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID, createHash, X509Certificate } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import {Script} from 'node:vm';
 import {ClashRoute} from './clash-route.js';
 import YAML from 'yaml';
 
 const bundledHash = '26a99c72dc1873982671426af2b60a20ceef9f7bb31e47fb7db42f94de45a818';
+const adapterCapabilities=['search','detail','creatorFeeds'];
+const capabilityLabels={search:'搜索',detail:'详情',creatorFeeds:'作者作品'};
+function requiredCapabilities(required=adapterCapabilities){
+  if(!Array.isArray(required)||required.some(key=>!adapterCapabilities.includes(key)))throw new Error('视频号接口能力要求无效');
+  return [...new Set(required)];
+}
+// The build reader can reuse this before copying bytes. Compile only; never run
+// page code here or attempt to decrypt protected source files.
+export function validateCollectorScriptSource(source){
+  if(!Buffer.isBuffer(source)&&typeof source!=='string')throw new Error('视频号适配脚本内容无效，未部署');
+  const bytes=Buffer.isBuffer(source)?source:Buffer.from(source,'utf8'),text=bytes.toString('utf8');
+  if(text.replace(/^\uFEFF/,'').startsWith('%TSD-Header'))throw new Error('视频号适配脚本仍为 TSD 加密字节，未部署；请通过已授权的明文读取流程重新构建组件');
+  if(!text.trim())throw new Error('视频号适配脚本为空，未部署');
+  try{new Script(text,{filename:'collector-content.js'});}catch{throw new Error('视频号适配脚本不是有效 JavaScript，未部署；请检查构建时取得的明文代码');}
+  return bytes;
+}
 export function collectorEnvironment(base=process.env) {
   const env={...base};for(const key of Object.keys(env))if(/^(https?_proxy|all_proxy|no_proxy)$/i.test(key))delete env[key];
   // The upstream is configured explicitly. Inherited HTTP_PROXY would route
@@ -39,21 +56,34 @@ export class CollectorConnection {
   config() { return { enabled: true, automatic: true, baseUrl:'http://127.0.0.1:2022', ...this.store.get('collector-config','wechat') }; }
   status() { const policy=this.store.get('collector-policy','automatic');return {...this.state, activeTasks:this.members.size, bundled:fs.existsSync(path.join(this.bin,'collector','wx_video_download.exe')), allowed:Boolean(policy?.allowed && (!this.certificate || policy.certificateFingerprint===this.certificate.fingerprint))}; }
   update(phase,label,extra={}) { this.state={phase,label,...extra}; this.changed(); }
-  async api(route, body, timeout=15000) {
+  async api(route, body, timeout=15000, signal=null) {
+    if(signal?.aborted)throw new Error('CANCELLED');
     const base=this.config().baseUrl; if (base !== 'http://127.0.0.1:2022') throw new Error('自动连接使用内置本机接口；自定义服务请关闭自动切换');
-    const response=await this.fetch(new URL(route,base),{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,redirect:'error',signal:AbortSignal.timeout(timeout)});
+    const response=await this.fetch(new URL(route,base),{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeout)]):AbortSignal.timeout(timeout)});
     if(!response.ok) throw new Error(`微信连接接口暂不可用（HTTP ${response.status}）`);
     const result=await response.json(); if(Number(result.code)!==0) throw new Error('微信连接组件未完成请求，请重新准备连接'); return result.data;
   }
   async online() { try{return (await this.api('/api/channels/status',null,2500)).available === true;}catch{return false;} }
-  async adapterReady() {
+  async adapterReady(signal=null,timeout=8000,required=adapterCapabilities) {
+    required=requiredCapabilities(required);
     try {
       // A connected page may still run an adapter from before an app upgrade.
       // The probe is handled locally by our extension, never by official search.
       const keyword='__fengsha_content__:'+JSON.stringify({probe:true,nonce:randomUUID()});
-      const result=await this.api('/api/channels/contact/search?keyword='+encodeURIComponent(keyword),null,8000);
-      return result?.errCode===0&&result?.data?.fengshaAdapterVersion===3;
-    }catch{return false;}
+      const result=await abortable(this.api('/api/channels/contact/search?keyword='+encodeURIComponent(keyword),null,timeout,signal),signal);
+      const version=result?.data?.fengshaAdapterVersion,capabilities=result?.data?.capabilities;
+      const fingerprint=result?.data?.fengshaContentHash,hashMatches=!this.adapterFingerprint||fingerprint===this.adapterFingerprint;
+      const ready=result?.errCode===0&&version===4&&hashMatches&&required.every(key=>capabilities?.[key]===true);
+      this.adapterState={version,capabilities,fingerprint,hashMatches,canRefreshAdapter:result?.errCode===0&&result?.data?.canRefreshAdapter===true,ready};return ready;
+    }catch(error){if(signal?.aborted)throw new Error('CANCELLED');this.adapterState={ready:false};return false;}
+  }
+  adapterMessage(required=adapterCapabilities) {
+    if(this.adapterState?.version===4&&this.adapterState.hashMatches===false)return '微信页面仍在使用旧的采集适配脚本；请刷新视频号页面以载入本次更新，已有登录保留';
+    if(this.adapterState?.version===4){
+      const missing=required.filter(key=>this.adapterState.capabilities?.[key]!==true).map(key=>capabilityLabels[key]);
+      return `微信页面已连接，但${missing.join('、')||'采集'}接口尚未加载；请更新页面适配后重试，无需反复登录或开关视频号`;
+    }
+    return '微信页面已连接，但采集适配版本未就绪；请刷新视频号页面以载入更新，已有内容和登录保留';
   }
   runSystem(action,stateFile=null,signal=null) {
     const systemScript=path.join(this.bin,'collector','collector-system.ps1');
@@ -64,7 +94,12 @@ export class CollectorConnection {
       const terminate=()=>{const cleanup=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});cleanup.on('error',()=>child.kill());};
       const timer=setTimeout(()=>{timedOut=true;terminate();},action==='apply'?180000:action==='restore'?120000:45000);signal?.addEventListener('abort',terminate,{once:true});child.stdout.on('data',b=>output+=b);child.stderr.resume();child.on('error',()=>{clearTimeout(timer);signal?.removeEventListener('abort',terminate);reject(new Error('Windows连接辅助程序未能启动'));});
       child.on('close',code=>{clearTimeout(timer);signal?.removeEventListener('abort',terminate);if(signal?.aborted)return reject(new Error('CANCELLED'));let result;try{result=JSON.parse(output.replace(/^\uFEFF/,''));}catch{}
-        if(code!==0){const stages={'certificate-check':'证书检查','certificate-add':'临时证书信任','certificate-remove':'临时证书移除','proxy-apply':'代理切换','proxy-restore':'原代理恢复','route-restore':'Clash 分流恢复','restore-state':'恢复记录读取','restore-save':'恢复记录保存'};const stage=stages[result?.stage] || (action==='restore'?'连接恢复':'连接准备');return reject(new Error(timedOut?`${stage}超时；未继续采集，恢复记录保留在本机`:`${stage}失败${Number.isInteger(result?.errorCode)?`（Windows 错误 ${result.errorCode}）`:''}；恢复记录保留在本机`));}
+        if(code!==0){const stages={'certificate-check':'证书检查','certificate-proxy-baseline':'连接前代理状态核对','certificate-parse':'本机连接证书读取','certificate-identity':'本机连接证书名称和有效期核对','certificate-fingerprint':'本机连接证书指纹核对','certificate-store':'当前用户证书库检查','certificate-add':'临时证书信任','certificate-remove':'临时证书移除','proxy-apply':'代理切换','proxy-restore':'原代理恢复','route-restore':'Clash 分流恢复','restore-state':'恢复记录读取','restore-save':'恢复记录保存'};const stage=stages[result?.stage] || (action==='restore'?'连接恢复':'连接准备');
+          const error=new Error(timedOut?`${stage}超时；未继续采集，恢复记录保留在本机`:`${stage}失败${Number.isInteger(result?.errorCode)?`（Windows 错误 ${result.errorCode}）`:''}；恢复记录保留在本机`);
+          const diagnosticText=value=>typeof value==='string'?value.slice(0,256):null;
+          error.diagnostic={stage:diagnosticText(result?.stage),exceptionType:diagnosticText(result?.exceptionType),innerType:diagnosticText(result?.innerType),innerErrorCode:Number.isInteger(result?.innerErrorCode)?result.innerErrorCode:null,errorCode:Number.isInteger(result?.errorCode)?result.errorCode:null};
+          return reject(error);
+        }
         if(!result)return reject(new Error('Windows连接检查返回无效结果'));resolve(result);
       });
     });
@@ -92,12 +127,18 @@ export class CollectorConnection {
     // v260907 supports a workdir global.js. Deploy our narrowly scoped adapter
     // without replacing the upstream executable or its certificate identity.
     const contentScript=path.join(this.bin,'collector','collector-content.js');
-    if(fs.existsSync(contentScript))fs.writeFileSync(path.join(this.directory,'fengsha-content.js'),fs.readFileSync(contentScript));
+    let contentFile='fengsha-content.js';
+    if(fs.existsSync(contentScript)){
+      const source=validateCollectorScriptSource(fs.readFileSync(contentScript)),fingerprint=createHash('sha256').update(source).digest('hex').slice(0,12);
+      this.adapterFingerprint=fingerprint;contentFile=`fengsha-content-${fingerprint}.js`;
+      const deployed=path.join(this.directory,contentFile),injected=Buffer.concat([Buffer.from(`window.__fengshaContentHash=${JSON.stringify(fingerprint)};\n`),source]);
+      if(!fs.existsSync(deployed)||!fs.readFileSync(deployed).equals(injected)){fs.writeFileSync(deployed,injected);this.adapterUpdatePending=true;this.adapterReloadAttempted=false;}
+    }
     const componentConfig=path.join(this.directory,'component.yaml');
     if(fs.existsSync(contentScript)){
       const current=fs.existsSync(componentConfig)?YAML.parse(fs.readFileSync(componentConfig,'utf8')):null;
       if(current&&typeof current==='object'&&!Array.isArray(current)){
-        current.inject={...(current.inject||{}),globalScript:'fengsha-content.js'};
+        current.inject={...(current.inject||{}),globalScript:contentFile};
         fs.writeFileSync(componentConfig,YAML.stringify(current));
       }
     }
@@ -106,7 +147,7 @@ export class CollectorConnection {
       const executable=path.join(this.bin,'collector','wx_video_download.exe');
       if(!fs.existsSync(executable) || createHash('sha256').update(fs.readFileSync(executable)).digest('hex')!==bundledHash) throw new Error('内置微信组件缺失或校验失败，请重新安装程序');
       const config=path.join(this.directory,'component.yaml');
-      if(!fs.existsSync(config)) fs.writeFileSync(config,'api:\n  hostname: 127.0.0.1\n  port: 2022\ninject:\n  globalScript: fengsha-content.js\nproxy:\n  enabled: false\n  system: false\n  skipInstallRootCert: true\n  tun: false\n  tcpRelay:\n    enabled: false\n');
+      if(!fs.existsSync(config)) fs.writeFileSync(config,`api:\n  hostname: 127.0.0.1\n  port: 2022\ninject:\n  globalScript: ${contentFile}\nproxy:\n  enabled: false\n  system: false\n  skipInstallRootCert: true\n  tun: false\n  tcpRelay:\n    enabled: false\n`);
       retireStaleComponentPid(this.directory);
       this.worker=spawn(executable,['server','--config',config,'--workdir',this.directory],{cwd:this.directory,env:collectorEnvironment(),windowsHide:true,stdio:'ignore'}); this.worker.on('error',()=>{});
       for(let i=0;i<15;i++){await delay(500);try{await this.api('/api/channels/status',null,1000);ready=true;break;}catch{}}
@@ -115,9 +156,11 @@ export class CollectorConnection {
     if(fs.existsSync(contentScript)){
       const configInfo=await this.api('/api/config');
       if(path.resolve(String(configInfo.config_file||'')).toLowerCase()!==path.resolve(componentConfig).toLowerCase())throw new Error('当前本机采集服务由其他程序启动，不能替换其脚本；请关闭其他采集工具后再试');
-      const wanted=path.join(this.directory,'fengsha-content.js');
+      const wanted=path.join(this.directory,contentFile);
       const field=configInfo.fields?.find(f=>f.key==='inject.globalScript');
       if(path.resolve(String(field?.effective_value||'')).toLowerCase()!==path.resolve(wanted).toLowerCase()){
+        this.adapterUpdatePending=true;
+        this.adapterReloadAttempted=false;
         const update=await this.api('/api/config',{values:{'inject.globalScript':wanted}});
         let applied=false;for(let i=0;i<25;i++){await delay(400);try{const status=await this.api('/api/restart/status?restart_token='+encodeURIComponent(update.restart_token),null,1500);if(status.restart_completed&&status.config_applied){applied=true;break;}}catch{}}
         if(!applied)throw new Error('采集搜索扩展重载尚未完成，请稍后重新准备连接');
@@ -140,9 +183,14 @@ export class CollectorConnection {
     if(!await this.consent({certificate:this.certificate.name,proxyBefore:inspection.proxy.ProxyServer.value || '直接连接',upstream})) return false;
     this.store.put('collector-policy','automatic',{allowed:true,certificateFingerprint:this.certificate.fingerprint,confirmedAt:Date.now()});this.store.flush();this.changed();return true;
   }
-  async begin(signal) {
+  async begin(signal,required=adapterCapabilities) {
     if(!this.certificate)await this.prepare(); if(signal.aborted) throw new Error('CANCELLED');
-    if(await this.online()&&await this.adapterReady()){this.update('connected','微信页面适配已就绪；当前任务无需切换系统代理');return;}
+    if(await abortable(this.online(),signal)){
+      if(await this.adapterReady(signal,8000,required)){this.update('connected','当前任务所需微信接口已就绪；无需切换系统代理');return;}
+      if(signal.aborted)throw new Error('CANCELLED');
+      // A live socket and installed JS do not prove that WeChat exported APIs.
+      if(this.adapterState?.version===4&&this.adapterState.hashMatches!==false)throw new Error(this.adapterMessage(required));
+    }
     const inspected=await this.system('inspect');const plan=await this.routing.discover(inspected.proxy);const upstream=plan?'':upstreamProxy(inspected.proxy,inspected.guardedProxy);
     const id=randomUUID(); this.leaseFile=path.join(this.directory,`lease-${id}.json`);
     fs.writeFileSync(this.leaseFile,JSON.stringify({schema:1,id,mode:plan?'routed':'system',routing:plan,owner:process.pid,ownerStarted:inspected.ownerStarted,before:inspected.proxy,proxyAddress:'127.0.0.1:2023',certificateName:this.certificate.name,certificateFile:this.certificate.file,certificateFingerprint:this.certificate.fingerprint,certificateThumbprint:'',certificateAdded:false,phase:'prepared'}));
@@ -153,15 +201,52 @@ export class CollectorConnection {
     await this.system('apply',this.leaseFile,signal);
     if(plan)await this.routing.begin(plan);
     const applied = await this.system('inspect');
-    if(plan){if(JSON.stringify(applied.proxy)!==JSON.stringify(inspected.proxy))throw new Error('连接准备期间系统代理发生变化，视频号采集已停止，请重试');}
+    if(plan){
+      const unchanged=['ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL'].every(key=>applied.proxy?.[key]?.present===inspected.proxy?.[key]?.present&&applied.proxy?.[key]?.value===inspected.proxy?.[key]?.value);
+      if(!unchanged)throw new Error('连接准备期间系统代理发生变化，视频号采集已停止，请重试');
+    }
     else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('系统代理切换未生效或已被其他程序修改，微信采集已停止；请检查代理软件的系统代理设置后再试');
     this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续');
     if(this.openPage){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续搜索。若未自动进入，请在连接提示中打开视频号。',{needsPage:true});try{await this.openPage(signal);}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号；无需关闭现有代理。',{needsPage:true});}}
     const deadline=Date.now()+this.waitMs;
-    do { if(signal.aborted) throw new Error('CANCELLED');if(await this.online()){if(await this.adapterReady()){this.update('connected','微信页面适配已就绪 · 当前任务结束后自动恢复原网络');return;}this.update('waiting','微信页面仍在使用旧的采集适配。请在视频号页面刷新一次以载入更新；已有内容和登录保留。',{needsPage:true});}await delay(1000,signal); } while(Date.now()<deadline);
-    throw new Error('微信页面适配未就绪，原网络将自动恢复；请在视频号页面刷新以载入当前适配后重试');
+    let pageOnline=false,refreshRequested=false;
+    do {
+      if(signal.aborted)throw new Error('CANCELLED');
+      if(await abortable(this.online(),signal)){
+        pageOnline=true;
+        if(await this.adapterReady(signal,Math.max(1,Math.min(8000,deadline-Date.now())),required)){this.update('connected','当前任务所需微信接口已就绪 · 任务结束后自动恢复原网络');return;}
+        if(signal.aborted)throw new Error('CANCELLED');
+        const staleRuntime=(this.adapterState?.version!==undefined&&this.adapterState.version!==4)||this.adapterState?.hashMatches===false;
+        if(plan&&this.leaseFile&&this.status().allowed&&!refreshRequested&&this.adapterState?.version===4&&this.adapterState.hashMatches===false&&this.adapterState.canRefreshAdapter===true&&/^[a-f0-9]{12}$/.test(this.adapterFingerprint||'')&&Date.now()<deadline){
+          // The owned adapter advertises this local control message. Send it only
+          // after route activation and validation; ordinary probes stay read-only.
+          refreshRequested=true;this.adapterReloadAttempted=true;this.adapterUpdatePending=false;
+          const keyword='__fengsha_content__:'+JSON.stringify({probe:true,reload:true,expectedHash:this.adapterFingerprint,nonce:randomUUID()});
+          this.update('waiting','正在刷新视频号页面以载入新版适配；已有登录保留',{needsPage:false});
+          try{
+            const acknowledgement=await abortable(this.api('/api/channels/contact/search?keyword='+encodeURIComponent(keyword),null,Math.max(1,Math.min(8000,deadline-Date.now())),signal),signal);
+            // false also means this window already scheduled the same target.
+            // Neither acknowledgement is readiness: a new matching probe is required.
+            if(acknowledgement?.errCode!==0||typeof acknowledgement?.data?.reloading!=='boolean')throw new Error('Invalid adapter refresh acknowledgement');
+          }catch(error){if(signal.aborted)throw new Error('CANCELLED');throw new Error('视频号适配刷新请求未完成；原网络将自动恢复，请稍后重试，无需反复登录');}
+        }else if(!refreshRequested&&plan&&!this.adapterReloadAttempted&&(this.adapterUpdatePending||staleRuntime)&&Date.now()<deadline){
+          // Handle stale pages once per instance or changed deployment, only
+          // inside a validated routed lease. This flag is not refresh success.
+          this.adapterUpdatePending=false;
+          this.adapterReloadAttempted=true;
+          // v260907 exposes reload only through its internal WebSocket client,
+          // not an HTTP route. Never guess GET/POST endpoints or treat a failed
+          // refresh as ready. A refreshed page is verified by the next probe.
+          this.update('waiting','新版适配需要首次刷新：内置 v260907 没有公开自动刷新接口；当前临时连接保持开启，请刷新视频号页面以载入更新，已有登录保留',{needsPage:true});
+        }else if(refreshRequested)this.update('waiting','刷新请求已发送，正在等待新版适配和当前任务所需接口；已有登录保留',{needsPage:false});
+        else this.update('waiting',this.adapterMessage(required),{needsPage:this.adapterState?.version!==4||this.adapterState?.hashMatches===false});
+      }
+      await delay(Math.max(1,Math.min(1000,deadline-Date.now())),signal);
+    }while(Date.now()<deadline);
+    throw new Error(pageOnline?this.adapterMessage(required)+'；原网络将自动恢复':'微信视频号页面尚未连接，原网络将自动恢复；请打开视频号页面后重试');
   }
-  async withConnection(signal,operation) {
+  async withConnection(signal,operation,required=adapterCapabilities) {
+    required=requiredCapabilities(required);
     if(this.closed) throw new Error('应用正在退出');
     if(signal?.aborted)throw new Error('CANCELLED');
     if(!this.config().automatic) return operation();
@@ -177,8 +262,14 @@ export class CollectorConnection {
     if(this.state.phase==='error')throw new Error('上次网络恢复尚未完成，请先在视频号连接中恢复原网络');
     const member=randomUUID();this.members.add(member);
     try {
-      if(!this.started){this.controller=new AbortController();this.started=this.begin(this.controller.signal);}
-      await abortable(this.started,signal); if(signal?.aborted) throw new Error('CANCELLED');return await operation();
+      if(!this.started){this.controller=new AbortController();this.startedRequired=required;this.started=this.begin(this.controller.signal,required);}
+      await abortable(this.started,signal); if(signal?.aborted) throw new Error('CANCELLED');
+      // Each joining task checks any additional capability before it runs. Do
+      // not widen the first task's gate or cancel it when another task fails.
+      if(required.some(key=>!this.startedRequired.includes(key))){
+        if(!await this.adapterReady(signal||this.controller.signal,8000,required))throw new Error(this.adapterMessage(required));
+      }
+      if(signal?.aborted)throw new Error('CANCELLED');return await operation();
     } finally {
       this.members.delete(member);
       if(!this.members.size) { this.ending=this.finish();try{await this.ending;}finally{this.ending=null;} }
@@ -191,7 +282,7 @@ export class CollectorConnection {
       if(this.leaseFile){this.update('restoring','正在恢复原代理与临时证书');const routed=JSON.parse(fs.readFileSync(this.leaseFile,'utf8')).mode==='routed';if(routed)await this.system('restore',this.leaseFile);else{await this.api('/api/proxy/config',{values:{'proxy.enabled':false,'proxy.system':false},restart:true}).catch(()=>{});await this.system('restore',this.leaseFile);} }
       this.update('idle','当前任务已结束，原网络设置已恢复');
     } catch(error){this.update('error','自动恢复尚未完成，请点击恢复原网络');throw error;}
-    finally {this.started=null;this.controller=null;if(this.state.phase!=='error')this.leaseFile=null;}
+    finally {this.started=null;this.startedRequired=null;this.controller=null;if(this.state.phase!=='error')this.leaseFile=null;}
   }
   async restore() { if(this.members.size) throw new Error('请先停止作品读取和视频号下载，再恢复网络');await this.recover();this.leaseFile=null;this.update('idle','原网络设置已恢复');return this.status(); }
   async close(){this.closed=true;this.controller?.abort();await this.ending;await this.finish();this.worker?.kill();}

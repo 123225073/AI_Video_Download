@@ -2,7 +2,7 @@ param([ValidateSet('inspect','apply','restore','guard')][string]$Action,[string]
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $script:taskStage='state'
-trap { @{ok=$false;stage=$script:taskStage;errorCode=$_.Exception.HResult} | ConvertTo-Json -Compress; exit 1 }
+trap { @{ok=$false;stage=$script:taskStage;errorCode=$_.Exception.HResult;exceptionType=$_.Exception.GetType().Name;innerErrorCode=if ($_.Exception.InnerException) {$_.Exception.InnerException.HResult} else {$null};innerType=if ($_.Exception.InnerException) {$_.Exception.InnerException.GetType().Name} else {$null}} | ConvertTo-Json -Compress; exit 1 }
 $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 function Read-Proxy {
   $properties = Get-ItemProperty -LiteralPath $registryPath
@@ -113,19 +113,24 @@ if ($Action -eq 'inspect') {
 if ($Action -eq 'apply') {
   $script:taskStage='certificate-check'
   $state = Read-State
+  $script:taskStage='certificate-proxy-baseline'
   $nowProxy=Read-Proxy
   foreach ($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
     if ($nowProxy[$name].present -ne $state.before.$name.present -or [string]$nowProxy[$name].value -ne [string]$state.before.$name.value) { throw 'Proxy changed during connection preparation' }
   }
+  $script:taskStage='certificate-parse'
   $pem=Get-Content -LiteralPath $state.certificateFile -Raw -Encoding UTF8
   $encoded=$pem -replace '-----BEGIN CERTIFICATE-----','' -replace '-----END CERTIFICATE-----','' -replace '\s',''
   $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String($encoded))
+  $script:taskStage='certificate-identity'
   if ($certificate.GetNameInfo(0,$false) -ne $state.certificateName -or $certificate.NotBefore -gt (Get-Date) -or $certificate.NotAfter -le (Get-Date) -or $certificate.NotAfter -gt (Get-Date).AddYears(2).AddDays(2)) { throw '证书身份或有效期不符合连接约定' }
   if ($state.certificateFingerprint) {
+    $script:taskStage='certificate-fingerprint'
     $hash=[Security.Cryptography.SHA256]::Create()
     try { $fingerprint=[BitConverter]::ToString($hash.ComputeHash($certificate.RawData)).Replace('-',':') } finally { $hash.Dispose() }
     if ($fingerprint -ne $state.certificateFingerprint) { throw '证书与本次连接记录不一致' }
   }
+  $script:taskStage='certificate-store'
   $store = Open-Root
   try {
     $present = @($store.Certificates | Where-Object Thumbprint -eq $certificate.Thumbprint).Count -gt 0
@@ -146,11 +151,14 @@ if ($Action -eq 'apply') {
 }
 if ($Action -eq 'restore') { $state=Restore-State; @{restored=($state.phase -eq 'restored')} | ConvertTo-Json -Compress; exit }
 if ($Action -eq 'guard') {
-  [IO.File]::WriteAllText(($StateFile + '.guard-ready'),'ready')
+  $guardReady=$false
   while ($true) {
     try {
       $state=Read-State
       if ($state.phase -eq 'restored') { exit }
+      # Report readiness only after this reader has validated the lease. File
+      # protection/scanners can delay readable metadata after the initial write.
+      if (-not $guardReady) { [IO.File]::WriteAllText(($StateFile + '.guard-ready'),'ready'); $guardReady=$true }
       $owner=Get-Process -Id $state.owner -ErrorAction SilentlyContinue
       if (-not $owner -or $owner.StartTime.ToUniversalTime().Ticks.ToString() -ne $state.ownerStarted) { $null=Restore-State; exit }
     } catch { Start-Sleep -Seconds 1; continue }

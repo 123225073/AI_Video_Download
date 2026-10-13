@@ -7,6 +7,7 @@ import { command } from './engine.js';
 import { mediaKey } from './core.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import {draftTextPreview} from './ai-stream.js';
+import {videoCreativeSource} from './video-workflow.js';
 import {textRemixSystemPrompt,normalizeRemixResult,imageRemixPrompt,cleanImageInstructions,resolveAssetLineage,buildAssetPairs} from './remix-policy.js';
 const safeTitle = value => String(value || '').trim().slice(0,180);
 const mediaHost = host => /(^|\.)(xhscdn\.com|xiaohongshu\.com|douyinpic\.com|douyinstatic\.com|byteimg\.com|ibytedtos\.com|hdslb\.com|biliimg\.com|ytimg\.com|qpic\.cn|qq\.com)$/.test(host);
@@ -19,7 +20,24 @@ export async function assetBytes(url,fetcher=fetch,signal){
   return Buffer.concat(chunks);
 }
 export class ContentStudio {
-  constructor({store,search,browser,transcriptions,ai,voice,directory,changed=()=>{},fetcher=fetch}){Object.assign(this,{store,search,browser,transcriptions,ai,voice,directory,changed,fetcher});fs.mkdirSync(directory,{recursive:true});this.active=null;for(const d of this.store.list('content-draft'))if(d.status==='cloning'){d.status='needs-action';d.message='上次克隆中断，已有正文和图片保留，可重新克隆';this.store.put('content-draft',d.id,d);}}
+  constructor({store,search,browser,transcriptions,ai,voice,directory,changed=()=>{},fetcher=fetch}){
+    Object.assign(this,{store,search,browser,transcriptions,ai,voice,directory,changed,fetcher});fs.mkdirSync(directory,{recursive:true});this.active=null;let recovered=false;
+    for(const d of this.store.list('content-draft')){
+      let interrupted=false;
+      if(d.status==='cloning'){d.status='needs-action';d.message='上次克隆中断，已有正文和图片保留，可重新克隆';interrupted=true;}
+      if(d.remixSummary?.status==='running'){
+        d.remixSummary.status='partial';d.remixSummary.error={status:'interrupted',message:'上次二创中断，已生成文案和图片保留，可手工重试。',at:Date.now()};
+        for(const part of [d.remixSummary.text,d.remixSummary.images])if(part?.status==='pending')part.status='interrupted';
+        d.message=d.remixSummary.error.message;interrupted=true;
+      }
+      if(d.imageOperation?.status==='running'){
+        const failure={...d.imageOperation,status:'interrupted',message:'上次图片修改中断，原图和已有生成图保留，可手工重试。',endedAt:Date.now()};
+        d.imageOperation=failure;d.imageFailures={...d.imageFailures,[failure.assetId]:failure};d.message=failure.message;interrupted=true;
+      }
+      if(interrupted){this.store.put('content-draft',d.id,d);recovered=true;}
+    }
+    if(recovered)this.store.flush();
+  }
   progress(){return this.job?{...this.job,running:!!(this.active||this.remixController||this.flow),elapsedMs:(this.job.endedAt||Date.now())-this.job.startedAt}:null;}
   step(id,stage,label,extra={}){if(!this.job||this.job.draftId!==id||this.job.state!=='running')this.job={id:randomUUID(),draftId:id,startedAt:Date.now(),visited:[]};const canonical=['frames'].includes(stage)?'assets':stage==='transcript'?'source':stage;if(!this.job.visited.includes(canonical))this.job.visited.push(canonical);Object.assign(this.job,{stage,label,state:'running',endedAt:null,...extra});this.changed();}
   checkpoint(d){this.store.put('content-draft',d.id,d);this.store.flush();this.changed();}
@@ -58,7 +76,7 @@ export class ContentStudio {
     }
     return {...d,message,remixSummary,assetPairs,extractionProgress,videoCurrent:!!d.videoFile&&d.videoRevision===d.revision&&(!audio||d.videoAudioHash===audio.hash),voiceReview:audio?{...audio,approved:d.voiceApproval?.hash===audio.hash,audioReady:d.generatedAudioHash===audio.audioHash&&!!d.generatedAudioFile&&fs.existsSync(d.generatedAudioFile),preview:`fengsha-media://draft-${d.id}/audio`}:null,assets};
   }
-  save(id,raw){const d=this.get(id);if(this.active||this.remixController)throw new Error('正在克隆或改图，请等待完成');if(raw.revision!==d.revision)throw new Error('稿件已更新，请重新读取后编辑');
+  save(id,raw){if(raw.expectedDraftId!==undefined&&raw.expectedDraftId!==id)throw new Error('保存的稿件绑定不一致，请重新读取');const d=this.get(id);if(this.active||this.remixController)throw new Error('正在克隆或改图，请等待完成');if(raw.revision!==d.revision)throw new Error('稿件已更新，请重新读取后编辑');
     const title=safeTitle(raw.title),body=typeof raw.body==='string'?raw.body:'';
     if(!title||body.length>200000)throw new Error('标题不能为空，正文不能超过 20 万字');
     const assets=raw.assetIds;if(!Array.isArray(assets)||assets.length>50||new Set(assets).size!==assets.length||assets.some(id=>!d.assets.some(a=>a.id===id)))throw new Error('素材排序无效，请重新读取稿件');
@@ -164,12 +182,12 @@ export class ContentStudio {
     if(bytes.subarray(0,4).toString()!=='RIFF'||bytes.subarray(8,12).toString()!=='WEBP')throw Error('素材不是可读取的图片');
     const input=file+'.webp';try{fs.writeFileSync(input,bytes);await command(path.join(this.transcriptions.engine.bin,'ffmpeg','ffmpeg.exe'),['-hide_banner','-loglevel','error','-i',input,'-frames:v','1',file],{signal,timeout:30000});if(nativeImage.createFromPath(file).isEmpty())throw Error('WebP 图片转换后校验失败');}finally{try{fs.unlinkSync(input);}catch{}}
   }
-  async rewrite(id,instructions='',remix=false,options={}){return this.exclusive(async signal=>{const d=this.get(id),sourceText=options.reference==='current'?d.body:d.original.text,sourceTitle=options.reference==='current'?d.title:d.original.title;if(d.status!=='draft'||!sourceText.trim())throw new Error('请先完成原始文字提取');
+  async rewrite(id,instructions='',remix=false,options={}){return this.exclusive(async signal=>{const d=this.get(id),workflow=d.source.type==='video'?this.store.list('video-workflow').find(r=>r.draftId===id):null,videoBase=d.source.type==='video'?videoCreativeSource(workflow,d,this.store.get('transcription',d.transcriptionId),options.reference||'corrected'):null,sourceText=videoBase?.text??(options.reference==='current'?d.body:d.original.text),sourceTitle=videoBase?.title??(options.reference==='current'?d.title:d.original.title);if(options.correctedHash&&videoBase?.hash!==options.correctedHash)throw Error('校对稿已更新，请重新二创');if(d.status!=='draft'||!sourceText.trim())throw new Error('请先完成原始文字提取');
     if(sourceText.length>30000)throw new Error('原文超过三万字，请先在转录页面分段处理');
-    this.step(id,'rewrite','AI 正在生成新的文案',{preview:{}});const response=await this.ai.chat(textRemixSystemPrompt,JSON.stringify({sourceTitle,sourceText,reference:options.reference||'original',instructions:String(instructions).slice(0,4000)}),signal,value=>{if(signal.aborted)return;this.job.preview=draftTextPreview(value);this.changed();});
+    this.step(id,'rewrite','AI 正在生成新的文案',{preview:{}});const response=await this.ai.chat(textRemixSystemPrompt,JSON.stringify({sourceTitle,sourceText,reference:videoBase?.reference||options.reference||'original',instructions:String(instructions).slice(0,4000)}),signal,value=>{if(signal.aborted)return;this.job.preview=draftTextPreview(value);this.changed();});
     let result;try{result=JSON.parse(response.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''));}catch{throw new Error('文本模型未返回完整二创稿，原内容保留');}
     try{result=normalizeRemixResult(result,{sourceText,instructions});}catch(e){if(e.reviewNotes?.length){const current=this.get(id);if(current.revision===d.revision){current.reviewNotes=e.reviewNotes;this.checkpoint(current);}}throw e;}
-    signal.throwIfAborted();const current=this.get(id);if(current.revision!==d.revision)throw new Error('生成期间稿件已修改，请重新操作');
+    signal.throwIfAborted();const current=this.get(id);if(current.revision!==d.revision)throw new Error('生成期间稿件已修改，请重新操作');if(videoBase&&videoCreativeSource(workflow,d,this.store.get('transcription',d.transcriptionId),videoBase.reference).hash!==videoBase.hash)throw Error('生成期间校对稿已变更，请使用最新校对稿重新二创');
     current.history=[...(current.history||[]),{title:d.title,body:d.body,tags:d.tags,reviewNotes:d.reviewNotes||[],at:Date.now()}].slice(-20);current.title=safeTitle(result.title);current.body=result.body;current.tags=result.tags;current.reviewNotes=result.reviewNotes;current.revision++;current.message='已生成独立二创文案，原文和审阅意见分别保留，请核对内容后发布。';this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
   },remix);}
   async remix(id,instructions='',options={}){
@@ -182,13 +200,13 @@ export class ContentStudio {
     const before=this.get(id),text=this.ai.config('text'),images=this.ai.config('image');
     if(!(useText&&text.hasKey)&&!(useImages&&images.hasKey))throw new Error('请先在 AI 设置配置文本或图片服务；克隆原稿已保存');
     const summary={status:'running',scope,reference,text:{status:!useText?'unchanged':text.hasKey&&text.model?'pending':'not-configured'},images:{total:useImages?before.assetOrder.length:0,generated:0,generatedAssetIds:[],status:!useImages?'unchanged':before.assetOrder.length?(images.hasKey&&images.model?'pending':'not-configured'):'not-needed',missingOriginals:useImages&&before.source.type==='image'?Math.max(0,(before.original.images?.length||0)-before.assets.filter(a=>a.origin==='original').length):0}};
-    const saveSummary=()=>{const d=this.get(id);d.remixSummary=structuredClone(summary);d.message=summary.status==='completed'?(scope==='text'?'文案优化已保存，图片保持不变。':scope==='images'?'图片优化已保存，文案保持不变。':'二创文案与画面已保存，原稿保留，请审阅生成结果。'):`二创尚未全部完成：文案${summary.text.status==='generated'?'已生成':'未完成'}，图片 ${summary.images.generated} / ${summary.images.total}${summary.images.missingOriginals?'，部分原图未取得':''}；已有结果和原始素材保留。`;this.checkpoint(d);};
+    const saveSummary=()=>{const d=this.get(id);d.remixSummary=structuredClone(summary);d.message=summary.status==='completed'?(scope==='text'?'文案优化已保存，图片保持不变。':scope==='images'?'图片优化已保存，文案保持不变。':'二创文案与画面已保存，原稿保留，请审阅生成结果。'):`二创尚未全部完成：文案${summary.text.status==='generated'?'已生成':'未完成'}，图片 ${summary.images.generated} / ${summary.images.total}${summary.images.missingOriginals?'，部分原图未取得':''}；已有结果和原始素材保留。${summary.error?' '+summary.error.message:''}`;this.checkpoint(d);};
     this.remixController=this.flow||new AbortController();this.step(id,useText?'rewrite':'image',`正在准备${scope==='text'?'文案优化':scope==='images'?'图片优化':'文案与图片二创'}`);saveSummary();
     try{if(useText&&text.hasKey&&text.model){await this.rewrite(id,instructions,true,{reference});summary.text.status='generated';saveSummary();}
       if(useImages&&images.hasKey&&images.model){for(const [i,assetId] of before.assetOrder.entries()){this.step(id,'image',`AI 正在调整画面 ${i+1} / ${before.assetOrder.length}`,{current:i+1,total:before.assetOrder.length,preview:null});this.remixController.signal.throwIfAborted();const result=await this.editImage(id,assetId,instructions||'尽量保持原图风格和排版，只做局部优化，不增加文字。',true,{reference,mode:options.mode||'preserve'});const generated=result.assets.at(-1);summary.images.generated++;summary.images.generatedAssetIds.push(generated.id);saveSummary();}if(before.assetOrder.length)summary.images.status='generated';}
       this.remixController.signal.throwIfAborted();summary.status=(!useText||summary.text.status==='generated')&&(!useImages||summary.images.generated===summary.images.total&&!summary.images.missingOriginals)?'completed':'partial';saveSummary();
       if(!this.flow)this.finish(summary.status==='completed'?'completed':'needs-action',this.get(id).message);return this.get(id);
-    }catch(e){summary.status='partial';if(summary.text.status==='pending')summary.text.status='failed';if(summary.images.status==='pending')summary.images.status='incomplete';saveSummary();throw e;
+    }catch(e){summary.status='partial';summary.error={status:this.remixController.signal.aborted?'cancelled':'failed',message:this.remixController.signal.aborted?'已停止处理，已生成内容保留。':e.message,at:Date.now()};if(summary.text.status==='pending')summary.text.status=summary.error.status;if(summary.images.status==='pending')summary.images.status='incomplete';saveSummary();throw e;
     }finally{this.remixController=null;this.changed();}
   }
   asset(id,assetId){const d=this.get(id),a=d.assets.find(a=>a.id===assetId);if(!a||!fs.existsSync(a.file))throw new Error('图片素材已不存在');const root=fs.realpathSync(this.directory),file=fs.realpathSync(a.file);if(path.relative(root,file).startsWith('..')||path.isAbsolute(path.relative(root,file)))throw new Error('图片素材位置无效');return a;}
@@ -197,20 +215,32 @@ export class ContentStudio {
     for(const a of additions){const file=path.join(this.directory,id,a.id+'.png');fs.writeFileSync(file,a.bytes);d.assets.push({id:a.id,file,kind:'image',origin:'imported'});d.assetOrder.push(a.id);}d.revision++;this.store.put('content-draft',id,d);this.store.flush();this.changed();return this.get(id);
   }
   async editImage(id,assetId,prompt,remix=false,options={}){if(typeof prompt!=='string'||!cleanImageInstructions(prompt)||prompt.length>32000)throw new Error('请输入图片修改要求（最多 32000 字）');prompt=cleanImageInstructions(prompt);if(!['original','current'].includes(options.reference||'original')||!['preserve','redesign'].includes(options.mode||'preserve'))throw new Error('图片编辑方式无效');return this.exclusive(async signal=>{
-    this.step(id,'image','AI 正在重绘当前画面');const d=this.get(id),a=this.asset(id,assetId),c=this.ai.config('image');const key=this.ai.secret('image',c.baseUrl);
+    this.step(id,'image','AI 正在重绘当前画面');const d=this.get(id),operation={assetId,reference:options.reference||'original',mode:options.mode||'preserve',status:'running',startedAt:Date.now()};d.imageOperation=operation;this.checkpoint(d);
+    try{const a=this.asset(id,assetId),c=this.ai.config('image');const key=this.ai.secret('image',c.baseUrl);
     if(!key||!c.model)throw new Error('请先在 AI 设置保存图片服务密钥和 GPT Image 2.5 模型');
     const lineage=resolveAssetLineage(d.assets,assetId);if(!lineage.valid)throw new Error('原图关联缺失或循环，不能可靠追溯；原素材保留');
     const base=options.reference==='current'?a:this.asset(id,lineage.originalAssetId),dimensions=nativeImage.createFromPath?.(base.file)?.getSize?.()||{};
     const size=dimensions.height>dimensions.width*1.2?'1024x1536':dimensions.width>dimensions.height*1.2?'1536x1024':'1024x1024';
     const policyPrompt=imageRemixPrompt(prompt,{title:d.title,mode:options.mode});const form=new FormData();form.set('model',c.model);form.set('prompt',policyPrompt);form.set('image',new Blob([fs.readFileSync(base.file)],{type:'image/png'}),'source.png');form.set('output_format','png');form.set('size',size);
-    const response=await this.fetcher(apiBase(c.baseUrl)+'/images/edits',{method:'POST',headers:{Authorization:`Bearer ${key}`},body:form,redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(c.timeout*1000)])});
+    const timeout=AbortSignal.timeout(c.timeout*1000),combined=AbortSignal.any([signal,timeout]);let response,raw;
+    try{response=await this.fetcher(apiBase(c.baseUrl)+'/images/edits',{method:'POST',headers:{Authorization:`Bearer ${key}`},body:form,redirect:'error',signal:combined});
+      if(response.ok)raw=await response.text();combined.throwIfAborted();
+    }catch{throw new Error(signal.aborted?'已停止图片修改，原图和已有生成图保留':timeout.aborted?'图片模型服务超时，请调高超时或稍后重试；原图保留':'无法连接或读取图片服务，请检查服务地址与网络；原图保留');}
     if(!response.ok)throw new Error(response.status>=500?`CPA 图片上游暂不可用（HTTP ${response.status}），请在设置中选择 CPA 可用的 GPT Image 2.5 型号后重试；原图保留`:`图片模型未完成修改（HTTP ${response.status}），请检查服务、模型权限或额度；原图保留`);
-    const raw=await response.text();if(raw.length>64*1024*1024)throw new Error('图片模型响应过大');let payload;try{payload=JSON.parse(raw);}catch{throw new Error('图片服务返回了无效响应');}
+    if(raw.length>64*1024*1024)throw new Error('图片模型响应过大');let payload;try{payload=JSON.parse(raw);}catch{throw new Error('图片服务返回了无效响应');}
     const base64=payload.data?.[0]?.b64_json;if(typeof base64!=='string'||!/^[A-Za-z0-9+/\r\n]+={0,2}$/.test(base64)||base64.length>48*1024*1024)throw new Error('图片服务未返回有效的 base64 图片，请检查 Images Edits 兼容性');
     const bytes=Buffer.from(base64,'base64'),image=nativeImage.createFromBuffer(bytes);if(image.isEmpty())throw new Error('模型返回的图片无法读取，原图保留');signal.throwIfAborted();
     const current=this.get(id);if(current.revision!==d.revision)throw new Error('改图期间稿件已改变，请重新操作；原图保留');
     const newId=randomUUID(),file=path.join(this.directory,id,newId+'.png');fs.writeFileSync(file,image.toPNG());
-    current.assets.push({id:newId,file,kind:'image',origin:'generated',originalAssetId:base.id,replacesAssetId:assetId,editMode:options.mode||'preserve',reference:options.reference||'original',size,model:c.model,prompt,policyPrompt});current.assetOrder=current.assetOrder.map(v=>v===assetId?newId:v);current.revision++;current.message='图片调整已保存，原图与历史版本保留，请放大对比检查。';this.store.put('content-draft',id,current);this.store.flush();this.changed();return this.get(id);
+    current.assets.push({id:newId,file,kind:'image',origin:'generated',originalAssetId:base.id,replacesAssetId:assetId,editMode:options.mode||'preserve',reference:options.reference||'original',size,model:c.model,prompt,policyPrompt});current.assetOrder=current.assetOrder.map(v=>v===assetId?newId:v);current.revision++;current.imageOperation={...operation,status:'completed',generatedAssetId:newId,endedAt:Date.now()};current.imageFailures={...current.imageFailures};for(const [failedId,failure] of Object.entries(current.imageFailures))if(failedId===assetId||failure.originalAssetId===lineage.originalAssetId)delete current.imageFailures[failedId];current.message='图片调整已保存，原图与历史版本保留，请放大对比检查。';
+    if(!remix&&current.remixSummary?.status==='partial'&&current.remixSummary.scope!=='text'){
+      const summary=current.remixSummary,pairs=buildAssetPairs(current.assets,current.assetOrder,a=>!!a.file&&fs.existsSync(a.file));
+      summary.images.generatedAssetIds=pairs.filter(p=>p.status==='generated').map(p=>p.generatedAssetId);summary.images.generated=summary.images.generatedAssetIds.length;
+      if(summary.images.generated===summary.images.total&&!summary.images.missingOriginals){summary.images.status='generated';
+        if(summary.scope==='images'||summary.text.status==='generated'){summary.status='completed';delete summary.error;}}
+    }
+    this.checkpoint(current);return this.get(id);
+    }catch(e){const current=this.get(id),lineage=resolveAssetLineage(current.assets,assetId),failure={...operation,originalAssetId:lineage.originalAssetId,status:signal.aborted?'cancelled':'failed',message:signal.aborted?'已停止图片修改，原图和已有生成图保留':e.message,endedAt:Date.now()};current.imageOperation=failure;current.imageFailures={...current.imageFailures,[assetId]:failure};current.message=failure.message;this.checkpoint(current);throw e;}
   },remix);}
   async renderVideo(id,bin){return this.exclusive(async signal=>{const d=this.get(id);if(d.status!=='draft'||!d.assetOrder.length)throw new Error('请先完成文字提取并添加至少一张画面图片');
     const selectedAudio=this.voice?.review(d.body),doubao=selectedAudio?.source==='doubao';

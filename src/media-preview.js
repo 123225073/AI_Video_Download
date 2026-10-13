@@ -31,3 +31,15 @@ export function resolveMedia(input, media = []) {
 export function zoomLevel(current, action) {
   return action === 'reset' ? 1 : Math.min(4, Math.max(0.25, Math.round((current + (action === '+' ? 0.25 : -0.25)) * 100) / 100));
 }
+
+export function videoPlaybackError(error, { local = false, status } = {}) {
+  if (local && status === 404) return '原视频文件不可用，请确认文件仍在原位置且可读取，再重试加载。';
+  if (local && status >= 500) return '本地视频读取失败，请重试加载。';
+  if (error?.code === 1) return '视频加载已中止，请重试加载。';
+  if (error?.code === 3)
+    return '视频文件已读取，但当前播放器无法解码该视频或音轨；请检查编码格式。';
+  if (local && error?.code === 4 && [200, 206].includes(status)) return '本地文件可读取，但播放器未能识别视频源；请重试加载，仍失败时请检查编码格式。';
+  if (local) return '本地视频未能加载，请重试加载；若仍失败，请检查文件读取或编码格式。';
+  if (error?.code === 4) return '当前播放器不支持此视频源或编码格式。';
+  return '视频读取中断，请检查连接后重试加载。';
+}

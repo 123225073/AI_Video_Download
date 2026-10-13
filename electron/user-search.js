@@ -24,13 +24,13 @@ export class UserSearch {
         this.record = { id: randomUUID(), platform, keyword, accountId: this.accounts.active(platform)?.id || null, users: [], next: platform === 'B站' ? 1 : '', status: 'searching', message: '', searchedAt: Date.now() };
         return this.read(signal, true);
       };
-      return platform === '视频号' && this.creators.connection ? this.creators.connection.withConnection(signal, operation) : operation();
+      return platform === '视频号' && this.creators.connection ? this.creators.connection.withConnection(signal, operation,['search']) : operation();
     }, true, platform);
   }
   async more(id) {
     if (!this.record || this.record.id !== id) throw new Error('本次搜索已结束或被替换，请重新搜索');
     if (['complete', 'cancelled', 'limited'].includes(this.record.status)) throw new Error('本次搜索没有可继续读取的位置，请重新搜索');
-    return this.run(signal => this.record.platform === '视频号' && this.creators.connection ? this.creators.connection.withConnection(signal, () => this.read(signal)) : this.read(signal));
+    return this.run(signal => this.record.platform === '视频号' && this.creators.connection ? this.creators.connection.withConnection(signal, () => this.read(signal),['search']) : this.read(signal));
   }
   async read(signal, initial = false) {
     const r = this.record;

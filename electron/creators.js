@@ -58,7 +58,7 @@ export class Creators {
   async exclusive(fn, label, useWechat = false) {
     if (this.active) throw new Error('正在读取博主，请先停止当前读取');
     const controller = new AbortController(); this.active = { controller, label }; this.changed();
-    const promise = (async () => { try { return useWechat && this.connection ? await this.connection.withConnection(controller.signal, () => fn(controller.signal)) : await fn(controller.signal); } finally { this.active = null; this.changed(); } })();
+    const promise = (async () => { try { return useWechat && this.connection ? await this.connection.withConnection(controller.signal, () => fn(controller.signal),['creatorFeeds']) : await fn(controller.signal); } finally { this.active = null; this.changed(); } })();
     this.active.promise = promise; return promise;
   }
   progress() { return this.active ? { label: this.active.label } : null; }
@@ -104,12 +104,18 @@ export class Creators {
       if (['抖音', '小红书'].includes(platform)) creator = await this.browser.identify(source, platform, account?.id, signal);
       else if (platform === '视频号') {
         let parsed, parseError;
-        if (!profile && !(this.connection && this.wechatCreators?.config().enabled)) { try { parsed = await this.engine.parse(source, { limit: 1, signal }); } catch (error) { if (signal.aborted) throw error; parseError = error; } }
+        if (!profile) { try { parsed = await this.engine.parse(source, { limit: 1, signal, allowCollector: false }); } catch (error) { if (signal.aborted) throw error; parseError = error; } }
         const item = parsed?.items[0];
         creator = { platform, name: item?.author || '未知作者', avatar: item?.creatorAvatar || '', id: item?.creatorId || null, url: null, supported: false, needsCollector: true, reason: '已取得原视频作者资料。读取作者作品还需要本机视频号采集服务，并在微信中打开视频号页面；请连接服务后重新识别。也可返回新建下载，使用批量链接下载所需视频。' };
         if (profile) creator = { ...creator, name: '视频号作者（昵称待读取）', id: profile.id, url: profile.url, reason: '已取得主页作者 ID。请连接本机视频号采集服务，并在微信中打开该作者主页，再重新识别。' };
         if (this.wechatCreators?.config().enabled) {
-          try { creator = { ...creator, ...await (profile ? this.wechatCreators.identifyProfile(profile, signal) : this.wechatCreators.identify(source, item, signal)), needsCollector: false }; }
+          try {
+            if(item?.creatorId&&!item.creatorId.startsWith('shared_author_')) creator={...creator,supported:true,adapter:'wechat-collector',source,sourceObjectId:item.sourceId||null,needsCollector:false,reason:'已通过原视频分享链接确认作者；读取作者作品时自动准备微信连接。'};
+            else {
+              const resolve=()=>profile?this.wechatCreators.identifyProfile(profile,signal):this.wechatCreators.identify(source,item,signal);
+              creator={...creator,...await(this.connection?this.connection.withConnection(signal,resolve,[profile?'creatorFeeds':'detail']):resolve()),needsCollector:false};
+            }
+          }
           catch (error) { if (signal.aborted) throw error; if (parseError) throw new Error(`作者资料尚未读取：${error.message}；单视频解析需要有效的元宝登录`); creator.reason = error.message; }
         }
         else if (parseError) throw parseError;
@@ -136,7 +142,7 @@ export class Creators {
       } else throw new Error('该平台尚未接入博主识别');
       const record = { id: randomUUID(), creator: { ...creator, accountId: account?.id || null }, source, total: creator.total ?? null, items: [], scanned: 0, cursor: 1, seen: [], status: creator.supported ? 'identified' : 'needs-connection', complete: false, skipped: {}, createdAt: Date.now() };
       this.store.put('creator', record.id, record); this.store.put('meta', 'lastCreator', { id: record.id }); this.store.flush(); return record;
-    }, '正在从原链接识别博主', platformOf(source) === '视频号');
+    }, '正在从原链接识别博主');
   }
   last() { const id = this.store.get('meta', 'lastCreator')?.id; const r = id ? this.store.get('creator', id) : null; if (!r) return null; return { ...r, recoveryAvailable: !r.items.length && Boolean(this.previous(r)), ...(r.status === 'reading' ? { status: 'interrupted', message: '上次读取被中断，可继续读取已保存清单' } : {}) }; }
   previous(record) {

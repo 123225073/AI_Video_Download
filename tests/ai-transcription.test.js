@@ -7,7 +7,7 @@ import { Store } from '../electron/store.js';
 import { AIService, apiBase } from '../electron/ai.js';
 import { Transcriptions, transcriptionUrl } from '../electron/transcription.js';
 import { parseSubtitles, chunksOf, srtOf } from '../electron/transcript-text.js';
-import { simplifiedRecognition, validateCorrection } from '../electron/transcript-correction.js';
+import { simplifiedRecognition, validateCorrection, correctionVerification } from '../electron/transcript-correction.js';
 import { alignedBatches, alignedReply } from '../electron/transcript-alignment.js';
 const vault = { isEncryptionAvailable: () => true, encryptString: t => Buffer.from(t).map(n => n ^ 71), decryptString: b => Buffer.from(b).map(n => n ^ 71).toString() };
 async function fixture(request = async () => new Response(JSON.stringify({ choices: [{ message: { content: '## 摘要\n关键观点：整理资料。' }, finish_reason: 'stop' }] }))) {
@@ -90,11 +90,12 @@ test('字幕原文、时间戳和完整AI校正文案分别保存，摘要使用
   await service.close(); store.close();
 });
 
-test('模型摘要、无关改写、数字变动和时间戳不能当成完整校正文案', () => {
+test('模型摘要、无关改写和时间戳被拒绝，数字变动单独标记待审核', () => {
   const source = '今天学习如何整理资料，首先保留全部原文与视频来源，然后检查识别错误，再提炼关键观点，最后保存完整材料，共 3 步。';
   assert.throws(() => validateCorrection(source, '整理资料需要保留原文。'), /不完整/);
   assert.throws(() => validateCorrection(source, '这里讲的是如何制作烘焙蛋糕，首先准备鸡蛋面粉并称好重量，然后打发奶油混合液体，再放入烤箱等待烘焙，最后装盘上桌，共 3 步。'), /改动过大/);
-  assert.throws(() => validateCorrection(source, source.replace('3', '4')), /数字/);
+  assert.equal(validateCorrection(source, source.replace('3', '4')), source.replace('3', '4'));
+  assert.equal(correctionVerification(source, source.replace('3', '4')).numericStatus, 'requires-review');
   assert.throws(() => validateCorrection(source, '[00:00:01] ' + source), /格式不符/);
   assert.equal(validateCorrection(source, source), source);
 });

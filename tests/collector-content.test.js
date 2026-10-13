@@ -35,10 +35,10 @@ test('invalid query never loads a module or calls an official API',async()=>{
   const f=fixture({resources:[moduleURL]});assert.equal((await f.request({keyword:'__fengsha_content__:{broken'})).errCode,1011);assert.equal(f.imports.length,0);
 });
 
-test('adapter probe never calls the official search service or imports modules',async()=>{
+test('adapter probe recovers local cached modules without calling official services',async()=>{
   let calls=0;const f=fixture({api:{finderSearch(){calls++;}},resources:[moduleURL]});
   const r=await f.request({keyword:'__fengsha_content__:'+JSON.stringify({probe:true})});
-  assert.equal(r.data.fengshaAdapterVersion,3);assert.equal(calls,0);assert.equal(f.imports.length,0);
+  assert.equal(r.data.fengshaAdapterVersion,4);assert.equal(calls,0);assert.deepEqual(f.imports,[moduleURL]);
 });
 test('content pagination preserves offset, lastBuff and one requestId',async()=>{
   const payloads=[];const f=fixture({api:{finderSearch:async p=>{payloads.push(p);return {errCode:0,data:{objectList:[],objectContinueFlag:1,lastBuff:'buffer',offset:20}};}}});
@@ -55,4 +55,50 @@ test('selected feed detail recovers a cached service even when WXU.API has no de
   const f=fixture({resources:[moduleURL],load:async()=>({Z:service})});
   const r=await f.request({oid:'18446744073709551615',nid:'selected-nonce'},'key:channels:feed_profile');
   assert.equal(r?.data?.object.id,'18446744073709551615');assert.equal(payload.objectNonceId,'selected-nonce');assert.equal(payload.needObject,1);assert.equal(f.calls.length,0);
+});
+
+ test('public share links and OID details use the same recovered API without legacy fallback',async()=>{
+  let payload;const f=fixture({api:{finderGetCommentDetail:async p=>{payload=p;return {errCode:0,data:{object:{id:'123'}}};}}});
+  f.sandbox.fetchExportIdWithShareId=async data=>{assert.equal(data.url,'https://weixin.qq.com/sph/AidY5tmMHd');return [null,'encrypted-real-id'];};
+  const r=await f.request({url:'https://weixin.qq.com/sph/AidY5tmMHd'},'key:channels:feed_profile');
+  assert.equal(r.errCode,0);assert.equal(payload.scene,141);assert.equal(payload.encrypted_objectid,'encrypted-real-id');assert.equal(payload.objectid,undefined);assert.equal(f.calls.length,0);
+ });
+ test('failed share resolver never guesses a short share ID as encrypted object ID',async()=>{
+  let called=false;const f=fixture({api:{finderGetCommentDetail:async()=>{called=true;}}});f.sandbox.fetchExportIdWithShareId=async()=>[new Error('secret token'),null];
+  const r=await f.request({url:'https://weixin.qq.com/sph/AidY5tmMHd'},'key:channels:feed_profile');assert.equal(r.errCode,1011);assert.equal(called,false);assert.doesNotMatch(r.errMsg,/secret/);
+ });
+ test('creator pagination recovers merged API and preserves username and cursor',async()=>{
+  let payload;const f=fixture({resources:[moduleURL],load:async()=>({merged:{finderUserPage:async p=>{payload=p;return {errCode:0,data:{object:[],continueFlag:0}};}}})});
+  const r=await f.request({username:'original@finder',next_marker:encodeURIComponent('next+/=')},'key:channels:feed_list');assert.equal(r.errCode,0);assert.equal(payload.username,'original@finder');assert.equal(payload.lastBuffer,'next+/=');assert.equal(f.calls.length,0);
+ });
+ test('probe reports missing official capabilities rather than claiming all operations work',async()=>{
+  const f=fixture({api:{finderSearch(){}}});const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});
+  assert.deepEqual(r.data.capabilities,{search:true,detail:false,creatorFeeds:false});
+ });
+
+test('cached module capabilities are recovered before the connection readiness gate',async()=>{
+ const f=fixture({resources:[moduleURL],load:async()=>({merged:{finderSearch:()=>{throw Error('probe must not search');},finderGetCommentDetail(){},finderUserPage(){}}})});
+ const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});assert.equal(r.errCode,0);assert.deepEqual(r.data.capabilities,{search:true,detail:true,creatorFeeds:true});assert.equal(f.imports.length,1);
+});
+
+test('owned refresh acknowledges once and reloads the same page without official calls',async()=>{
+ const f=fixture({resources:[moduleURL]});let reloads=0;f.sandbox.window.location={reload(){reloads++;}};f.sandbox.window.__fengshaContentHash='111111111111';
+ const keyword='__fengsha_content__:'+JSON.stringify({probe:true,reload:true,expectedHash:'222222222222'});
+ assert.equal((await f.request({keyword})).data.reloading,true);
+ assert.equal((await f.request({keyword})).data.reloading,false);
+ await new Promise(resolve=>setTimeout(resolve,20));assert.equal(reloads,1);assert.equal(f.imports.length,0);assert.equal(f.calls.length,0);
+});
+test('matching adapter fingerprint never reloads',async()=>{
+ const f=fixture();let reloads=0;f.sandbox.window.location={reload(){reloads++;}};f.sandbox.window.__fengshaContentHash='111111111111';
+ const r=await f.request({keyword:'__fengsha_content__:'+JSON.stringify({probe:true,reload:true,expectedHash:'111111111111'})});
+ assert.equal(r.data.reloading,false);await new Promise(resolve=>setTimeout(resolve,20));assert.equal(reloads,0);
+});
+test('invalid refresh fingerprints do not navigate or call an official service',async()=>{
+ const f=fixture();let reloads=0;f.sandbox.window.location={reload(){reloads++;}};
+ const r=await f.request({keyword:'__fengsha_content__:'+JSON.stringify({probe:true,reload:true,expectedHash:'https://outside.invalid'})});
+ assert.notEqual(r.errCode,0);assert.equal(reloads,0);assert.equal(f.calls.length,0);assert.equal(f.imports.length,0);
+});
+test('probe identifies runtime content independently of the deployed file',async()=>{
+ const f=fixture({api:{finderSearch(){},finderGetCommentDetail(){},finderUserPage(){}}});f.sandbox.window.__fengshaContentHash='abcdef123456';
+ const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});assert.equal(r.data.fengshaContentHash,'abcdef123456');assert.equal(r.data.canRefreshAdapter,true);
 });

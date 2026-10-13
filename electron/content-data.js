@@ -40,7 +40,7 @@ export function contentItem(platform, raw) {
   if (!matches) return null;
   const images = [...new Set((Array.isArray(raw.images) ? raw.images : []).map(thumbnailUrl).filter(Boolean))].slice(0,50);
   return { id, platform, key:`${platform}:${id}`, url:url.href, title:clean(raw.title,180), author:clean(raw.author,200).split(/\n+/).map(s=>s.trim()).filter((s,i,all)=>s&&all.indexOf(s)===i).join(' ').slice(0,100), text:clean(raw.text), images,
-    thumbnail:thumbnailUrl(raw.thumbnail) || images[0] || '', publishedAt:publishedDate(raw.publishedAt), type:raw.type === 'image' ? 'image' : 'video',
+    thumbnail:thumbnailUrl(raw.thumbnail) || images[0] || '', publishedAt:publishedDate(raw.publishedAt), publishedAtSource:raw.publishedAtSource==='estimated'?'estimated':'exact', type:raw.type === 'image' ? 'image' : 'video',
     likes:typeof raw.likes === 'number' && raw.likes >= 0 ? raw.likes : null, acquisition:raw.acquisition || null, objectNonceId:typeof raw.objectNonceId === 'string' ? raw.objectNonceId : null, bodyComplete:raw.bodyComplete === true };
 }
 export function xhsContent(raw, token = '') {
@@ -51,9 +51,11 @@ export function xhsContent(raw, token = '') {
   return contentItem('小红书', { id, url:`https://www.xiaohongshu.com/explore/${id}${security ? '?xsec_token='+encodeURIComponent(security)+'&xsec_source=pc_search' : ''}`, title:r.title || r.display_title || r.desc?.slice(0,80), text:r.desc || '', author:r.user?.nickname, images, thumbnail:r.cover?.url_default || r.cover?.url || images[0], type:r.type === 'normal' ? 'image' : 'video', publishedAt:r.time || r.create_time, likes:Number(r.interact_info?.liked_count), bodyComplete:!!r.desc && !!r.time });
 }
 export function mergeContent(previous,item){
+  if(!item)return previous;
   if(!previous)return item;
   const keep=previous.bodyComplete&&!item.bodyComplete;
-  return {...previous,...item,publishedAt:item.publishedAt||previous.publishedAt,bodyComplete:previous.bodyComplete||item.bodyComplete,
+  const date=item.publishedAt&&(!previous.publishedAt||item.publishedAtSource!=='estimated'||previous.publishedAtSource==='estimated')?item:previous;
+  return {...previous,...item,publishedAt:date.publishedAt,publishedAtSource:date.publishedAtSource||'exact',bodyComplete:previous.bodyComplete||item.bodyComplete,
     text:keep?previous.text:item.text||previous.text,images:keep?previous.images:item.images?.length?item.images:previous.images,
     url:item.url.includes('xsec_token=')?item.url:previous.url.includes('xsec_token=')?previous.url:item.url};
 }
@@ -70,5 +72,7 @@ export function wechatContent(r) {
   return contentItem('视频号',{id,url:`https://channels.weixin.qq.com/web/pages/feed?oid=${encodeURIComponent(id)}&nid=${encodeURIComponent(String(r.objectNonceId || ''))}`,title:r.objectDesc?.description || '视频号作品',text:r.objectDesc?.description,author:r.contact?.nickname,thumbnail:m?.thumbUrl || m?.coverUrl,publishedAt:r.createtime,type:'video',acquisition:'wechat-collector',objectNonceId:String(r.objectNonceId || ''),bodyComplete:true});
 }
 export function matchingContent(items, options) {
-  return items.filter(i => i.publishedAt ? i.publishedAt >= options.from && i.publishedAt <= options.to : options.includeUnknown).slice(0,options.limit);
+  const matched=[];
+  for(const i of items){if(i.publishedAt?i.publishedAt>=options.from&&i.publishedAt<=options.to:options.includeUnknown)matched.push(i);if(matched.length>=options.limit)break;}
+  return matched;
 }

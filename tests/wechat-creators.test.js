@@ -42,3 +42,15 @@ test('分享链接失败不提交半页；跨页循环游标不能无限读取',
   const r = { id: 'loop', creator: { id: username, platform: '视频号', supported: true, name: '作者', adapter: 'wechat-collector' }, items: [], scanned: 0, cursor: 1, seen: [], skipped: {}, status: 'identified' }; store.put('creator', r.id, r); const creators = new Creators(store, engine, null, () => {}, connector);
   const failed = await creators.page(r.id, { limit: 'all' }, true); assert.equal(failed.status, 'interrupted'); assert.equal(failed.scanned, 0); assert.equal(failed.collectorCursor, null); broken = false; const first = await creators.page(r.id, {}); assert.equal(first.items.length, 1); marker = 'B'; const second = await creators.page(r.id, {}); assert.equal(second.items.length, 2); marker = 'A'; const loop = await creators.page(r.id, {}); assert.equal(loop.status, 'interrupted'); assert.equal(loop.items.length, 2); assert.equal(loop.collectorCursor, 'B'); await creators.close(); store.close();
 });
+
+test('existing public-share author metadata identifies without asking the desktop to reopen',async()=>{
+ const store=await Store.open(path.resolve('output/unit-collector',randomUUID()),{}),engine=new Engine('',null,null);
+ let connectionCalls=0,parseOptions;
+ engine.parse=async (source,options)=>{parseOptions=options;return {items:[{author:'原作者',creatorId:username,sourceId:'123'}]};};
+ const connector=new WeChatCreators(store,engine,async()=>{throw new Error('must not reread known metadata');});
+ const connection={withConnection:async()=>{connectionCalls++;throw new Error('must not open desktop');}};
+ const creators=new Creators(store,engine,null,()=>{},connector,connection);
+ // Existing constructor configuration supports connection as a separate property.
+ creators.connection=connection;
+ const r=await creators.identify('https://weixin.qq.com/sph/AidY5tmMHd');assert.equal(r.creator.id,username);assert.equal(r.creator.supported,true);assert.equal(connectionCalls,0);assert.equal(parseOptions.allowCollector,false);store.close();
+});

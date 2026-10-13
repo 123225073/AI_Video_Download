@@ -12,6 +12,22 @@ export function apiBase(value) {
   return u.href.replace(/\/+$/, '');
 }
 function bounded(value, fallback, min, max) { const n = Number(value); return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.floor(n))) : fallback; }
+async function responseText(response, signal) {
+  if (!response.body) { signal.throwIfAborted(); return ''; }
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let text = '', bytes = 0;
+  const cancel = () => { void reader.cancel(signal.reason).catch(() => {}); };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    while (true) {
+      signal.throwIfAborted(); const { value, done } = await reader.read(); signal.throwIfAborted();
+      if (done) break;
+      bytes += value.byteLength; if (bytes > 8 * 1024 * 1024) throw new Error('模型响应过大，请缩小处理范围');
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally { signal.removeEventListener('abort', cancel); cancel(); reader.releaseLock(); }
+}
 
 // Credentials never enter Store records, renderer snapshots, task data or error text.
 export class AIService {
@@ -56,9 +72,11 @@ export class AIService {
     catch { if (signal?.aborted) throw new Error('已停止处理'); throw new Error(controller.aborted ? '模型服务超时，请检查网络或调高超时后重试' : '无法连接模型服务，请检查地址、网络与证书'); }
     const errors = { 401: '模型密钥无效，请重新配置', 403: '当前密钥没有访问权限', 404: '此服务未提供所选接口，请检查服务地址或切换接口类型', 413: '音频或请求超过服务大小限制', 429: '模型服务限流或额度不足，请稍后重试', 400: '模型或请求参数不被此服务支持，请检查模型与接口类型' };
     if (!response.ok) { const e = new Error(errors[response.status] || `模型服务暂不可用（HTTP ${response.status}），请稍后重试`); e.status = response.status; throw e; }
-    if(onText&&response.headers.get('content-type')?.includes('text/event-stream'))return {streamText:await readTextStream(response,c.protocol,combined,onText)};
-    const text = await response.text(); if (text.length > 8 * 1024 * 1024) throw new Error('模型响应过大，请缩小处理范围');
-    try { return JSON.parse(text); } catch { throw new Error('模型服务返回了非 JSON 内容，请检查服务地址'); }
+    try {
+      if(onText&&response.headers.get('content-type')?.includes('text/event-stream'))return {streamText:await readTextStream(response,c.protocol,combined,onText)};
+      const text = await responseText(response, combined);
+      try { return JSON.parse(text); } catch { throw new Error('模型服务返回了非 JSON 内容，请检查服务地址'); }
+    }catch(e){if(signal?.aborted)throw new Error('已停止处理');if(controller.aborted)throw new Error('模型服务超时，请检查网络或调高超时后重试');throw e;}
   }
   async models(kind = 'text') {
     const data = await this.request(kind, 'models');
@@ -72,6 +90,7 @@ export class AIService {
       ? await this.request('text', 'responses', { model: c.model, instructions: system, input: content, max_output_tokens: c.outputTokens, store: false,...(onText?{stream:true}:{}) }, signal,onText)
       : await this.request('text', 'chat/completions', { model: c.model, messages: [{ role: 'system', content: system }, { role: 'user', content }], [c.tokenParameter]: c.outputTokens, stream:!!onText }, signal,onText);
     const text = data.streamText||(c.protocol === 'responses' ? data.output_text || data.output?.flatMap(o => o.content || []).filter(o => o.type === 'output_text').map(o => o.text).join('\n') : data.choices?.[0]?.message?.content);
+    if (onText && !data.streamText && typeof text === 'string') onText(text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, ''));
     if (data.choices?.[0]?.finish_reason === 'length' || data.status === 'incomplete') throw new Error('模型输出达到长度限制，结果未保存；请增加输出长度或减小分段长度后重试');
     if (typeof text !== 'string' || !text.trim()) throw new Error('模型没有返回有效文字，请检查模型和接口类型');
     return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();

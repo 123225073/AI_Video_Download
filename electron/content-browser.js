@@ -46,28 +46,34 @@ export function renderedContent(platform, keyword, detail = false) {
     const d=new Date();const short=text.trim().match(/^(\d{1,2})[-/.月](\d{1,2})(?:日)?(?:\s+\d{1,2}:\d{2})?$/);
     if(short){let year=d.getFullYear();const month=Number(short[1]),day=Number(short[2]);if(month>d.getMonth()+1||month===d.getMonth()+1&&day>d.getDate())year--;const date=new Date(year,month-1,day);if(date.getMonth()!==month-1||date.getDate()!==day)return null;return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;}
     if(/^(今天|昨天|刚刚)(?:\s|$)/.test(text.trim())){if(text.trim().startsWith('昨天'))d.setDate(d.getDate()-1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
-    const m=text.match(/(\d+)\s*(天|日|周|星期|小时|分钟|days?|weeks?|hours?|minutes?)\s*(前|ago)/i);
-    if(m) {d.setTime(d.getTime()-Number(m[1])*(/周|星期|weeks?/i.test(m[2])?604800000:/天|日|days?/i.test(m[2])?86400000:/小时|hours?/i.test(m[2])?3600000:60000));return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+    const m=text.match(/(\d+)\s*(天|日|小时|分钟|days?|hours?|minutes?)\s*(前|ago)/i);
+    if(m) {d.setTime(d.getTime()-Number(m[1])*(/天|日|days?/i.test(m[2])?86400000:/小时|hours?/i.test(m[2])?3600000:60000));return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
     return null; // IDs, modification dates and vague month labels are not publication dates.
   };
   const selector=platform==='YouTube'?'ytd-video-renderer':platform==='小红书'?'.feeds-container .note-item,section.note-item':'[data-e2e="search-video-list"] li,[data-e2e="search-video-item"]';
-  for(const card of [...document.querySelectorAll(selector)].filter(visible).slice(0,200)) {
+  for(const card of document.querySelectorAll(selector)) {
+    if(!visible(card))continue;
     const links=[...card.querySelectorAll('a[href]')].filter(a=>{try{const u=new URL(a.href);return u.origin===here.origin && (platform==='YouTube'?u.pathname==='/watch'&&u.searchParams.has('v'):platform==='小红书'?/^\/(?:explore|discovery\/item|search_result)\/[a-f\d]{24}\/?$/i.test(u.pathname):/\/video\/\d+/.test(u.pathname));}catch{return false;}});
     const a=platform==='小红书'?links.find(a=>new URL(a.href).searchParams.has('xsec_token'))||links[0]:links[0];
     if(!a)continue;const u=new URL(a.href),id=platform==='YouTube'?u.searchParams.get('v'):u.pathname.match(platform==='小红书'?/\/(?:explore|discovery\/item|search_result)\/([a-f\d]{24})/i:/\/video\/(\d+)/)?.[1];
     if(platform==='小红书'&&u.pathname.startsWith('/search_result/'))u.pathname='/explore/'+id;
-    items.push({id,url:u.href,title:card.querySelector('#video-title,.title,[data-e2e="video-desc"]')?.textContent || a.title || '',author:card.querySelector('#channel-name,.author .name,[data-e2e="video-author"]')?.textContent || '',thumbnail:card.querySelector('img')?.src || '',publishedAt:dateText(card.querySelector('#metadata-line,.time,.date')?.innerText || ''),type:platform==='小红书'&&!card.querySelector('.play-icon,.video-icon,[class*="video"],use[href*="video"],use[xlink\\:href*="video"]')?'image':'video'});
+    const label=card.querySelector('#metadata-line,.time,.date')?.innerText||'';
+    items.push({id,url:u.href,title:card.querySelector('#video-title,.title,[data-e2e="video-desc"]')?.textContent || a.title || '',author:card.querySelector('#channel-name,.author .name,[data-e2e="video-author"]')?.textContent || '',thumbnail:card.querySelector('img')?.src || '',publishedAt:dateText(label),publishedAtSource:/\b20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}/.test(label)?'exact':'estimated',type:platform==='小红书'&&!card.querySelector('.play-icon,.video-icon,[class*="video"],use[href*="video"],use[xlink\\:href*="video"]')?'image':'video'});
   }
   const loggedIn=platform==='小红书'&&[...document.querySelectorAll('.side-bar a[href*="/user/profile/"],nav a[href*="/user/profile/"],aside a[href*="/user/profile/"]')].some(e=>visible(e)&&e.innerText.trim()==='我');
-  return {items,loggedIn,empty:/没有搜索结果|没有找到相关笔记|No results found/.test(body)&&!items.length,complete:/没有更多了|没有更多作品/.test(body)};
+  // Only a visible list-end indicator outside work cards can finish pagination.
+  const complete=[...document.querySelectorAll('.feeds-container .end-container,.feeds-container .no-more,.feeds-container .no-more-text,[data-e2e="search-video-list"] .no-more,[data-e2e="search-list-end"],ytd-search .no-more')].some(e=>visible(e)&&!e.closest?.('.note-item,[data-e2e="search-video-item"],li,ytd-video-renderer')&&/^(没有更多了|没有更多作品|没有更多笔记|暂无更多)([。！!…\s]*)$/.test(e.innerText?.trim()||''));
+  return {items,loggedIn,empty:/没有搜索结果|没有找到相关笔记|No results found/.test(body)&&!items.length,complete};
 }
 export class ContentBrowser {
   constructor(accounts){this.accounts=accounts;this.window=null;this.items=new Map();}
   close(){if(this.window&&!this.window.isDestroyed())this.window.destroy();this.window=null;}
+  pause(){this.onProgress=null;if(this.window&&!this.window.isDestroyed())this.window.hide();}
   show(){if(this.window&&!this.window.isDestroyed()){this.window.show();this.window.focus();}}
   async open(url, record, signal, {reuse=false,early=false}={}) {
+    signal.throwIfAborted();
     const previous=reuse&&this.window&&!this.window.isDestroyed()&&this.accountId===record.accountId?this.window:null;
-    if(!previous)this.close();this.items=new Map();this.recordId=record.id;this.complete=false;this.scope=record;this.accountId=record.accountId;
+    if(!previous)this.close();this.items=new Map();this.recordId=record.id;this.complete=false;this.networkError=null;this.networkSignal=signal;this.scope=record;this.accountId=record.accountId;this.scrollSteps=0;
     const s=record.accountId?this.accounts.getSession(record.accountId):undefined;
     const w=this.window=previous||new BrowserWindow({show:!this.hidden,width:1100,height:800,autoHideMenuBar:true,title:'作品搜索 · 完成官方登录或验证后继续',webPreferences:{session:s,partition:s?undefined:`fengsha-content-${record.platform}`,sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,autoplayPolicy:'document-user-activation-required'}});
     w.setMenu(null);w.webContents.setAudioMuted(true);w.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -84,65 +90,74 @@ export class ContentBrowser {
           const search=record.platform==='小红书'&&u.hostname==='edith.xiaohongshu.com'&&u.pathname==='/api/sns/web/v1/search/notes'&&post.keyword===record.keyword;
           const detail=record.platform==='小红书'&&u.hostname==='edith.xiaohongshu.com'&&u.pathname==='/api/sns/web/v1/feed'&&post.source_note_id===record.detailId;
           const douyin=record.platform==='抖音'&&u.hostname==='www.douyin.com'&&/^\/aweme\/v1\/web\/(?:general\/search\/single|search\/item)\/?$/.test(u.pathname)&&u.searchParams.get('keyword')===record.keyword;
-          if((search||detail||douyin)&&pending.size<40)pending.set(p.requestId,{platform:record.platform,detail,token:post.xsec_token});
+          if((search||detail||douyin)&&pending.size<40&&!this.networkSignal?.aborted)pending.set(p.requestId,{platform:record.platform,detail,token:post.xsec_token,signal:this.networkSignal});
         }catch{}
-      }else if(method==='Network.loadingFailed')pending.delete(p.requestId);
+      }else if(method==='Network.loadingFailed'){
+        const request=pending.get(p.requestId);pending.delete(p.requestId);
+        if(request&&!request.signal?.aborted&&!p.canceled)this.networkError='官方作品接口网络读取失败，已有结果保留，请检查官方窗口后继续。';
+      }
       else if(method==='Network.loadingFinished'&&pending.has(p.requestId)){
-        const scope=pending.get(p.requestId);pending.delete(p.requestId);if(p.encodedDataLength>6*1024*1024)return;
-        try{const b=await debuggerApi.sendCommand('Network.getResponseBody',{requestId:p.requestId});if(b.body.length>8*1024*1024)return;
+        const scope=pending.get(p.requestId);pending.delete(p.requestId);if(scope.signal?.aborted)return;if(p.encodedDataLength>6*1024*1024){this.networkError='官方作品接口响应过大，已有结果保留，请稍后继续。';return;}
+        try{const b=await debuggerApi.sendCommand('Network.getResponseBody',{requestId:p.requestId});if(b.body.length>8*1024*1024){this.networkError='官方作品接口响应过大，已有结果保留，请稍后继续。';return;}
           const data=JSON.parse(b.base64Encoded?Buffer.from(b.body,'base64').toString('utf8'):b.body);
-          if(w!==this.window||this.scope!==record)return; let items=[];
+          if(w!==this.window||this.scope!==record||scope.signal?.aborted)return; let items=[];
+          if(scope.platform==='小红书'&&data.success!==true)this.networkError=`小红书作品接口读取失败（${String(data.code??'未知错误')}）：${String(data.msg||data.message||'请检查登录或验证').slice(0,200)}。已有结果保留，可继续读取。`;
+          if(scope.platform==='抖音'&&data.status_code!==0)this.networkError=`抖音作品接口读取失败（${String(data.status_code??'未知错误')}）：${String(data.status_msg||'请检查登录或验证').slice(0,200)}。已有结果保留，可继续读取。`;
           if(scope.platform==='小红书'&&data.success===true){items=(data.data?.items||[]).filter(r=>r.model_type!=='rec_query'&&r.model_type!=='hot_query').map(r=>xhsContent(r,scope.token));if(data.data?.has_more===false)this.complete=true;}
           if(scope.platform==='抖音'&&data.status_code===0){items=(data.data||data.aweme_list||[]).map(r=>douyinContent(r.aweme_info||r));if(data.has_more===0)this.complete=true;}
-          for(const item of items.filter(Boolean)){this.items.set(item.id,mergeContent(this.items.get(item.id),item));if(this.items.size>1000)this.items.delete(this.items.keys().next().value);}
-          if(items.some(Boolean)&&!signal.aborted&&this.scope===record)this.onProgress?.({items:[...this.items.values()],metadataPending:true});
-        }catch{} // A navigation can dispose a body; renderer fallback remains bounded.
+          for(const item of items.filter(Boolean))this.items.set(item.id,mergeContent(this.items.get(item.id),item));
+          if(items.some(Boolean)&&!scope.signal?.aborted&&this.scope===record)this.onProgress?.({items:[...this.items.values()],metadataPending:true});
+        }catch{if(w===this.window&&this.scope===record&&!scope.signal?.aborted)this.networkError='官方作品接口响应读取失败，已有结果保留，请检查官方窗口后继续。';}
       }
     });
     // Chromium may not acknowledge Network.enable until the first page exists.
     // Keep navigation independent of that acknowledgment, as CreatorBrowser does.
     void debuggerApi.sendCommand('Network.enable',{maxResourceBufferSize:6*1024*1024,maxTotalBufferSize:12*1024*1024}).catch(()=>{});
-    const abort=()=>this.close();signal.addEventListener('abort',abort,{once:true});
-    try{let next=url;const visited=new Set();for(let attempt=0;attempt<4;attempt++){signal.throwIfAborted();if(visited.has(next))throw Error('官方页面重复跳转，请在官方窗口检查登录或验证');visited.add(next);upgrade=null;let ready,timer;const dom=new Promise(resolve=>{ready=()=>resolve();w.webContents.once('dom-ready',ready);});const timeout=new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ERR_TIMED_OUT')),30000);});try{await Promise.race([w.loadURL(next,{userAgent:officialUserAgent}),...(early?[dom]:[]),timeout]);if(!upgrade)break;}catch(e){if(!upgrade)throw e;}finally{clearTimeout(timer);if(!w.isDestroyed())w.webContents.removeListener('dom-ready',ready);}if(upgrade&&attempt===3)throw Error('官方页面跳转次数过多');next=upgrade;}}
+    let rejectAbort;const aborted=new Promise((_resolve,reject)=>{rejectAbort=reject;});
+    const abort=()=>{this.close();rejectAbort(new Error('已停止搜索'));};signal.addEventListener('abort',abort,{once:true});
+    try{let next=url;const visited=new Set();for(let attempt=0;attempt<4;attempt++){signal.throwIfAborted();if(visited.has(next))throw Error('官方页面重复跳转，请在官方窗口检查登录或验证');visited.add(next);upgrade=null;let ready,timer;const dom=new Promise(resolve=>{ready=()=>resolve();w.webContents.once('dom-ready',ready);});const timeout=new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ERR_TIMED_OUT')),30000);});try{await Promise.race([w.loadURL(next,{userAgent:officialUserAgent}),...(early?[dom]:[]),timeout,aborted]);if(!upgrade)break;}catch(e){if(!upgrade)throw e;}finally{clearTimeout(timer);if(!w.isDestroyed())w.webContents.removeListener('dom-ready',ready);}if(upgrade&&attempt===3)throw Error('官方页面跳转次数过多');next=upgrade;}}
     catch(e){if(signal.aborted)throw new Error('已停止搜索');if(!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(e.message)||w.isDestroyed()||!allowed(w.webContents.getURL())){this.close();throw new Error(contentLoadMessage(e));}}
     finally{signal.removeEventListener('abort',abort);}
     return w;
   }
   async read(record, signal, initial=false,onProgress=()=>{}){
-    this.onProgress=onProgress;
+    this.onProgress=onProgress;this.networkSignal=signal;
+    const resumeAt=initial?0:record.browserScroll||0;
     try{if(initial||!this.window||this.window.isDestroyed()||this.recordId!==record.id)await this.open(contentSearchURL(record.platform,record.keyword,record.options),record,signal,{early:true});}catch(e){this.onProgress=null;throw e;}
     const w=this.window;let snapshot,verified=false;const seen=new Set(this.items.keys());let stable=0;
-    const abort=()=>this.close();signal.addEventListener('abort',abort,{once:true});
+    const abort=()=>this.pause();signal.addEventListener('abort',abort,{once:true});
     try{
       for(let i=0;i<12;i++){
         signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方搜索窗口已关闭，请重新搜索');
         snapshot=await w.webContents.executeJavaScript(`(${renderedContent.toString()})(${JSON.stringify(record.platform)},${JSON.stringify(record.keyword)})`);
+        signal.throwIfAborted();
         for(const raw of snapshot.items||[]){const item=contentItem(record.platform,raw);if(item)this.items.set(item.id,mergeContent(this.items.get(item.id),item));}
         if(snapshot.reason==='device-limit'&&record.accountId)this.accounts.markExpired?.(record.platform,record.accountId,snapshot.message);
         if(!verified&&snapshot.loggedIn&&this.items.size&&record.accountId){this.accounts.markVerified?.(record.platform,record.accountId,'已确认官方页面登录并成功读取作品；平台过期或设备超限时需重新登录');verified=true;}
+        if(this.networkError){snapshot.blocked=true;snapshot.message=this.networkError;snapshot.complete=false;snapshot.empty=false;}
         const stop=onProgress({items:[...this.items.values()],needsAction:!!snapshot.blocked,message:snapshot.blocked?snapshot.message:undefined});if(snapshot.blocked)this.show();
         if(stop||snapshot.blocked||snapshot.empty||snapshot.complete||this.complete)break;
         const enough=[...this.items.values()].filter(r=>r.publishedAt?r.publishedAt>=record.options.from&&r.publishedAt<=record.options.to:record.options.includeUnknown).length>=record.options.limit;
         if(enough)break;
         if([...this.items.keys()].every(id=>seen.has(id)))stable++;else stable=0;
-        this.items.forEach((_v,id)=>seen.add(id));if(stable>=4&&i>=5)break;
-        await w.webContents.executeJavaScript('window.scrollBy(0,Math.max(600,window.innerHeight*.8));');await delay(1000,undefined,{signal});
+        this.items.forEach((_v,id)=>seen.add(id));if(stable>=4&&i>=5&&(this.scrollSteps||0)>=resumeAt)break;
+        await w.webContents.executeJavaScript('window.scrollBy(0,Math.max(600,window.innerHeight*.8));');this.scrollSteps=(this.scrollSteps||0)+1;record.browserScroll=Math.max(resumeAt,this.scrollSteps);await delay(1000,undefined,{signal});
       }
       if(!this.items.size&&!snapshot.blocked&&!snapshot.empty){snapshot.blocked=true;snapshot.message='官方搜索页面尚未返回可读取的作品，请在官方窗口检查页面加载、登录或验证后继续。';this.show();}
-      return {items:[...this.items.values()],complete:!!(snapshot.empty||snapshot.complete||this.complete),needsAction:!!snapshot.blocked,message:snapshot.blocked?snapshot.message:'已读取官方页面展示的作品；未公开日期的条目单独标记。'};
-    }finally{signal.removeEventListener('abort',abort);this.onProgress=null;}
+      return {items:[...this.items.values()],complete:!snapshot.blocked&&!!(snapshot.empty||snapshot.complete||this.complete),needsAction:!!snapshot.blocked,message:snapshot.blocked?snapshot.message:(this.scrollSteps||0)<resumeAt?'官方窗口已重建，正在逐批恢复此前读取位置，可继续读取。':'已读取官方页面展示的作品；未公开日期的条目单独标记。'};
+    }finally{signal.removeEventListener('abort',abort);this.onProgress=null;if(!signal.aborted)this.networkError=null;}
   }
   async detail(item,accountId,signal,{metadataOnly=false,reuse=false}={}){
     if(item.platform==='YouTube'&&metadataOnly){
       const record={id:'detail-'+item.id,detailId:item.id,platform:item.platform,accountId},w=await this.open(item.url,record,signal,{reuse,early:true});
-      for(let i=0;i<6;i++){signal.throwIfAborted();if(w.isDestroyed())throw Error('官方详情窗口已关闭');const r=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('YouTube','',true)`);if(r.blocked){this.show();throw Error(r.message);}if(r.detail?.id===item.id&&/^\d{4}-\d{2}-\d{2}$/.test(r.detail.publishedAt||''))return {...item,publishedAt:r.detail.publishedAt};await delay(300,undefined,{signal});}
+      for(let i=0;i<6;i++){signal.throwIfAborted();if(w.isDestroyed())throw Error('官方详情窗口已关闭');const r=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('YouTube','',true)`);signal.throwIfAborted();if(r.blocked){this.show();throw Error(r.message);}if(r.detail?.id===item.id&&/^\d{4}-\d{2}-\d{2}$/.test(r.detail.publishedAt||''))return {...item,publishedAt:r.detail.publishedAt,publishedAtSource:'exact'};await delay(300,undefined,{signal});}
       throw Error('这条视频尚未返回确切发布时间，已有结果保留');
     }
 
     if(item.platform==='小红书'){
       const record={id:'detail-'+item.id,detailId:item.id,platform:item.platform,accountId};const w=await this.open(item.url,record,signal,{reuse,early:metadataOnly});
-      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);if(result.blocked||result.unavailable){if(result.blocked){this.show();if(result.reason==='device-limit'&&accountId)this.accounts.markExpired?.(item.platform,accountId,result.message);}throw new Error(result.message);}const found=this.items.get(item.id)||xhsContent(result.note)||contentItem(item.platform,result.detail);if(found?.id===item.id&&(metadataOnly?found.publishedAt:found.bodyComplete))return found;await delay(metadataOnly?300:800,undefined,{signal});}
-      throw new Error('尚未取得这篇笔记的完整正文，请在官方窗口完成登录后重试克隆');
+      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);signal.throwIfAborted();if(result.blocked||result.unavailable){if(result.blocked){this.show();if(result.reason==='device-limit'&&accountId)this.accounts.markExpired?.(item.platform,accountId,result.message);}throw new Error(result.message);}const found=mergeContent(mergeContent(this.items.get(item.id),xhsContent(result.note)),contentItem(item.platform,result.detail));if(found?.id===item.id&&(metadataOnly?found.publishedAt:found.bodyComplete))return found;await delay(metadataOnly?300:800,undefined,{signal});}
+      throw new Error(metadataOnly?'这篇笔记尚未返回确切发布时间，已有结果保留，可继续补查':'尚未取得这篇笔记的完整正文，请在官方窗口检查页面后重试克隆');
     }
     return item;
   }

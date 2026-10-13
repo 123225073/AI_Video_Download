@@ -2,8 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {build} from 'esbuild';
+import {Script} from 'node:vm';
 fs.mkdirSync('bin/collector',{recursive:true});
-fs.writeFileSync('bin/collector/collector-content.js',fs.readFileSync('electron/collector-content.js'));
+const contentSource=fs.readFileSync('electron/collector-content.js');
+// Transparent file protection can temporarily expose an encrypted envelope to
+// a build process. Never copy unusable bytes into an otherwise valid installer.
+if(contentSource.subarray(0,64).toString('utf8').includes('%TSD-Header'))throw new Error('视频号源脚本暂时不可读取，未打包加密内容；请核对本机文件保护环境后重试');
+new Script(contentSource.toString('utf8'),{filename:'collector-content.js'});
+fs.writeFileSync('bin/collector/collector-content.js',contentSource);
 // Bundle the interop assembly. Windows PowerShell's runtime CodeDOM compilation
 // can fail with a machine's compiler response configuration; do not alter it.
 if(process.platform==='win32') {

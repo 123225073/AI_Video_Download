@@ -14,7 +14,8 @@ export class WeChat {
     if (response.status === 401 || response.status === 403) throw new Error('WECHAT_LOGIN_REQUIRED');
     if (!response.ok) throw new Error(`WECHAT_SERVICE_HTTP_${response.status}`);
     const text = await response.text(); if (text.length > 2 * 1024 * 1024) throw new Error('WECHAT_INVALID_RESPONSE');
-    return JSON.parse(text);
+    // IDs and decode keys returned as JSON numbers exceed JS integer precision.
+    return JSON.parse(text.replace(/("(?:id|objectId|objectNonceId|decodeKey)"\s*:\s*)(\d{16,})(?=\s*[,}])/g, '$1"$2"'));
   }
   async resolve(source, id, signal) {
     const cached=this.resolved.get(id+':'+source);if(cached&&Date.now()-cached.at<5*60*1000){signal?.throwIfAborted();return cached.result;}

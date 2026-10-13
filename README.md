@@ -4,7 +4,7 @@
 
 Windows 桌面应用，提供 **视频链接识别与下载、博主作品批量下载、本地媒体管理、语音转录、AI 文案矫正和多语言翻译**。
 
-当前版本：**0.7.0**。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
+当前版本：**0.8.2**。视频二创和视频转图文默认基于 AI 校对稿，未校对的原文只用于对照。数字纠错保留完整候选，可编辑核对后明确采用；旧二创稿保留并提示需更新。新增 8 种差异明显的画风示例卡片，自动生图默认关闭。视频转图文采用紧凑创作设置弹窗及流式分页；分享作者资料复用，Clash 支持本机命名管道控制。详见 [0.8.2 验收记录](docs/验收-0.8.2.md)。仓库：[123225073/AI_Video_Download](https://github.com/123225073/AI_Video_Download)。
 
 “全平台”是产品名称，当前接入 YouTube、B站、抖音、小红书、微信视频号；实际可用性受登录状态、访问权限、地区、限流与平台接口变化影响。各平台的实测范围见下表。
 
@@ -189,7 +189,7 @@ node cli/fengsha.mjs media
 
 ### 使用现成安装包
 
-取得可信的 `FengshaVideoDownloader-0.7.0-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
+取得可信的 `FengshaVideoDownloader-0.7.1-setup.exe` 后运行安装程序，通过桌面或开始菜单打开应用。完整安装包包含下载工具、微信组件与本地语音运行时 / 模型，普通使用无需安装 Node.js 和 Python。
 
 完整安装包见 [v0.7.0 Release](https://github.com/123225073/AI_Video_Download/releases/tag/v0.7.0)；私有仓库需登录具有访问权限的账号。源码仓库仍排除大型运行组件与模型，源码部署按下面步骤准备。
 
@@ -223,7 +223,7 @@ pnpm test:settings
 pnpm dist
 ```
 
-`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.7.0-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
+`pnpm dist` 只本地构建，输出 `release/FengshaVideoDownloader-0.7.1-setup.exe`，不会自动发布到 GitHub。`build` 会编译 Windows 视频号辅助 DLL，需要系统 .NET Framework C# 编译器，详见部署文档。
 
 ## 典型使用顺序
 

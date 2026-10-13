@@ -32,18 +32,56 @@
     methods.__wx_handle_api_call=async function(msg,socket){
       const send=data=>{if(socket.readyState===1)socket.send(JSON.stringify({id:msg.id,data}));};
       try{
-        if(msg.key==='key:channels:feed_profile'&&msg.data?.oid){
-          const oid=String(msg.data.oid),nid=String(msg.data.nid||'');
-          if(!/^[\w=-]{1,280}$/.test(oid)||nid.length>300)throw Error('视频号作品标识无效，请重新选择原作品');
+        if(msg.key==='key:channels:feed_profile'){
+          const input=msg.data||{};let oid=String(input.oid||''),nid=String(input.nid||''),eid=String(input.eid||'');
+          if(input.url){
+            const u=new URL(String(input.url));
+            if(u.protocol!=='https:'||u.username||u.password||u.port)throw Error('视频号链接无效');
+            if(u.hostname==='weixin.qq.com'&&/^\/sph\/[a-zA-Z0-9_-]{1,100}\/?$/.test(u.pathname)||u.hostname==='channels.weixin.qq.com'&&u.pathname==='/finder-preview/pages/sph'){
+              // Reuse the upstream share-ID resolver, but route the resulting
+              // encrypted ID through the same recovered official detail API.
+              // Never mistake the short share ID for an encrypted object ID.
+              if(typeof fetchExportIdWithShareId!=='function')throw Error('采集组件未取得分享链接解析能力，请更新采集组件');
+              const [error,value]=await fetchExportIdWithShareId({url:u.href});
+              if(error)throw Error('微信未能解析此分享链接，请确认原视频仍可访问');
+              eid=String(value||'');oid='';nid='';
+              if(!eid)throw Error('微信分享链接未返回作品标识');
+            }else if(u.hostname==='channels.weixin.qq.com'&&u.pathname==='/web/pages/feed'){
+              if(typeof WXU==='undefined'||!WXU.Base64?.decodeBase64ToUint64String)throw Error('视频号链接解析接口未就绪');
+              oid=String(WXU.Base64.decodeBase64ToUint64String(u.searchParams.get('oid')||''));
+              nid=String(WXU.Base64.decodeBase64ToUint64String(u.searchParams.get('nid')||''));
+            }else throw Error('不支持的微信作品链接');
+          }
+          if((!oid&&!eid)||(oid&&!/^[\w=-]{1,280}$/.test(oid))||nid.length>300||eid.length>1000)throw Error('视频号作品标识无效，请重新选择原作品');
           const found=await wait('finderGetCommentDetail');
-          if(!found){send({errCode:1009,errMsg:'微信页面未取得原视频详情接口，请刷新视频号页面后继续当前任务。'});return;}
-          const result=await found.fn.call(found.owner,{needObject:1,lastBuffer:'',scene:146,direction:2,identityScene:2,pullScene:6,objectid:oid.split('_')[0],objectNonceId:nid,encrypted_objectid:''});
+          if(!found){send({errCode:1009,errMsg:'微信页面已连接，但原视频详情接口未就绪。请稍后继续当前任务。'});return;}
+          const result=await found.fn.call(found.owner,{needObject:1,lastBuffer:'',scene:eid?141:146,direction:2,identityScene:2,pullScene:6,objectid:eid?undefined:oid.split('_')[0],objectNonceId:eid?undefined:nid,encrypted_objectid:eid});
+          send(result);return;
+        }
+        if(msg.key==='key:channels:feed_list'){
+          const username=String(msg.data?.username||'');
+          if(!username||username.length>300)throw Error('视频号作者标识无效');
+          const found=await wait('finderUserPage');
+          if(!found){send({errCode:1009,errMsg:'微信页面已连接，但作者作品列表接口未就绪。已读取清单保留。'});return;}
+          const marker=String(msg.data?.next_marker||'');if(marker.length>20000)throw Error('视频号分页信息无效');
+          const result=await found.fn.call(found.owner,{username,finderUsername:typeof __wx_username==='string'?__wx_username:'',lastBuffer:marker?decodeURIComponent(marker):'',needFansCount:0,objectId:'0'});
           send(result);return;
         }
         if(msg.key==='key:channels:contact_list'){
           const keyword=String(msg.data?.keyword||'');
           const content=keyword.startsWith('__fengsha_content__:'),input=content?JSON.parse(keyword.slice(20)):null;
-          if(content&&input.probe===true){send({errCode:0,data:{fengshaAdapterVersion:3}});return;}
+          if(content&&input.probe===true){
+            const currentHash=window.__fengshaContentHash||null;
+            if(input.reload===true){
+              if(!/^[a-f0-9]{12}$/.test(input.expectedHash||''))throw Error('适配版本标识无效');
+              const reloading=input.expectedHash!==currentHash&&window.__fengshaReloadTarget!==input.expectedHash;
+              send({errCode:0,data:{fengshaAdapterVersion:4,fengshaContentHash:currentHash,canRefreshAdapter:true,reloading}});
+              if(reloading){window.__fengshaReloadTarget=input.expectedHash;setTimeout(()=>window.location.reload(),200);}
+              return;
+            }
+            await Promise.all(['finderSearch','finderGetCommentDetail','finderUserPage'].map(wait));
+            send({errCode:0,data:{fengshaAdapterVersion:4,fengshaContentHash:currentHash,canRefreshAdapter:true,capabilities:{search:registry.has('finderSearch'),detail:registry.has('finderGetCommentDetail'),creatorFeeds:registry.has('finderUserPage')}}});return;
+          }
           const query=content?input.query:keyword;
           if(typeof query!=='string'||!query.trim()||query.length>100)throw new Error('搜索关键词无效');
           const found=await wait('finderSearch');
@@ -58,7 +96,7 @@
           send({...result,data:{...data,...(content?{fengshaVersion:1,fengshaNextMarker:next}:{})}});return;
         }
         await old.call(this,msg,socket);
-      }catch(error){send({errCode:1011,errMsg:String(error?.message||'微信页面接口调用失败').slice(0,240)});}
+      }catch(error){send({errCode:1011,errMsg:String(error?.message||'微信页面接口调用失败，请稍后重试').slice(0,240)});}
     };return true;
   };
   if(!attach()){let count=0;const timer=setInterval(()=>{if(attach()||++count>=40)clearInterval(timer);},250);}

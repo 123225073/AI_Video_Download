@@ -74,7 +74,7 @@ export class Engine {
       if ((collected || !account?.lastSync) && this.wechat.collector?.config().enabled) {
         const selected=collected?{url,acquisition:'wechat-collector',sourceId,objectNonceId:source.searchParams.get('nid')||''}:{url};
         const run=async()=>{const result=await this.wechat.collector.resolve(selected,signal);return {url,platform,title:result.info.title,total:1,complete:true,items:[{...this.item(result.info,url,platform),acquisition:'wechat-collector',objectNonceId:result.objectNonceId}]};};
-        return this.wechat.connection ? this.wechat.connection.withConnection(signal,run) : run();
+        return this.wechat.connection ? this.wechat.connection.withConnection(signal,run,['detail']) : run();
       }
       if(collected)throw new Error('请在设置启用视频号采集连接，搜索作品使用该连接取得原素材');
       if (!account?.lastSync) throw new Error('WECHAT_LOGIN_REQUIRED');
@@ -145,7 +145,7 @@ export class Engine {
     if (task.item.platform === '视频号') {
       const run=()=>this.wechat.download(task,directory,signal,progress,this);
       if(task.options?.allowCollector===false){if(task.item.acquisition==='wechat-collector'&&!this.wechat.collector?.cached?.(task.item))throw Object.assign(new Error('已保存媒体地址不可用，请补充公开分享链接或本地视频'),{code:'VIDEO_SHARE_REQUIRED'});return run();}
-      return task.item.acquisition === 'wechat-collector' && this.wechat.connection && !this.wechat.collector?.cached?.(task.item) ? this.wechat.connection.withConnection(signal,run) : run();
+      return task.item.acquisition === 'wechat-collector' && this.wechat.connection && !this.wechat.collector?.cached?.(task.item) ? this.wechat.connection.withConnection(signal,run,['detail']) : run();
     }
     const args = await this.arguments(task.item.platform, task.item.accountId);
     const cap = task.options.quality === 'best' ? '' : `[height<=${Number(task.options.quality)}]`;
