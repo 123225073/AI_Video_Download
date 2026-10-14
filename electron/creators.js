@@ -5,6 +5,7 @@ import { command } from './engine.js';
 import { platformOf, validSource, classifyError, safeLog } from './core.js';
 import { thumbnailUrl } from './thumbnail.js';
 import { creatorLoginPrompt, creatorLoginError } from './creator-login.js';
+import { wechatCreatorId, requireWechatIdentity } from './wechat-creators.js';
 
 export const missingBiliMetadata = item => item.available !== false && (!item.title || item.title === '待获取标题' || !thumbnailUrl(item.thumbnail) || !item.duration || !item.publishedAt);
 
@@ -12,7 +13,7 @@ export function profileFromUrl(source) {
   const u = new URL(source), platform = platformOf(source);
   if (platform === '视频号' && u.hostname === 'channels.weixin.qq.com' && u.pathname === '/web/pages/profile') {
     const id = u.searchParams.get('username');
-    if (id && id.length < 300 && !id.startsWith('shared_author_')) return { platform, id, url: source };
+    if (wechatCreatorId(id)) return { platform, id, url: source };
   }
   const match = platform === 'B站' && u.hostname === 'space.bilibili.com' ? u.pathname.match(/^\/(\d+)(?:\/|$)/)
     : platform === '抖音' ? u.pathname.match(/^\/user\/([\w.-]+)\/?$/)
@@ -106,17 +107,19 @@ export class Creators {
         let parsed, parseError;
         if (!profile) { try { parsed = await this.engine.parse(source, { limit: 1, signal, allowCollector: false }); } catch (error) { if (signal.aborted) throw error; parseError = error; } }
         const item = parsed?.items[0];
-        creator = { platform, name: item?.author || '未知作者', avatar: item?.creatorAvatar || '', id: item?.creatorId || null, url: null, supported: false, needsCollector: true, reason: '已取得原视频作者资料。读取作者作品还需要本机视频号采集服务，并在微信中打开视频号页面；请连接服务后重新识别。也可返回新建下载，使用批量链接下载所需视频。' };
+        creator = { platform, name: item?.author || '未知作者', avatar: item?.creatorAvatar || '', id: wechatCreatorId(item?.creatorId), identityStatus: 'pending', url: null, supported: false, needsCollector: true, reason: wechatCreatorId(item?.creatorId) ? '已取得原视频作者资料。读取作者作品还需要本机视频号采集服务，并在微信中打开视频号页面；请连接服务后重新识别。也可返回新建下载，使用批量链接下载所需视频。' : '已取得作者资料，但尚未确认稳定作者 ID。请在微信打开原视频或粘贴含 username 的作者主页链接后重新识别；不会按昵称匹配作者。' };
         if (profile) creator = { ...creator, name: '视频号作者（昵称待读取）', id: profile.id, url: profile.url, reason: '已取得主页作者 ID。请连接本机视频号采集服务，并在微信中打开该作者主页，再重新识别。' };
         if (this.wechatCreators?.config().enabled) {
           try {
-            if(item?.creatorId&&!item.creatorId.startsWith('shared_author_')) creator={...creator,supported:true,adapter:'wechat-collector',source,sourceObjectId:item.sourceId||null,needsCollector:false,reason:'已通过原视频分享链接确认作者；读取作者作品时自动准备微信连接。'};
+            if(wechatCreatorId(item?.creatorId)&&item.identityStatus!=='pending') creator={...creator,identityStatus:'confirmed',supported:true,adapter:'wechat-collector',source,sourceObjectId:item.sourceId||null,needsCollector:false,reason:'已通过原视频分享链接确认作者；读取作者作品时自动准备微信连接。'};
             else {
               const resolve=()=>profile?this.wechatCreators.identifyProfile(profile,signal):this.wechatCreators.identify(source,item,signal);
-              creator={...creator,...await(this.connection?this.connection.withConnection(signal,resolve,[profile?'creatorFeeds':'detail']):resolve()),needsCollector:false};
+              const confirmed=await(this.connection?this.connection.withConnection(signal,resolve,[profile?'creatorFeeds':'detail']):resolve());
+              requireWechatIdentity(confirmed);
+              creator={...creator,...confirmed,identityStatus:'confirmed',needsCollector:false};
             }
           }
-          catch (error) { if (signal.aborted) throw error; if (parseError) throw new Error(`作者资料尚未读取：${error.message}；单视频解析需要有效的元宝登录`); creator.reason = error.message; }
+          catch (error) { if (signal.aborted) throw error; creator.reason = error.message; }
         }
         else if (parseError) throw parseError;
       } else if (['YouTube', 'B站'].includes(platform)) {
@@ -192,6 +195,7 @@ export class Creators {
   }
   async page(id, rawFilters, reset = false, extend = false) {
     const original = this.store.get('creator', id); if (!original) throw new Error('博主清单不存在，请重新识别');
+    if (original.creator.platform === '视频号') requireWechatIdentity(original.creator);
     if (!original.creator.supported) throw new Error(original.creator.reason);
     return this.exclusive(async signal => {
       if (original.creator.platform === 'B站') await this.requireLogin(original.creator.platform, signal);
@@ -254,7 +258,7 @@ export class Creators {
       } catch (error) {
         const c = classifyError(error.message);
         if (c.category === 'auth') this.engine.accounts?.markExpired(r.creator.platform, r.creator.accountId);
-        const preserve = reset && original.creator.platform === 'B站' && original.items.length ? original : checkpoint;
+        const preserve = reset && ['B站', '视频号'].includes(original.creator.platform) && original.items.length ? original : checkpoint;
         r = { ...preserve, complete: false, restartRequired: preserve === original || Boolean(preserve.restartRequired) || /重复返回|读取期间变化/.test(error.message), status: signal.aborted ? 'cancelled' : 'interrupted', message: signal.aborted ? '已停止；已读取清单保留，可继续读取' : (preserve === original ? '重新读取失败，原清单已保留；' : '') + (c.category === 'unknown' ? safeLog(error.message) : c.message) };
         r.recoveryAvailable = !r.items.length && Boolean(this.previous(r));
         this.store.put('creator', id, r); this.store.flush(); return r;

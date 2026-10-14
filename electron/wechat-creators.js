@@ -1,4 +1,30 @@
-import { platformOf } from './core.js';
+import { platformOf, validSource } from './core.js';
+
+export function wechatCreatorId(value) {
+  return typeof value === 'string' && value.trim() && value === value.trim() && value.length < 300 && !value.startsWith('shared_author_') ? value : null;
+}
+export function requireWechatIdentity(creator) {
+  const id = wechatCreatorId(creator?.id);
+  if (!id || creator.identityStatus === 'pending') throw new Error('尚未确认稳定作者 ID，不能读取作者作品。请在微信打开原视频或粘贴含 username 的作者主页链接后重新识别；不会按昵称匹配作者。');
+  return id;
+}
+function feedUrl(raw, username) {
+  if (typeof raw.sourceUrl === 'string' && platformOf(raw.sourceUrl) === '视频号') {
+    try { return validSource(raw.sourceUrl); } catch { /* Rebuild from the exact object ID below. */ }
+  }
+  // v260907: model.go BuildJumpURLFromParts + util.go EncodeUint64ToBase64.
+  const encode = value => {
+    if (typeof value !== 'string' || !/^\d+$/.test(value) || BigInt(value) > 0xffffffffffffffffn) return null;
+    const bytes = Buffer.alloc(8); bytes.writeBigUInt64BE(BigInt(value)); return bytes.toString('base64url');
+  };
+  const oid = encode(raw.id);
+  if (!oid) throw new Error('作品 ID 无效，无法构造准确的作品链接；已保留清单和读取位置，请重新读取');
+  const url = new URL('https://channels.weixin.qq.com/web/pages/feed');
+  url.searchParams.set('username', username); url.searchParams.set('oid', oid);
+  const nid = encode(String(raw.nonce || '').split('_')[0]);
+  if (nid) url.searchParams.set('nid', nid);
+  return url.href;
+}
 
 export function collectorBase(value) {
   let u; try { u = new URL(String(value || 'http://127.0.0.1:2022').trim()); } catch { throw new Error('请填写本机视频号采集服务地址'); }
@@ -7,7 +33,7 @@ export function collectorBase(value) {
 }
 function identity(contact = {}) {
   const id = contact.username || contact.finderUsername || contact.userName;
-  return { id: typeof id === 'string' && id.length < 300 && !id.startsWith('shared_author_') ? id : null, name: contact.nickname || '', avatar: contact.headUrl || contact.headImgUrl || contact.headimgurl || '', signature: contact.signature || '' };
+  return { id: wechatCreatorId(id), name: contact.nickname || '', avatar: contact.headUrl || contact.headImgUrl || contact.headimgurl || '', signature: contact.signature || '' };
 }
 export function wechatMetadata(feed = {}, parsed = {}) {
   const data = feed.data || feed;
@@ -60,37 +86,40 @@ export class WeChatCreators {
     const author = identity(data.object?.contact || data.contact || data.authorInfo || data.authorinfo);
     const objectId = data.object?.id;
     if (!author.id) throw new Error('原链接未返回稳定作者 ID，请在微信打开该视频，再重新识别；不会以同名搜索替代');
-    if (item?.creatorId && item.creatorId !== author.id) throw new Error('分享解析与采集服务返回的作者不一致，已停止；请核对原视频后重试');
-    return { platform: '视频号', ...author, supported: true, adapter: 'wechat-collector', source, sourceObjectId: objectId || null, reason: '从原视频确认作者，通过本机服务分页读取其发布作品；微信中的视频号页面需要保持打开。平台总数与实际可访问数量可能不同。' };
+    if (wechatCreatorId(item?.creatorId) && item.creatorId !== author.id) throw new Error('分享解析与采集服务返回的作者不一致，已停止；请核对原视频后重试');
+    return { platform: '视频号', ...author, identityStatus: 'confirmed', supported: true, adapter: 'wechat-collector', source, sourceObjectId: objectId || null, reason: '从原视频确认作者，通过本机服务分页读取其发布作品；微信中的视频号页面需要保持打开。平台总数与实际可访问数量可能不同。' };
   }
   async identifyProfile(profile, signal) {
+    requireWechatIdentity(profile);
     const data = await this.request('/api/channels/contact/feed/list', { username: profile.id, next_marker: '' }, signal);
     const author = identity(data.contact);
     if (!author.id || author.id !== profile.id) throw new Error('作者主页返回的身份与链接不一致，请核对微信主页后重试');
-    return { ...profile, ...author, total: Number.isInteger(data.feedsCount) ? data.feedsCount : null, supported: true, adapter: 'wechat-collector', reason: '已通过原主页作者 ID 确认身份；确认范围后分页读取发布作品。请保持微信视频号页面打开。' };
+    return { ...profile, ...author, identityStatus: 'confirmed', total: Number.isInteger(data.feedsCount) ? data.feedsCount : null, supported: true, adapter: 'wechat-collector', reason: '已通过原主页作者 ID 确认身份；确认范围后分页读取发布作品。请保持微信视频号页面打开。' };
   }
   async page(creator, count, signal, cursor = null, pending = []) {
+    requireWechatIdentity(creator);
     let remaining = [...pending], next = cursor, end = false, total = null, profile = null;
     if (!remaining.length) {
       const data = await this.request('/api/channels/contact/feed/list', { username: creator.id, next_marker: cursor || '' }, signal);
       if (!data || !Array.isArray(data.object)) throw new Error('未取得作品列表，请在微信打开该作者主页后继续读取');
-      if (data.contact?.username && data.contact.username !== creator.id) throw new Error('平台返回了其他作者的作品，已停止读取');
+      profile = identity(data.contact || {});
+      if (profile.id && profile.id !== creator.id) throw new Error('平台返回了其他作者的作品，已停止读取');
       if (data.continueFlag === undefined || ![0, 1, false, true].includes(data.continueFlag)) throw new Error('作品分页状态缺失，不能判断是否读取完整，请检查采集服务版本');
       next = typeof data.lastBuffer === 'string' ? data.lastBuffer : null; end = !data.continueFlag;
       if (!end && (!next || next === cursor)) throw new Error('平台未返回新的分页位置，已保留清单；请稍后继续读取');
-      profile = identity(data.contact); total = Number.isInteger(data.feedsCount) && data.feedsCount >= 0 ? data.feedsCount : null;
+      total = Number.isInteger(data.feedsCount) && data.feedsCount >= 0 ? data.feedsCount : null;
       for (const raw of data.object) {
-        if (raw.contact?.username && raw.contact.username !== creator.id) continue;
+        const author = identity(raw.contact || {});
+        if (author.id && author.id !== creator.id) continue;
         if (Number(raw.objectDesc?.mediaType) !== 4 || !raw.objectDesc?.media?.length) continue;
         if (typeof raw.id !== 'string' || !raw.id) continue;
-        remaining.push({ id: raw.id, nonce: raw.objectNonceId || '', title: raw.objectDesc.description || '视频号视频', media: {thumbUrl:raw.objectDesc.media[0].thumbUrl,coverUrl:raw.objectDesc.media[0].coverUrl,videoPlayLen:raw.objectDesc.media[0].videoPlayLen}, createtime: raw.createtime });
+        remaining.push({ id: raw.id, nonce: raw.objectNonceId || '', sourceUrl: raw.source_url || '', title: raw.objectDesc.description || '视频号视频', media: {thumbUrl:raw.objectDesc.media[0].thumbUrl,coverUrl:raw.objectDesc.media[0].coverUrl,videoPlayLen:raw.objectDesc.media[0].videoPlayLen}, createtime: raw.createtime });
       }
     } else { next = cursor?.next ?? null; end = Boolean(cursor?.end); total = cursor?.total ?? null; }
     const selected = remaining.slice(0, count), leftover = remaining.slice(count), items = [];
     for (const raw of selected) {
-      const share = await this.request('/api/channels/feed/share_url', { oid: raw.id }, signal);
-      const url = share.feedH5Url;
-      if (typeof url !== 'string' || platformOf(url) !== '视频号' || new URL(url).protocol !== 'https:') throw new Error('未取得可下载的作品分享链接，清单位置保留，请稍后重试');
+      signal?.throwIfAborted();
+      const url = feedUrl(raw, creator.id);
       const item = this.engine.item({ id: raw.id, title: raw.title, uploader: creator.name, uploader_id:creator.id, uploader_avatar:creator.avatar, thumbnail: raw.media.thumbUrl || raw.media.coverUrl || '', duration: raw.media.videoPlayLen, timestamp: Number(raw.createtime) || undefined }, url, '视频号'); items.push({...item,acquisition:'wechat-collector',objectNonceId:raw.nonce || ''});
     }
     return { items, next: leftover.length ? { next, end, total } : next, pending: leftover, complete: end && !leftover.length, total, profile };

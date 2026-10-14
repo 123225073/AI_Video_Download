@@ -97,7 +97,7 @@ export class CollectorConnection {
         if(code!==0){const stages={'certificate-check':'证书检查','certificate-proxy-baseline':'连接前代理状态核对','certificate-parse':'本机连接证书读取','certificate-identity':'本机连接证书名称和有效期核对','certificate-fingerprint':'本机连接证书指纹核对','certificate-store':'当前用户证书库检查','certificate-add':'临时证书信任','certificate-remove':'临时证书移除','proxy-apply':'代理切换','proxy-restore':'原代理恢复','route-restore':'Clash 分流恢复','restore-state':'恢复记录读取','restore-save':'恢复记录保存'};const stage=stages[result?.stage] || (action==='restore'?'连接恢复':'连接准备');
           const error=new Error(timedOut?`${stage}超时；未继续采集，恢复记录保留在本机`:`${stage}失败${Number.isInteger(result?.errorCode)?`（Windows 错误 ${result.errorCode}）`:''}；恢复记录保留在本机`);
           const diagnosticText=value=>typeof value==='string'?value.slice(0,256):null;
-          error.diagnostic={stage:diagnosticText(result?.stage),exceptionType:diagnosticText(result?.exceptionType),innerType:diagnosticText(result?.innerType),innerErrorCode:Number.isInteger(result?.innerErrorCode)?result.innerErrorCode:null,errorCode:Number.isInteger(result?.errorCode)?result.errorCode:null};
+          error.diagnostic={stage:diagnosticText(result?.stage),...(['lease-read','lease-size','lease-parse','lease-validate','route-restore','helper-exec','helper-output'].includes(result?.helperStage)?{helperStage:result.helperStage}:{}),...(['ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL'].includes(result?.proxyField)?{proxyField:result.proxyField}:{}),exceptionType:diagnosticText(result?.exceptionType),innerType:diagnosticText(result?.innerType),innerErrorCode:Number.isInteger(result?.innerErrorCode)?result.innerErrorCode:null,errorCode:Number.isInteger(result?.errorCode)?result.errorCode:null};
           return reject(error);
         }
         if(!result)return reject(new Error('Windows连接检查返回无效结果'));resolve(result);
@@ -117,7 +117,7 @@ export class CollectorConnection {
   }
   async recover() {
     for(const name of fs.readdirSync(this.directory).filter(n=>/^lease-[\w-]+\.json$/.test(n))) {
-      const file=path.join(this.directory,name); let saved;try{saved=JSON.parse(fs.readFileSync(file,'utf8'));}catch{throw new Error('上次网络恢复记录无法读取，请检查视频号连接');}
+      const file=path.join(this.directory,name); let saved;try{saved=JSON.parse(fs.readFileSync(file,'utf8'));}catch{saved=await this.system('state-status',file);}
       if(saved.phase!=='restored') { await this.system('restore',file); this.update('idle','已恢复上次中断的网络设置'); }
     }
   }
@@ -185,30 +185,34 @@ export class CollectorConnection {
   }
   async begin(signal,required=adapterCapabilities) {
     if(!this.certificate)await this.prepare(); if(signal.aborted) throw new Error('CANCELLED');
-    if(await abortable(this.online(),signal)){
-      if(await this.adapterReady(signal,8000,required)){this.update('connected','当前任务所需微信接口已就绪；无需切换系统代理');return;}
-      if(signal.aborted)throw new Error('CANCELLED');
-      // A live socket and installed JS do not prove that WeChat exported APIs.
-      if(this.adapterState?.version===4&&this.adapterState.hashMatches!==false)throw new Error(this.adapterMessage(required));
-    }
+    // A live websocket can survive restoration while /__assets requests no
+    // longer reach our component. Keep the task-scoped route for operations,
+    // even when the loaded adapter already matches; manual mode stays untouched.
+    const pageReady=await abortable(this.online(),signal)&&await this.adapterReady(signal,8000,required);
+    if(signal.aborted)throw new Error('CANCELLED');
     const inspected=await this.system('inspect');const plan=await this.routing.discover(inspected.proxy);const upstream=plan?'':upstreamProxy(inspected.proxy,inspected.guardedProxy);
+    if(signal.aborted)throw new Error('CANCELLED');
     const id=randomUUID(); this.leaseFile=path.join(this.directory,`lease-${id}.json`);
+    this.leaseMode=plan?'routed':'system';
     fs.writeFileSync(this.leaseFile,JSON.stringify({schema:1,id,mode:plan?'routed':'system',routing:plan,owner:process.pid,ownerStarted:inspected.ownerStarted,before:inspected.proxy,proxyAddress:'127.0.0.1:2023',certificateName:this.certificate.name,certificateFile:this.certificate.file,certificateFingerprint:this.certificate.fingerprint,certificateThumbprint:'',certificateAdded:false,phase:'prepared'}));
     await this.guard(this.leaseFile);
+    if(signal.aborted)throw new Error('CANCELLED');
     await this.api('/api/proxy/config',{values:{'proxy.enabled':true,'proxy.system':false,'proxy.hostname':'127.0.0.1','proxy.port':2023,'proxy.skipInstallRootCert':true,'proxy.tun':false,'proxy.tcpRelay.enabled':false,'proxy.upstreamProxy':upstream},restart:true},30000);
     if(signal.aborted) throw new Error('CANCELLED');
     this.update('trusting','正在准备微信连接；如 Windows 显示证书确认，请核对 Fengsha-WeChat- 名称后确认');
     await this.system('apply',this.leaseFile,signal);
-    if(plan)await this.routing.begin(plan);
+    if(signal.aborted)throw new Error('CANCELLED');
+    if(plan)await this.routing.begin(plan,signal);
+    if(signal.aborted)throw new Error('CANCELLED');
     const applied = await this.system('inspect');
     if(plan){
       const unchanged=['ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL'].every(key=>applied.proxy?.[key]?.present===inspected.proxy?.[key]?.present&&applied.proxy?.[key]?.value===inspected.proxy?.[key]?.value);
       if(!unchanged)throw new Error('连接准备期间系统代理发生变化，视频号采集已停止，请重试');
     }
     else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('系统代理切换未生效或已被其他程序修改，微信采集已停止；请检查代理软件的系统代理设置后再试');
-    this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续');
-    if(this.openPage){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续搜索。若未自动进入，请在连接提示中打开视频号。',{needsPage:true});try{await this.openPage(signal);}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号；无需关闭现有代理。',{needsPage:true});}}
     const deadline=Date.now()+this.waitMs;
+    this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续',{needsPage:!pageReady,waitingUntil:deadline});
+    if(!pageReady&&this.openPage){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续当前任务。若未自动进入，请按连接提示打开并刷新视频号。',{needsPage:true,waitingUntil:deadline});try{await this.openPage(signal);}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号并刷新；无需关闭现有代理。',{needsPage:true,waitingUntil:deadline});}}
     let pageOnline=false,refreshRequested=false;
     do {
       if(signal.aborted)throw new Error('CANCELLED');
@@ -237,9 +241,9 @@ export class CollectorConnection {
           // v260907 exposes reload only through its internal WebSocket client,
           // not an HTTP route. Never guess GET/POST endpoints or treat a failed
           // refresh as ready. A refreshed page is verified by the next probe.
-          this.update('waiting','新版适配需要首次刷新：内置 v260907 没有公开自动刷新接口；当前临时连接保持开启，请刷新视频号页面以载入更新，已有登录保留',{needsPage:true});
+          this.update('waiting','新版适配需要首次刷新：内置 v260907 没有公开自动刷新接口；当前临时连接保持开启，请刷新视频号页面以载入更新，已有登录保留',{needsPage:true,waitingUntil:deadline});
         }else if(refreshRequested)this.update('waiting','刷新请求已发送，正在等待新版适配和当前任务所需接口；已有登录保留',{needsPage:false});
-        else this.update('waiting',this.adapterMessage(required),{needsPage:this.adapterState?.version!==4||this.adapterState?.hashMatches===false});
+        else this.update('waiting',this.adapterMessage(required),{needsPage:true,waitingUntil:deadline});
       }
       await delay(Math.max(1,Math.min(1000,deadline-Date.now())),signal);
     }while(Date.now()<deadline);
@@ -279,10 +283,10 @@ export class CollectorConnection {
   async finish() {
     this.controller?.abort();await this.started?.catch(()=>{});
     try {
-      if(this.leaseFile){this.update('restoring','正在恢复原代理与临时证书');const routed=JSON.parse(fs.readFileSync(this.leaseFile,'utf8')).mode==='routed';if(routed)await this.system('restore',this.leaseFile);else{await this.api('/api/proxy/config',{values:{'proxy.enabled':false,'proxy.system':false},restart:true}).catch(()=>{});await this.system('restore',this.leaseFile);} }
+      if(this.leaseFile){this.update('restoring','正在恢复原代理与临时证书');const routed=this.leaseMode==='routed';if(routed)await this.system('restore',this.leaseFile);else{await this.api('/api/proxy/config',{values:{'proxy.enabled':false,'proxy.system':false},restart:true}).catch(()=>{});await this.system('restore',this.leaseFile);} }
       this.update('idle','当前任务已结束，原网络设置已恢复');
     } catch(error){this.update('error','自动恢复尚未完成，请点击恢复原网络');throw error;}
-    finally {this.started=null;this.startedRequired=null;this.controller=null;if(this.state.phase!=='error')this.leaseFile=null;}
+    finally {this.started=null;this.startedRequired=null;this.controller=null;if(this.state.phase!=='error'){this.leaseFile=null;this.leaseMode=null;}}
   }
   async restore() { if(this.members.size) throw new Error('请先停止作品读取和视频号下载，再恢复网络');await this.recover();this.leaseFile=null;this.update('idle','原网络设置已恢复');return this.status(); }
   async close(){this.closed=true;this.controller?.abort();await this.ending;await this.finish();this.worker?.kill();}

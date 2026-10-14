@@ -1,8 +1,8 @@
-﻿param([ValidateSet('inspect','apply','restore','guard')][string]$Action,[string]$StateFile,[int]$OwnerProcess)
+﻿param([ValidateSet('inspect','apply','restore','guard','state-status')][string]$Action,[string]$StateFile,[int]$OwnerProcess)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $script:taskStage='state'
-trap { @{ok=$false;stage=$script:taskStage;errorCode=$_.Exception.HResult;exceptionType=$_.Exception.GetType().Name;innerErrorCode=if ($_.Exception.InnerException) {$_.Exception.InnerException.HResult} else {$null};innerType=if ($_.Exception.InnerException) {$_.Exception.InnerException.GetType().Name} else {$null}} | ConvertTo-Json -Compress; exit 1 }
+trap { @{ok=$false;stage=$script:taskStage;helperStage=$script:routeHelperStage;proxyField=$script:proxyMismatchField;errorCode=$_.Exception.HResult;exceptionType=$_.Exception.GetType().Name;innerErrorCode=if ($_.Exception.InnerException) {$_.Exception.InnerException.HResult} else {$null};innerType=if ($_.Exception.InnerException) {$_.Exception.InnerException.GetType().Name} else {$null}} | ConvertTo-Json -Compress; exit 1 }
 $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 function Read-Proxy {
   $properties = Get-ItemProperty -LiteralPath $registryPath
@@ -74,7 +74,20 @@ function Restore-State {
       $script:taskStage='route-restore'
       $node=Join-Path (Split-Path $PSScriptRoot -Parent) 'node/node.exe'
       $helper=Join-Path $PSScriptRoot 'clash-route-helper.cjs'
-      try { $null=& $node $helper $StateFile; if ($LASTEXITCODE -ne 0) { $routeRestored=$false } } catch { $routeRestored=$false }
+      $script:routeHelperStage=$null
+      try {
+        # This reader can decode protected leases that native Node sees as an
+        # encrypted envelope. Pass only the in-memory object, never a new file.
+        $OutputEncoding=[Text.UTF8Encoding]::new($false)
+        $reply=$state | ConvertTo-Json -Depth 8 -Compress | & $node $helper --stdin
+        $helperExitCode=$LASTEXITCODE
+        $result=$reply | ConvertFrom-Json
+        if ($helperExitCode -ne 0 -or $result.restored -ne $true) {
+          $routeRestored=$false
+          $script:routeHelperStage='helper-output'
+          if ($result.stage -in @('lease-read','lease-size','lease-parse','lease-validate','route-restore')) { $script:routeHelperStage=$result.stage }
+        }
+      } catch { $routeRestored=$false; $script:routeHelperStage='helper-exec' }
       # An orphaned collector must not keep decrypting traffic after its owner exits.
       try { $null=Invoke-RestMethod -Uri 'http://127.0.0.1:2022/api/proxy/config' -Method Post -ContentType 'application/json' -Body '{"values":{"proxy.enabled":false,"proxy.system":false},"restart":true}' -TimeoutSec 15 } catch {}
     }
@@ -104,6 +117,12 @@ function Restore-State {
     return $state
   } finally { try {$mutex.ReleaseMutex()} catch {}; $mutex.Dispose() }
 }
+if ($Action -eq 'state-status') {
+  $script:taskStage='state-status'
+  $state=Read-State
+  @{phase=$state.phase;mode=$state.mode} | ConvertTo-Json -Compress
+  exit
+}
 if ($Action -eq 'inspect') {
   $script:taskStage='inspect'
   $owner = Get-Process -Id $OwnerProcess
@@ -116,7 +135,7 @@ if ($Action -eq 'apply') {
   $script:taskStage='certificate-proxy-baseline'
   $nowProxy=Read-Proxy
   foreach ($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
-    if ($nowProxy[$name].present -ne $state.before.$name.present -or [string]$nowProxy[$name].value -ne [string]$state.before.$name.value) { throw 'Proxy changed during connection preparation' }
+    if ($nowProxy[$name].present -ne $state.before.$name.present -or [string]$nowProxy[$name].value -ne [string]$state.before.$name.value) { $script:proxyMismatchField=$name; throw 'Proxy changed during connection preparation' }
   }
   $script:taskStage='certificate-parse'
   $pem=Get-Content -LiteralPath $state.certificateFile -Raw -Encoding UTF8

@@ -4,6 +4,24 @@ test('配置解析和接口 JSON 失败不在错误中回显控制密钥',async(
 test('同数量但不同规则/被手动禁用的运行配置不能被覆盖',()=>{const source=['DOMAIN-SUFFIX,example.com,original','IP-CIDR,127.0.0.0/8,DIRECT,no-resolve','MATCH,original'];const actual=[{type:'DomainSuffix',payload:'example.com',proxy:'original'},{type:'IPCIDR',payload:'127.0.0.0/8',proxy:'DIRECT'},{type:'Match',payload:'',proxy:'original'}];assert.equal(rulesEquivalent(source,actual),true);assert.equal(rulesEquivalent(source,[{...actual[0],payload:'different.com'},...actual.slice(1)]),false);assert.equal(rulesEquivalent(source,[{...actual[0],extra:{disabled:true}},...actual.slice(1)]),false);});
 test('真实 Mihomo 的 IPv6、resolve 与逻辑规则格式保持语义，不混淆 AND/OR',()=>{const source=['IP-CIDR6,::1/128,DIRECT,no-resolve','GEOIP,cn,DIRECT,resolve','AND,((DST-PORT,443),(NETWORK,UDP)),REJECT'];const actual=[{type:'IPCIDR',payload:'::1/128',proxy:'DIRECT'},{type:'GeoIP',payload:'cn',proxy:'DIRECT'},{type:'AND',payload:'((DstPort,443) && (Network,udp))',proxy:'REJECT'}];assert.equal(rulesEquivalent(source,actual),true);assert.equal(rulesEquivalent(source,[...actual.slice(0,2),{...actual[2],payload:'((DstPort,443) || (Network,udp))'}]),false);});
 const configuration=()=>({mode:'rule','mixed-port':7897,secret:'private-token',dns:{enable:true},proxies:[{name:'existing',type:'http',server:'example.com',port:80}], 'proxy-groups':[{name:'original',type:'select',proxies:['existing','DIRECT']}],rules:['DOMAIN,example.com,original','MATCH,DIRECT']});
+
+test('重连只关闭视频号旧TCP连接，Codex、健康采集连接和伪造标识均保留',async()=>{
+ const route=new ClashRoute(),id=randomUUID(),deleted=[];
+ const target={id,metadata:{host:'channels.weixin.qq.com',network:'tcp'},chains:['DIRECT']};
+ const sockets=[target,{...target,id:randomUUID(),metadata:{host:'api.openai.com',network:'tcp'}},{...target,id:randomUUID(),metadata:{host:'channels.weixin.qq.com.evil.test',network:'tcp'}},{...target,id:randomUUID(),metadata:{host:'channels.weixin.qq.com',network:'udp'}},{...target,id:randomUUID(),chains:[proxyName]},{...target,id:'../../connections'},{...target,id:randomUUID(),chains:null}];
+ route.load=()=>({configurationDigest:'fixture',config:configuration()});route.reload=async()=>{};
+ let rules=0;route.api=async(_ctx,url,_body,method)=>{if(method==='DELETE'){deleted.push(url);return null;}if(url==='/rules')return {rules:++rules===1?[]:[{payload:'channels.weixin.qq.com',proxy:routeName}]};if(url==='/configs')return {mode:'rule'};if(url==='/connections')return {connections:sockets};return {};};
+ const {createHash}=await import('node:crypto');await route.begin({configurationDigest:'fixture',rulesDigest:createHash('sha256').update('[]').digest('hex')});assert.deepEqual(deleted,['/connections/'+id]);
+});
+
+test('共享取消在连接读取后不关闭socket，已发出的DELETE等完成后停止后续关闭',async()=>{
+ for(const stage of ['read','write']){
+  const route=new ClashRoute(),controller=new AbortController(),deleted=[],{createHash}=await import('node:crypto');let rules=0;
+  route.load=()=>({configurationDigest:'fixture',config:configuration()});route.reload=async()=>{};
+  route.api=async(_ctx,url,_body,method)=>{if(method==='DELETE'){deleted.push(url);controller.abort();return null;}if(url==='/rules')return {rules:++rules===1?[]:[{payload:'channels.weixin.qq.com',proxy:routeName}]};if(url==='/configs')return {mode:'rule'};if(url==='/connections'){if(stage==='read')controller.abort();return {connections:[1,2].map(()=>({id:randomUUID(),metadata:{host:'channels.weixin.qq.com',network:'tcp'},chains:['DIRECT']}))};}return {};};
+  await assert.rejects(route.begin({configurationDigest:'fixture',rulesDigest:createHash('sha256').update('[]').digest('hex')},controller.signal),/CANCELLED/);assert.equal(deleted.length,stage==='read'?0:1);
+ }
+});
 test('临时分流序列化保留形似科学计数和前导零的 REALITY ID，不改变端口类型',()=>{
  const c=parseClashConfig('mixed-port: 7897\nsecret: 00123\nproxies:\n  - name: fixture\n    type: vless\n    port: 443\n    reality-opts:\n      short-id: 123e4567\n');
  assert.equal(c.proxies[0]['reality-opts']['short-id'],'123e4567');assert.equal(c.secret,'00123');

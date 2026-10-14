@@ -12,7 +12,16 @@ const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('h
 const generalKeys=['port','mixed-port','socks-port','redir-port','tproxy-port','mode','allow-lan','bind-address','ipv6','log-level','tun'];
 // Only the current local Windows Verge sidecar namespace is supported. Never
 // accept UNC server pipes, alternate device namespaces or arbitrary pipe names.
-const localVergePipe=value=>process.platform==='win32'&&typeof value==='string'&&/^\\\\\.\\pipe\\verge-mihomo-sidecar-release-[A-Za-z0-9_-]+$/i.test(value);
+const localVergePipe=value=>process.platform==='win32'&&typeof value==='string'&&/^\\\\\.\\pipe\\verge-mihomo-(?:sidecar-release-[A-Za-z0-9_-]+|production-[a-f0-9]{64})$/i.test(value);
+export function currentVergePipe(configured,names) {
+  if(!localVergePipe(configured))return configured;
+  const identity=/^verge-mihomo-(?:sidecar-release|production)-([a-f0-9]{64})$/i.exec(configured.split('\\').at(-1))?.[1];
+  if(!identity)return configured;
+  const available=new Set((names||[]).map(name=>String(name).split('\\').at(-1)));
+  if(available.has(configured.split('\\').at(-1)))return configured;
+  const production=`verge-mihomo-production-${identity}`;
+  return available.has(production)?String.raw`\\.\pipe`+'\\'+production:configured;
+}
 function controllerRequest(url,options){
   if(!options.socketPath)return fetch(url,options);
   return new Promise((resolve,reject)=>{
@@ -81,7 +90,10 @@ export class ClashRoute {
     let c;try{c=parseClashConfig(fs.readFileSync(file,'utf8'));}catch{throw new Error('Clash 配置无法解析，未改变原网络；请在 Clash 中检查当前配置');}
     if(!c||typeof c!=='object'||Array.isArray(c))throw new Error('Clash 配置格式无效，未改变原网络');
     const address=String(c['external-controller']||'').replace(/^0\.0\.0\.0:/,'127.0.0.1:');
-    if(!address&&localVergePipe(c['external-controller-pipe']))return {config:c,configurationDigest:digest(c),base:'http://localhost',socketPath:c['external-controller-pipe'],secret:String(c.secret||'')};
+    if(!address&&localVergePipe(c['external-controller-pipe'])){
+      let pipes=[];try{pipes=fs.readdirSync(String.raw`\\.\pipe`+'\\');}catch{}
+      return {config:c,configurationDigest:digest(c),base:'http://localhost',socketPath:currentVergePipe(c['external-controller-pipe'],pipes),secret:String(c.secret||'')};
+    }
     if(!/^(127\.0\.0\.1|localhost):\d{1,5}$/.test(address))throw new Error('Clash 本机控制接口不可用，原网络保持不变');
     return {config:c,configurationDigest:digest(c),base:`http://${address}`,secret:String(c.secret||'')};
   }
@@ -112,7 +124,7 @@ export class ClashRoute {
     for(const [name,target] of Object.entries(selected))try{await this.api(context,`/proxies/${encodeURIComponent(name)}`,{name:target},'PUT');}catch{failures.push(name);}
     if(failures.length)throw new Error('Clash 已载入分流，但部分原节点选择未恢复，请检查 Clash 节点选择');
   }
-  async begin(plan){
+  async begin(plan,signal){
     const context=this.load();if(!context)throw new Error('Clash 配置已移动，未切换网络');
     const rules=await this.api(context,'/rules');
     if(context.configurationDigest!==plan.configurationDigest||digest(rules.rules.map(r=>[r.type,r.payload,r.proxy]))!==plan.rulesDigest)throw new Error('准备期间 Clash 规则已变化，请重试；当前规则保持不变');
@@ -122,6 +134,16 @@ export class ClashRoute {
     await this.api(context,`/group/${routeName}/delay?url=http%3A%2F%2Fwww.qq.com&timeout=5000`).catch(()=>{});
     const actual=await this.api(context,'/rules');
     if(actual.rules?.[0]?.payload!=='channels.weixin.qq.com'||actual.rules[0].proxy!==routeName)throw new Error('视频号专用分流未生效，已停止采集');
+    // Existing HTTPS sockets retain the route chosen when they were opened.
+    // Reconnect only this platform's stale TCP sockets; never flush all traffic.
+    const current=await this.api(context,'/connections');
+    if(signal?.aborted)throw new Error('CANCELLED');
+    for(const connection of current.connections||[]){
+      if(signal?.aborted)throw new Error('CANCELLED');
+      if(connection.metadata?.host!=='channels.weixin.qq.com'||connection.metadata?.network!=='tcp'||!Array.isArray(connection.chains)||connection.chains.includes(proxyName)||typeof connection.id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connection.id))continue;
+      await this.api(context,'/connections/'+connection.id,undefined,'DELETE');
+      if(signal?.aborted)throw new Error('CANCELLED');
+    }
   }
   async restore(plan){
     const context=this.load();if(!context)throw new Error('Clash 恢复配置不可用');

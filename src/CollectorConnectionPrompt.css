@@ -1,0 +1,8 @@
+.collector-prompt-backdrop{position:fixed;inset:0;z-index:100;background:#10243c66;display:flex;align-items:center;justify-content:center;padding:24px}
+.collector-prompt-dialog{width:min(620px,100%);max-height:calc(100dvh - 48px);overflow:auto;background:white;border-radius:14px;padding:24px;box-shadow:0 20px 60px #10243c33}
+.collector-prompt-dialog h2{font-size:20px;margin:0 0 16px}
+.collector-prompt-dialog p,.collector-prompt-dialog li{font-size:14px;line-height:1.8;color:#536a80}
+.collector-prompt-dialog ol{padding-left:22px}.collector-prompt-dialog li+li{margin-top:8px}
+.collector-prompt-dialog kbd{font:inherit;font-weight:600;border:1px solid #d7e1eb;border-radius:4px;padding:1px 5px}
+.collector-prompt-actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}
+.collector-prompt-dialog small{display:block;color:#536a80;line-height:1.7}

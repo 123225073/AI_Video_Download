@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,randomBytes} from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {ClashRoute,parseClashConfig,routeName,routeRule} from '../electron/clash-route.js';
+import {ClashRoute,parseClashConfig,routeName,routeRule,currentVergePipe} from '../electron/clash-route.js';
 
 const windows=process.platform==='win32';
 const pipeName=()=>String.raw`\\.\pipe\verge-mihomo-sidecar-release-${randomUUID()}`;
@@ -16,8 +16,8 @@ function fixture(t,controller={}){
   fs.writeFileSync(path.join(directory,'clash-verge.yaml'),JSON.stringify({secret:'fixture-private-token',...controller}));
   return new ClashRoute(directory);
 }
-async function pipeServer(t,handler){
-  const socketPath=pipeName(),sockets=new Set(),server=http.createServer(handler);
+async function pipeServer(t,handler,socketPath=pipeName()){
+  const sockets=new Set(),server=http.createServer(handler);
   server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(socketPath,resolve);});
   t.after(async()=>{
@@ -27,6 +27,19 @@ async function pipeServer(t,handler){
   return {socketPath,server,sockets};
 }
 const noPrivateDetails=error=>!error.message.includes('fixture-private-token')&&!error.message.includes('private-server')&&!error.message.includes('verge-mihomo-sidecar-release-');
+
+test('pipe identity fallback never extracts an embedded production suffix from a legacy name',()=>{
+ const identity='a'.repeat(64),production=`verge-mihomo-production-${identity}`;
+ const configured=String.raw`\\.\pipe\verge-mihomo-sidecar-release-other-`+production;
+ assert.equal(currentVergePipe(configured,[production]),configured);
+});
+
+test('Windows service mode: stale sidecar configuration resolves only its matching live production pipe',{skip:!windows},async t=>{
+ const identity=randomBytes(32).toString('hex'),production=String.raw`\\.\pipe\verge-mihomo-production-${identity}`,stale=String.raw`\\.\pipe\verge-mihomo-sidecar-release-${identity}`;
+ await pipeServer(t,(req,res)=>{assert.equal(req.headers.authorization,'Bearer fixture-private-token');res.setHeader('Content-Type','application/json');res.end('{"version":"production-fixture"}');},production);
+ const route=fixture(t,{'external-controller':'','external-controller-pipe':stale}),context=route.load();
+ assert.equal(context.socketPath,production);assert.deepEqual(await route.api(context,'/version'),{version:'production-fixture'});
+});
 
 test('Windows: empty TCP controller loads the current Verge pipe and GET uses local pipe HTTP',{skip:!windows},async t=>{
   const {socketPath}=await pipeServer(t,(req,res)=>{

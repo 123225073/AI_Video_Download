@@ -38,13 +38,22 @@
             const u=new URL(String(input.url));
             if(u.protocol!=='https:'||u.username||u.password||u.port)throw Error('视频号链接无效');
             if(u.hostname==='weixin.qq.com'&&/^\/sph\/[a-zA-Z0-9_-]{1,100}\/?$/.test(u.pathname)||u.hostname==='channels.weixin.qq.com'&&u.pathname==='/finder-preview/pages/sph'){
-              // Reuse the upstream share-ID resolver, but route the resulting
-              // encrypted ID through the same recovered official detail API.
-              // Never mistake the short share ID for an encrypted object ID.
-              if(typeof fetchExportIdWithShareId!=='function')throw Error('采集组件未取得分享链接解析能力，请更新采集组件');
-              const [error,value]=await fetchExportIdWithShareId({url:u.href});
-              if(error)throw Error('微信未能解析此分享链接，请确认原视频仍可访问');
-              eid=String(value||'');oid='';nid='';
+              // The pinned upstream getFeedInfo.js uses this same-origin JSON
+              // endpoint. Native fetch removes its on-demand axios/__assets
+              // dependency after the previous task restored its route.
+              const shortUri=u.pathname.startsWith('/sph/')?u.pathname.split('/')[2]:u.searchParams.get('id');
+              if(!/^[a-zA-Z0-9_-]{1,100}$/.test(shortUri||''))throw Error('视频号分享链接标识无效');
+              const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+              let shared;
+              try{
+                const response=await fetch('https://channels.weixin.qq.com/finder-preview/api/feed/get_feed_info',{method:'POST',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({baseReq:{generalToken:''},shortUri}),signal:controller.signal});
+                if(!response.ok)throw Error('HTTP');shared=await response.json();
+              }catch{throw Error('微信分享链接解析未完成，请确认原视频可访问后重试；已有资料保留');}
+              finally{clearTimeout(timer);}
+              if(shared?.errCode||shared?.error)throw Error('微信未能解析此分享链接，请确认原视频仍可访问');
+              const exportId=shared?.data?.sceneInfo?.dynamicExportId;
+              if(typeof exportId!=='string'||!exportId.trim()||exportId.length>1000)throw Error('微信分享链接未返回有效作品标识');
+              eid=exportId;oid='';nid='';
               if(!eid)throw Error('微信分享链接未返回作品标识');
             }else if(u.hostname==='channels.weixin.qq.com'&&u.pathname==='/web/pages/feed'){
               if(typeof WXU==='undefined'||!WXU.Base64?.decodeBase64ToUint64String)throw Error('视频号链接解析接口未就绪');

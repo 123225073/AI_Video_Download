@@ -8,6 +8,14 @@ import { Store } from '../electron/store.js';
 import { CollectorConnection,upstreamProxy,retireStaleComponentPid,collectorEnvironment,validateCollectorScriptSource } from '../electron/collector-connection.js';
 test('采集子进程不继承代理回环；保留 Codex 和其他程序的代理环境',()=>{const original={HTTP_PROXY:'http://127.0.0.1:7897',https_proxy:'http://127.0.0.1:7897',ALL_PROXY:'http://127.0.0.1:7897',NO_PROXY:'localhost',PATH:'original'};const env=collectorEnvironment(original);assert.equal(env.NO_PROXY,'*');assert.equal(env.HTTP_PROXY,undefined);assert.equal(env.https_proxy,undefined);assert.equal(env.ALL_PROXY,undefined);assert.equal(env.PATH,original.PATH);assert.equal(original.HTTP_PROXY,'http://127.0.0.1:7897');});
 const before={ProxyEnable:{present:true,value:1},ProxyServer:{present:true,value:'127.0.0.1:7897'},ProxyOverride:{present:true,value:'localhost;<local>'},AutoConfigURL:{present:false,value:null}};
+
+test('最后任务在只读路由发现中取消，迟到的发现结果不能创建租约或启动组件',async()=>{
+ let release,entered;const finding=new Promise(resolve=>entered=resolve),pending=new Promise(resolve=>release=resolve);
+ const {connection,store,calls}=await fixture({routing:{discover:async()=>{entered();return pending;},begin:async()=>calls.push('route-begin')}});
+ const controller=new AbortController(),run=connection.withConnection(controller.signal,async()=>calls.push('collect'));
+ await finding;controller.abort();await new Promise(resolve=>setImmediate(resolve));release({directory:'fixture',rulesDigest:'fixture'});
+ await assert.rejects(run,/CANCELLED/);assert.ok(!calls.includes('guard'));assert.ok(!calls.includes('start-proxy'));assert.ok(!calls.includes('apply'));assert.ok(!calls.includes('route-begin'));assert.equal(connection.leaseFile,null);assert.equal(connection.status().phase,'idle');await connection.close();store.close();
+});
 test('active Clash proxy guard blocks before certificate or proxy changes', async()=>{
   const {connection,store,calls}=await fixture();const original=connection.system;
   connection.system=async(action,file)=>action==='inspect'?{proxy:before,ownerStarted:'start',guardedProxy:true}:original(action,file);
@@ -56,6 +64,20 @@ async function fixture(options={}) {
   return {connection,store,calls};
 }
 
+test('当前租约结束使用内存模式，恢复不重读受保护的新文件',async()=>{
+ const {connection,store,calls}=await fixture({routing:{discover:async()=>({directory:'fixture'}),begin:async()=>{}}});
+ connection.online=async()=>true;
+ connection.system=async(action)=>{calls.push(action);if(action==='inspect')return {proxy:before,ownerStarted:'start'};return {};};
+ await connection.withConnection(undefined,async()=>fs.writeFileSync(connection.leaseFile,'%TSD-Header-protected-fixture'));
+ assert.equal(calls.filter(action=>action==='restore').length,1);assert.equal(connection.state.phase,'idle');assert.equal(connection.leaseFile,null);assert.equal(connection.leaseMode,null);await connection.close();store.close();
+});
+
+test('历史保护记录由只读系统状态判断，已恢复记录不重复恢复',async()=>{
+ const {connection,store,calls}=await fixture();const file=path.join(connection.directory,'lease-protected.json');fs.writeFileSync(file,'%TSD-Header-protected-fixture');
+ let phase='restored';connection.system=async(action,target)=>{calls.push(action);assert.equal(target,file);return action==='state-status'?{phase,mode:'routed'}:{restored:true};};
+ await connection.recover();assert.deepEqual(calls,['state-status']);phase='prepared';calls.length=0;await connection.recover();assert.deepEqual(calls,['state-status','restore']);await connection.close();store.close();
+});
+
 test('已连接的旧页面不能跳过适配准备，等待新版本后才开始采集',async()=>{
   const {connection,store,calls}=await fixture();let ready=false;
   connection.online=async()=>true;connection.adapterReady=async()=>ready;
@@ -65,10 +87,12 @@ test('已连接的旧页面不能跳过适配准备，等待新版本后才开�
   assert.ok(calls.indexOf('apply')>=0);assert.ok(calls.indexOf('open-page')<calls.indexOf('collect'));assert.ok(calls.includes('restore'));store.close();
 });
 
-test('已连接且适配版本匹配时复用页面，不切换网络或打开窗口',async()=>{
+test('已连接且适配匹配仍准备任务租约，动态脚本资源可读取且结束恢复；不重开窗口',async()=>{
   const {connection,store,calls}=await fixture();connection.online=async()=>true;connection.adapterReady=async()=>true;
+  const system=connection.system;connection.system=async(action,file)=>{const r=await system(action,file);if(action==='inspect'&&calls.includes('apply'))r.proxy={...before,ProxyServer:{present:true,value:'127.0.0.1:2023'}};return r;};
+  connection.openPage=async()=>calls.push('open-page');
   await connection.withConnection(undefined,async()=>calls.push('collect'));
-  assert.ok(calls.includes('collect'));assert.ok(!calls.includes('apply'));assert.ok(!calls.includes('guard'));store.close();
+  assert.ok(calls.includes('collect'));assert.ok(calls.includes('apply'));assert.ok(calls.includes('guard'));assert.ok(calls.includes('restore'));assert.ok(!calls.includes('open-page'));store.close();
 });
 
 test('连接探针仅接受当前适配版本，每次请求避免复用上游旧缓存',async()=>{
@@ -111,7 +135,7 @@ test('v4 哈希不匹配的后续等待仍要求刷新页面，不误报采集�
   connection.api=async route=>{if(route.startsWith('/api/channels/contact/search?')){const probe=adapterProbe();probe.data.fengshaContentHash='oldscript123';return probe;}return {};};
   const controller=new AbortController();connection.changed=()=>{if(connection.state.phase==='waiting'&&connection.state.label.includes('旧的采集适配脚本')){seen.push({...connection.state});controller.abort();}};
   await assert.rejects(connection.withConnection(controller.signal,async()=>{throw Error('must not collect');},['search']),/CANCELLED/);
-  assert.equal(seen.length,1);assert.equal(seen[0].needsPage,true);assert.doesNotMatch(seen[0].label,/接口尚未加载/);assert.ok(calls.includes('restore'));
+  assert.equal(seen.length,1);assert.equal(seen[0].needsPage,true);assert.ok(Number.isFinite(seen[0].waitingUntil));assert.doesNotMatch(seen[0].label,/接口尚未加载/);assert.ok(calls.includes('restore'));
   await connection.close();store.close();
 });
 test('本地服务：v4 旧 hash 只在已授权活动分流租约内发一次保留刷新 GET，ack 后仍等待新 hash，最后恢复',async t=>{
@@ -195,7 +219,7 @@ test('主调用方的 search/detail/creatorFeeds 单项需求独立放行，未�
     const capabilities={search:false,detail:false,creatorFeeds:false};capabilities[required]=true;
     connection.api=async()=>adapterProbe(4,capabilities);
     await connection.withConnection(undefined,async()=>calls.push('collect'),[required]);
-    assert.equal(calls.filter(call=>call==='collect').length,1);assert.ok(!calls.includes('apply'));assert.ok(!calls.includes('guard'));assert.equal(connection.members.size,0);
+    assert.equal(calls.filter(call=>call==='collect').length,1);assert.ok(calls.includes('apply'));assert.ok(calls.includes('guard'));assert.ok(calls.includes('restore'));assert.equal(connection.members.size,0);
     capabilities[required]=1;
     await assert.rejects(connection.withConnection(undefined,async()=>calls.push('collect'),[required]),/接口尚未加载/);
     assert.equal(calls.filter(call=>call==='collect').length,1);
@@ -209,7 +233,7 @@ test('withConnection 第三需求参数贯穿首次准备；后加入的缺失�
   const search=connection.withConnection(undefined,()=>{entered();return work;},['search']);
   await started;
   await assert.rejects(connection.withConnection(undefined,async()=>calls.push('detail'),['detail']),error=>/详情接口尚未加载/.test(error.message)&&!/搜索.*尚未加载/.test(error.message));
-  assert.equal(connection.members.size,1);assert.ok(!calls.includes('detail'));assert.ok(!calls.includes('restore'));assert.ok(!calls.includes('apply'));
+  assert.equal(connection.members.size,1);assert.ok(!calls.includes('detail'));assert.ok(!calls.includes('restore'));assert.equal(calls.filter(call=>call==='apply').length,1);
   release();await search;await connection.close();store.close();
 });
 test('无效能力参数在准备和权限租约之前拒绝，不误放行未知接口',async()=>{
@@ -218,14 +242,14 @@ test('无效能力参数在准备和权限租约之前拒绝，不误放行未�
   assert.ok(!calls.includes('guard'));assert.ok(!calls.includes('apply'));assert.ok(!calls.includes('collect'));assert.equal(connection.leaseFile,null);
   await connection.close();store.close();
 });
-test('socket 在线但 v4 接口不完整时明确报错，不开窗口、不刷新、不创建租约或重复登录',async()=>{
+test('socket在线但接口不完整时给予一次页面指引，有界等待后保留结果并恢复租约',async()=>{
   const {connection,store,calls}=await fixture();let opened=0;
   connection.online=async()=>true;connection.adapterReady=CollectorConnection.prototype.adapterReady;
   connection.api=async()=>adapterProbe(4,{search:false,detail:true,creatorFeeds:false});
   connection.openPage=async()=>opened++;
   connection.adapterUpdatePending=true;
   await assert.rejects(connection.withConnection(undefined,async()=>calls.push('collect')),error=>/搜索、作者作品接口尚未加载/.test(error.message)&&/无需反复登录/.test(error.message));
-  assert.equal(opened,0);assert.equal(connection.leaseFile,null);assert.ok(!calls.includes('apply'));assert.ok(!calls.includes('guard'));assert.ok(!calls.includes('collect'));
+  assert.equal(opened,1);assert.equal(connection.leaseFile,null);assert.ok(calls.includes('apply'));assert.ok(calls.includes('guard'));assert.ok(calls.includes('restore'));assert.ok(!calls.includes('collect'));
   assert.equal(connection.members.size,0);await connection.close();store.close();
 });
 
@@ -332,7 +356,7 @@ test('部署标记丢失仍识别旧 v3；v260907 无刷新 HTTP 路由明确失
     assert.equal(collected,0);assert.deepEqual(events,['route-begin']);assert.equal(connection.adapterUpdatePending,false);assert.equal(connection.adapterReloadAttempted,true);
     assert.equal(calls.filter(call=>call==='apply').length,1);assert.equal(calls.filter(call=>call==='restore').length,1);
     // A user-refreshed page must pass the real capability probe before use.
-    fresh=true;await run();assert.equal(collected,1);assert.deepEqual(events,['route-begin']);
+    fresh=true;await run();assert.equal(collected,1);assert.deepEqual(events,['route-begin','route-begin']);assert.equal(calls.filter(call=>call==='restore').length,2);
     await connection.close();store.close();
   }
 });

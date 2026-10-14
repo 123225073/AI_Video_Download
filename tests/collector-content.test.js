@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const moduleURL='https://res.wx.qq.com/t/wx_fed/finder/web/web-finder/res/js/virtual_svg-icons-register.publishFixture.js?v=260907';
 function fixture({api={},resources=[],load=async()=>({}),late}={}) {
   const sent=[],imports=[],calls=[];let listener;
-  const sandbox={window:{},URL,performance:{getEntriesByType:()=>resources.map(name=>({name}))},document:{querySelectorAll:()=>[]},
+  const sandbox={window:{},URL,AbortController,performance:{getEntriesByType:()=>resources.map(name=>({name}))},document:{querySelectorAll:()=>[]},
     WXU:{API:api,onAPILoaded(fn){listener=fn;}},ws_client$:{methods:{__wx_handle_api_call:async()=>calls.push('other')}},
     setTimeout:fn=>setTimeout(()=>{late?.(sandbox);fn();},1),setInterval,clearInterval,clearTimeout,
     loadModule:async url=>{imports.push(url);return load(url);}};
@@ -59,12 +59,12 @@ test('selected feed detail recovers a cached service even when WXU.API has no de
 
  test('public share links and OID details use the same recovered API without legacy fallback',async()=>{
   let payload;const f=fixture({api:{finderGetCommentDetail:async p=>{payload=p;return {errCode:0,data:{object:{id:'123'}}};}}});
-  f.sandbox.fetchExportIdWithShareId=async data=>{assert.equal(data.url,'https://weixin.qq.com/sph/AidY5tmMHd');return [null,'encrypted-real-id'];};
+  f.sandbox.fetch=async(url,options)=>{assert.equal(url,'https://channels.weixin.qq.com/finder-preview/api/feed/get_feed_info');assert.equal(JSON.parse(options.body).shortUri,'AidY5tmMHd');return {ok:true,json:async()=>({data:{sceneInfo:{dynamicExportId:'encrypted-real-id'}}})};};
   const r=await f.request({url:'https://weixin.qq.com/sph/AidY5tmMHd'},'key:channels:feed_profile');
   assert.equal(r.errCode,0);assert.equal(payload.scene,141);assert.equal(payload.encrypted_objectid,'encrypted-real-id');assert.equal(payload.objectid,undefined);assert.equal(f.calls.length,0);
  });
  test('failed share resolver never guesses a short share ID as encrypted object ID',async()=>{
-  let called=false;const f=fixture({api:{finderGetCommentDetail:async()=>{called=true;}}});f.sandbox.fetchExportIdWithShareId=async()=>[new Error('secret token'),null];
+  let called=false;const f=fixture({api:{finderGetCommentDetail:async()=>{called=true;}}});f.sandbox.fetch=async()=>{throw Error('secret token');};
   const r=await f.request({url:'https://weixin.qq.com/sph/AidY5tmMHd'},'key:channels:feed_profile');assert.equal(r.errCode,1011);assert.equal(called,false);assert.doesNotMatch(r.errMsg,/secret/);
  });
  test('creator pagination recovers merged API and preserves username and cursor',async()=>{
@@ -79,6 +79,20 @@ test('selected feed detail recovers a cached service even when WXU.API has no de
 test('cached module capabilities are recovered before the connection readiness gate',async()=>{
  const f=fixture({resources:[moduleURL],load:async()=>({merged:{finderSearch:()=>{throw Error('probe must not search');},finderGetCommentDetail(){},finderUserPage(){}}})});
  const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});assert.equal(r.errCode,0);assert.deepEqual(r.data.capabilities,{search:true,detail:true,creatorFeeds:true});assert.equal(f.imports.length,1);
+});
+
+test('share resolution needs no axios or dynamically injected asset scripts',async()=>{
+ const f=fixture({api:{finderGetCommentDetail:async()=>({errCode:0,data:{object:{id:'confirmed'}}})}});let fetched=0;
+ f.sandbox.fetchExportIdWithShareId=async()=>{throw Error('legacy axios script must not load');};
+ f.sandbox.fetch=async(_url,options)=>{fetched++;assert.equal(options.credentials,'same-origin');assert.equal(options.redirect,'error');return {ok:true,json:async()=>({data:{sceneInfo:{dynamicExportId:'valid-eid'}}})};};
+ assert.equal((await f.request({url:'https://weixin.qq.com/sph/AidY5tmMHd'},'key:channels:feed_profile')).errCode,0);assert.equal(fetched,1);assert.equal(f.calls.length,0);
+});
+test('share resolver rejects non-string, blank or oversized stable IDs before requesting detail',async()=>{
+ for(const id of [9007199254740993,{},true,['a','b'],'   ','x'.repeat(1001)]){
+  let details=0;const f=fixture({api:{finderGetCommentDetail:async()=>{details++;return {errCode:0};}}});
+  f.sandbox.fetch=async()=>({ok:true,json:async()=>({data:{sceneInfo:{dynamicExportId:id}}})});
+  const r=await f.request({url:'https://weixin.qq.com/sph/AidY5tmMHd'},'key:channels:feed_profile');assert.notEqual(r.errCode,0);assert.equal(details,0);
+ }
 });
 
 test('owned refresh acknowledges once and reloads the same page without official calls',async()=>{
