@@ -61,6 +61,7 @@ async function fixture(options={}) {
   const connection=new CollectorConnection(store,'',directory,()=>{},{routing:{discover:async()=>null},waitMs:20,guard:async()=>calls.push('guard'),system:async(action,file)=>{calls.push(action);if(action==='inspect')return {proxy:online?{...before,ProxyServer:{present:true,value:'127.0.0.1:2023'}}:before,ownerStarted:'start'};if(action==='apply')online=true;if(action==='restore'){online=false;const state=JSON.parse(fs.readFileSync(file));state.phase='restored';fs.writeFileSync(file,JSON.stringify(state));}return {};},...options});
   connection.prepare=async()=>{connection.certificate={name:'Fengsha-WeChat-unit',file:'test-public-certificate',fingerprint:'unit'};return connection.status();};
   connection.online=async()=>online;connection.adapterReady=async()=>true;connection.api=async(route,body)=>{calls.push(body.values['proxy.enabled']?'start-proxy':'stop-proxy');return {};};
+  connection.stopProxy=async()=>{calls.push('stop-proxy');};
   return {connection,store,calls};
 }
 
@@ -288,21 +289,21 @@ test('构建器可复用明文字节 guard：只编译不执行脚本，并拒�
   assert.throws(()=>validateCollectorScriptSource(Buffer.from('%TSD-Header%fixture-private-marker')),error=>/TSD 加密字节/.test(error.message)&&!error.message.includes('fixture-private-marker'));
 });
 
-test('源码内容改变使 globalScript 路径改变并触发已验证 restart，旧文件保留且重复准备不重复重启',async()=>{
+test('源码内容改变使内联脚本路径改变并触发已验证 restart，旧文件保留且重复准备不重复重启',async()=>{
   const {connection,store}=await fixture();
   const bin=path.join(connection.directory,'fixture-bin'),content=path.join(bin,'collector','collector-content.js'),config=path.join(connection.directory,'component.yaml'),legacy=path.join(connection.directory,'fengsha-content.js');
   fs.mkdirSync(path.dirname(content),{recursive:true});fs.writeFileSync(content,'window.fixtureVersion="v4-first";');fs.writeFileSync(legacy,'original-user-file');
   fs.writeFileSync(config,'inject:\n  globalScript: fengsha-content.js\nproxy:\n  enabled: false\n');connection.bin=bin;
-  let effective=legacy,pending;const updates=[],statuses=[];
+  let effective=legacy,external=legacy,pending;const updates=[],statuses=[];
   connection.api=async(route,body)=>{
     if(route==='/api/channels/status')return {available:true};
-    if(route==='/api/config'&&!body)return {config_file:config,fields:[{key:'inject.globalScript',effective_value:effective}]};
-    if(route==='/api/config'){assert.deepEqual(Object.keys(body.values),['inject.globalScript']);pending=body.values['inject.globalScript'];updates.push(pending);return {restart_token:'fixture-'+updates.length};}
+    if(route==='/api/config'&&!body)return {config_file:config,fields:[{key:'inject.contentScript',effective_value:effective},{key:'inject.globalScript',effective_value:external}]};
+    if(route==='/api/config'){assert.deepEqual(Object.keys(body.values),['inject.globalScript','inject.contentScript']);external=body.values['inject.globalScript'];pending=body.values['inject.contentScript'];updates.push(pending);return {restart_token:'fixture-'+updates.length};}
     if(route.startsWith('/api/restart/status?')){assert.equal(new URL(route,'http://localhost').searchParams.get('restart_token'),'fixture-'+updates.length);statuses.push(route);if(statuses.filter(item=>item===route).length===1)return {restart_completed:true,config_applied:false};effective=pending;return {restart_completed:true,config_applied:true};}
     assert.equal(route,'/api/proxy/certificate/status');throw Error('fixture-stop-before-certificate');
   };
   const prepare=()=>assert.rejects(connection.prepareComponent(),/fixture-stop-before-certificate/);
-  await prepare();assert.equal(updates.length,1,'首次迁移必须改变 globalScript 路径并重启注入服务');const first=updates[0],firstFingerprint=connection.adapterFingerprint,firstBytes=fs.readFileSync(first);
+  await prepare();assert.equal(updates.length,1,'首次迁移必须部署内联脚本并重启注入服务');const first=updates[0],firstFingerprint=connection.adapterFingerprint,firstBytes=fs.readFileSync(first);
   assert.equal(path.basename(first),`fengsha-content-${firstFingerprint}.js`);assert.equal(statuses.length,2);
   fs.writeFileSync(content,'window.fixtureVersion="v4-second";');await prepare();
   assert.equal(updates.length,2);assert.notEqual(updates[1],first);assert.notEqual(connection.adapterFingerprint,firstFingerprint);assert.equal(statuses.length,4);

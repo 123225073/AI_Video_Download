@@ -93,18 +93,24 @@ test('PowerShell Restore-State pipes its decoded state to the actual bundled hel
       return Microsoft.PowerShell.Management\Join-Path $Path $ChildPath
     }
     function Read-Proxy { return @{} }
-    function Invoke-RestMethod { throw 'Real network forbidden in fixture' }
+    $script:proxyCalls=@()
+    function Invoke-RestMethod { param($Uri,$Method,$ContentType,$Body,$TimeoutSec)
+      $script:proxyCalls+=@{uri=$Uri;method=$Method;body=($Body|ConvertFrom-Json)}
+    }
     function Notify-Proxy { throw 'Real proxy forbidden in fixture' }
     function Open-Root { throw 'Real certificate store forbidden in fixture' }
     function Save-State($value) { $script:savedPhase=$value.phase }
     $result=Restore-State
-    @{restored=($result.phase -eq 'restored');savedPhase=$script:savedPhase} | ConvertTo-Json -Compress
+    @{restored=($result.phase -eq 'restored');savedPhase=$script:savedPhase;proxyCalls=$script:proxyCalls} | ConvertTo-Json -Depth 6 -Compress
   `;
   const harness = path.join(directory, 'restore-fixture.ps1');
   fs.writeFileSync(harness, '\uFEFF' + command);
   const result = await run(['-File', harness]);
   assert.equal(result.code, 0, `safe PS failure: ${result.stdout}`);
-  assert.deepEqual(JSON.parse(result.stdout), { restored: true, savedPhase: 'restored' });
+  assert.deepEqual(JSON.parse(result.stdout), { restored: true, savedPhase: 'restored',proxyCalls:[
+    {uri:'http://127.0.0.1:2022/api/proxy/config',method:'Post',body:{values:{'proxy.enabled':false,'proxy.system':false},restart:false}},
+    {uri:'http://127.0.0.1:2022/api/service/stop',method:'Post',body:{name:'interceptor'}}
+  ] });
   assert.equal(result.stderr, '');
   assert.doesNotMatch(result.stdout, /fixture-do-not-print|fixture-private-path/);
   assert.match(fs.readFileSync(stateFile, 'utf8'), /^%TSD-Header/,'helper did not repair or copy the protected lease');

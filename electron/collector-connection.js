@@ -64,6 +64,20 @@ export class CollectorConnection {
     const result=await response.json(); if(Number(result.code)!==0) throw new Error('微信连接组件未完成请求，请重新准备连接'); return result.data;
   }
   async online() { try{return (await this.api('/api/channels/status',null,2500)).available === true;}catch{return false;} }
+  async stopProxy() {
+    // proxy/config restart:true always starts the listener in v260907, even
+    // with enabled:false. Use its explicit stop command and await release.
+    await this.api('/api/proxy/config',{values:{'proxy.enabled':false,'proxy.system':false},restart:false});
+    await this.api('/api/service/stop',{name:'interceptor'});
+    for(let i=0;i<40;i++){
+      // This endpoint also queries the Windows certificate store, which can
+      // exceed 2.5 seconds immediately after removing temporary trust.
+      const status=await this.api('/api/proxy/status');
+      if(status?.service?.status==='stopped'&&status.service.listening===false)return;
+      await delay(250);
+    }
+    throw new Error('旧视频号采集代理尚未退出，未重载组件；请关闭下载器后重试，原网络保留');
+  }
   async adapterReady(signal=null,timeout=8000,required=adapterCapabilities) {
     required=requiredCapabilities(required);
     try {
@@ -124,9 +138,15 @@ export class CollectorConnection {
   prepare() {if(this.state.phase==='error')return Promise.reject(new Error('上次网络恢复尚未完成，请先点击恢复原网络'));if(!this.preparing)this.preparing=this.prepareComponent().finally(()=>this.preparing=null);return this.preparing;}
   async prepareComponent() {
     this.update('preparing','正在准备内置视频号组件');
-    // v260907 supports a workdir global.js. Deploy our narrowly scoped adapter
-    // without replacing the upstream executable or its certificate identity.
+    // v260907 contentScript is read locally and inlined into the HTML. An
+    // external globalScript can fail after a route change and leave only the
+    // upstream's incompatible API2 handler running.
     const contentScript=path.join(this.bin,'collector','collector-content.js');
+    // v260907 resolves an empty globalScript to the workdir itself. A reserved
+    // absent path disables external injection in its resolve_script_path(); do
+    // not create this file or let a foreign file become an injected script.
+    const noExternalScript=path.join(this.directory,'fengsha-inline-only.disabled');
+    if(fs.existsSync(noExternalScript))throw new Error('视频号内联适配保留路径被占用，未替换现有文件');
     let contentFile='fengsha-content.js';
     if(fs.existsSync(contentScript)){
       const source=validateCollectorScriptSource(fs.readFileSync(contentScript)),fingerprint=createHash('sha256').update(source).digest('hex').slice(0,12);
@@ -138,7 +158,7 @@ export class CollectorConnection {
     if(fs.existsSync(contentScript)){
       const current=fs.existsSync(componentConfig)?YAML.parse(fs.readFileSync(componentConfig,'utf8')):null;
       if(current&&typeof current==='object'&&!Array.isArray(current)){
-        current.inject={...(current.inject||{}),globalScript:contentFile};
+        current.inject={...(current.inject||{}),globalScript:noExternalScript,contentScript:path.join(this.directory,contentFile)};
         fs.writeFileSync(componentConfig,YAML.stringify(current));
       }
     }
@@ -147,7 +167,7 @@ export class CollectorConnection {
       const executable=path.join(this.bin,'collector','wx_video_download.exe');
       if(!fs.existsSync(executable) || createHash('sha256').update(fs.readFileSync(executable)).digest('hex')!==bundledHash) throw new Error('内置微信组件缺失或校验失败，请重新安装程序');
       const config=path.join(this.directory,'component.yaml');
-      if(!fs.existsSync(config)) fs.writeFileSync(config,`api:\n  hostname: 127.0.0.1\n  port: 2022\ninject:\n  globalScript: ${contentFile}\nproxy:\n  enabled: false\n  system: false\n  skipInstallRootCert: true\n  tun: false\n  tcpRelay:\n    enabled: false\n`);
+      if(!fs.existsSync(config)) fs.writeFileSync(config,YAML.stringify({api:{hostname:'127.0.0.1',port:2022},inject:{globalScript:noExternalScript,contentScript:path.join(this.directory,contentFile)},proxy:{enabled:false,system:false,skipInstallRootCert:true,tun:false,tcpRelay:{enabled:false}}}));
       retireStaleComponentPid(this.directory);
       this.worker=spawn(executable,['server','--config',config,'--workdir',this.directory],{cwd:this.directory,env:collectorEnvironment(),windowsHide:true,stdio:'ignore'}); this.worker.on('error',()=>{});
       for(let i=0;i<15;i++){await delay(500);try{await this.api('/api/channels/status',null,1000);ready=true;break;}catch{}}
@@ -157,11 +177,13 @@ export class CollectorConnection {
       const configInfo=await this.api('/api/config');
       if(path.resolve(String(configInfo.config_file||'')).toLowerCase()!==path.resolve(componentConfig).toLowerCase())throw new Error('当前本机采集服务由其他程序启动，不能替换其脚本；请关闭其他采集工具后再试');
       const wanted=path.join(this.directory,contentFile);
-      const field=configInfo.fields?.find(f=>f.key==='inject.globalScript');
-      if(path.resolve(String(field?.effective_value||'')).toLowerCase()!==path.resolve(wanted).toLowerCase()){
+      const field=configInfo.fields?.find(f=>f.key==='inject.contentScript');
+      const external=configInfo.fields?.find(f=>f.key==='inject.globalScript');
+      if(path.resolve(String(field?.effective_value||'')).toLowerCase()!==path.resolve(wanted).toLowerCase()||path.resolve(String(external?.effective_value||'')).toLowerCase()!==path.resolve(noExternalScript).toLowerCase()){
         this.adapterUpdatePending=true;
         this.adapterReloadAttempted=false;
-        const update=await this.api('/api/config',{values:{'inject.globalScript':wanted}});
+        await this.stopProxy();
+        const update=await this.api('/api/config',{values:{'inject.globalScript':noExternalScript,'inject.contentScript':wanted}});
         let applied=false;for(let i=0;i<25;i++){await delay(400);try{const status=await this.api('/api/restart/status?restart_token='+encodeURIComponent(update.restart_token),null,1500);if(status.restart_completed&&status.config_applied){applied=true;break;}}catch{}}
         if(!applied)throw new Error('采集搜索扩展重载尚未完成，请稍后重新准备连接');
       }
@@ -283,11 +305,11 @@ export class CollectorConnection {
   async finish() {
     this.controller?.abort();await this.started?.catch(()=>{});
     try {
-      if(this.leaseFile){this.update('restoring','正在恢复原代理与临时证书');const routed=this.leaseMode==='routed';if(routed)await this.system('restore',this.leaseFile);else{await this.api('/api/proxy/config',{values:{'proxy.enabled':false,'proxy.system':false},restart:true}).catch(()=>{});await this.system('restore',this.leaseFile);} }
+      if(this.leaseFile){this.update('restoring','正在恢复原代理与临时证书');await this.system('restore',this.leaseFile);await this.stopProxy();}
       this.update('idle','当前任务已结束，原网络设置已恢复');
     } catch(error){this.update('error','自动恢复尚未完成，请点击恢复原网络');throw error;}
     finally {this.started=null;this.startedRequired=null;this.controller=null;if(this.state.phase!=='error'){this.leaseFile=null;this.leaseMode=null;}}
   }
-  async restore() { if(this.members.size) throw new Error('请先停止作品读取和视频号下载，再恢复网络');await this.recover();this.leaseFile=null;this.update('idle','原网络设置已恢复');return this.status(); }
+  async restore() { if(this.members.size) throw new Error('请先停止作品读取和视频号下载，再恢复网络');await this.recover();if(this.leaseFile)await this.stopProxy();this.leaseFile=null;this.leaseMode=null;this.update('idle','原网络设置已恢复');return this.status(); }
   async close(){this.closed=true;this.controller?.abort();await this.ending;await this.finish();this.worker?.kill();}
 }

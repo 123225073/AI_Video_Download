@@ -89,7 +89,10 @@ function Restore-State {
         }
       } catch { $routeRestored=$false; $script:routeHelperStage='helper-exec' }
       # An orphaned collector must not keep decrypting traffic after its owner exits.
-      try { $null=Invoke-RestMethod -Uri 'http://127.0.0.1:2022/api/proxy/config' -Method Post -ContentType 'application/json' -Body '{"values":{"proxy.enabled":false,"proxy.system":false},"restart":true}' -TimeoutSec 15 } catch {}
+      try {
+        $null=Invoke-RestMethod -Uri 'http://127.0.0.1:2022/api/proxy/config' -Method Post -ContentType 'application/json' -Body '{"values":{"proxy.enabled":false,"proxy.system":false},"restart":false}' -TimeoutSec 15
+        $null=Invoke-RestMethod -Uri 'http://127.0.0.1:2022/api/service/stop' -Method Post -ContentType 'application/json' -Body '{"name":"interceptor"}' -TimeoutSec 15
+      } catch {}
     }
     $current = Read-Proxy
     # If the user changed the proxy independently, preserve their newer selection.
