@@ -157,6 +157,7 @@ else {
   handle('creator-identify', text => { searchNotBusy(); if (parseProgress) throw new Error('正在识别视频，请等待当前识别结束'); const urls = linksFromText(text); if (urls.length !== 1) throw new Error('识别博主时请粘贴一个视频或博主主页链接'); return creators.identify(urls[0]); });
   handle('creator-page', (...args) => { searchNotBusy(); return creators.page(...args); });
   handle('creator-last', () => creators.last());
+  handle('creator-clear-history', () => { searchNotBusy(); if (parseProgress) throw new Error('正在识别视频，请等待结束后再清除博主历史'); return creators.clearHistory(); });
   handle('creator-cancel', () => creators.cancel());
   handle('ai-save', (kind, value) => { if (transcriptions.active || voice?.active || contentStudio?.active || contentStudio?.remixController) throw new Error('转录或二创正在运行，请停止或完成后再更改模型配置'); return ai.save(kind, value); });
   handle('ai-models', kind => ai.models(kind));
@@ -187,7 +188,7 @@ else {
   handle('account-add', (platform, name) => accounts.add(platform, name));
   handle('account-import', async id => { accounts.account(id); const r = await dialog.showOpenDialog(win, { title: '导入此平台的登录会话', properties: ['openFile'], filters: [{ name: 'Netscape Cookie 文件', extensions: ['txt'] }] }); if (r.canceled) return null; return accounts.importCookies(id, r.filePaths[0]); });
   handle('login', id => accounts.login(id));
-  handle('account-action', async (id, action) => { if (action === 'select') return accounts.select(id); if (action === 'complete') return accounts.complete(id); if (action === 'logout') { const result = await dialog.showMessageBox(win, { type: 'question', buttons: ['取消', '退出该账号'], defaultId: 0, cancelId: 0, message: '退出此账号并清除本应用保存的登录会话？', detail: '账号记录和已下载视频保留。' }); if (result.response === 1) await accounts.logout(id); return; } throw new Error('未知账号操作'); });
+  handle('account-action', async (id, action) => { if (action === 'remove') { if (agentBusy()) throw new Error('请先等待当前读取、下载或其他任务结束，再删除账号'); return accounts.remove(id); } if (action === 'select') return accounts.select(id); if (action === 'complete') return accounts.complete(id); if (action === 'logout') { const result = await dialog.showMessageBox(win, { type: 'question', buttons: ['取消', '退出该账号'], defaultId: 0, cancelId: 0, message: '退出此账号并清除本应用保存的登录会话？', detail: '账号记录和已下载视频保留。' }); if (result.response === 1) await accounts.logout(id); return; } throw new Error('未知账号操作'); });
   handle('settings', async value => {
     const old = store.settings();
     const updated = { ...old, savePath: path.resolve(String(value.savePath || old.savePath)), concurrency: concurrencySetting(value.concurrency), retries: Math.max(0, Math.min(5, Number(value.retries) || 0)), quality: ['best', '1080', '720', '480'].includes(value.quality) ? value.quality : old.quality, archive: ['flat', 'author', 'collection'].includes(value.archive) ? value.archive : old.archive, skipDuplicates: value.skipDuplicates !== false, autoStart: Boolean(value.autoStart) };

@@ -57,6 +57,33 @@ test('PowerShell state-status validates owned lease and returns only phase/mode 
   }
 });
 
+test('PowerShell 分流基线保留外部例外更新，仍拒绝代理入口变化；系统切换保持严格核对', {skip:!windows}, async t=>{
+  const {directory}=fixture(t);
+  const harness=path.join(directory,'baseline-fixture.ps1');
+  fs.writeFileSync(harness,'\uFEFF'+`
+    $ErrorActionPreference='Stop'
+    $tokens=$null;$errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput((Get-Content -LiteralPath ${psQuote(systemScript)} -Raw -Encoding UTF8),[ref]$tokens,[ref]$errors)
+    $definition=$ast.FindAll({param($a) $a -is [Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Assert-ProxyBaseline'},$true) | Select-Object -First 1
+    Invoke-Expression $definition.Extent.Text
+    function Snapshot { return @{ProxyEnable=@{present=$true;value=1};ProxyServer=@{present=$true;value='127.0.0.1:7897'};AutoConfigURL=@{present=$false;value=$null};ProxyOverride=@{present=$true;value='localhost'}} }
+    $before=Snapshot;$now=Snapshot;$now.ProxyOverride.value='localhost;company.example'
+    $state=@{mode='routed';before=$before}
+    Assert-ProxyBaseline $state $now
+    if($now.ProxyOverride.value -ne 'localhost;company.example'){throw 'External bypass list overwritten'}
+    $rejected=@()
+    foreach($key in @('ProxyEnable','ProxyServer','AutoConfigURL')) {
+      $changed=Snapshot;$changed[$key].present=-not $changed[$key].present
+      try { Assert-ProxyBaseline $state $changed;throw 'Expected rejection' } catch { if($script:proxyMismatchField -ne $key){throw};$rejected+=$key }
+    }
+    $state.mode='system';$script:proxyMismatchField=$null
+    try { Assert-ProxyBaseline $state $now;throw 'Expected rejection' } catch { if($script:proxyMismatchField -ne 'ProxyOverride'){throw} }
+    @{routedBypassPreserved=$true;entrypointRejected=$rejected;systemBypassRejected=$true}|ConvertTo-Json -Compress
+  `);
+  const result=await run(['-File',harness]);assert.equal(result.code,0,result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout),{routedBypassPreserved:true,entrypointRejected:['ProxyEnable','ProxyServer','AutoConfigURL'],systemBypassRejected:true});
+});
+
 test('PowerShell Restore-State pipes its decoded state to the actual bundled helper in UTF8', { skip: !windows, timeout: 60000 }, async t => {
   const { directory, stateFile } = fixture(t);
   const server = http.createServer((req, res) => {

@@ -7,12 +7,25 @@ import { creatorLoginPrompt, bilibiliCreatorSource, CREATOR_LOGIN_REQUIRED } fro
 import CollectorConnectionPrompt from './CollectorConnectionPrompt.jsx';
 
 const STATUS = { identified: '博主已确认，待读取', 'needs-connection': '作者已识别 · 需连接采集服务', reading: '正在读取', partial: '清单尚未完整', limited: '已达到本次读取数量', complete: '已读取至平台返回的末页', interrupted: '读取中断，可继续', cancelled: '已停止，可继续', 'browser-end': '页面已到末页 · 覆盖范围待验证' };
-export default function CreatorPage({ state, record, setRecord, identifying, perform, safe, notify, back, accounts, settings, reidentify, done, error, source, setSource, identify, ensureCreatorLogin }) {
+export default function CreatorPage({ state, record, setRecord, identifying, perform, safe, notify, back, accounts, settings, reidentify, done, error, source, setSource, identify, ensureCreatorLogin, onHistoryCleared }) {
   const [filters, setFilters] = useState(() => { const f = record?.filters; return { period: f?.period || (f?.from && f?.to ? 'custom' : 'all'), from: f?.from || '', to: f?.to || '', limit: f ? f.limit === null ? 'all' : String(f.limit) : '50', keyword: f?.keyword || '', excludeDownloaded: f?.excludeDownloaded !== false, includeUnknown: Boolean(f?.includeUnknown) }; });
   const [busy, setBusy] = useState(false), [selected, setSelected] = useState(new Set()), [query, setQuery] = useState(''), [submitting, setSubmitting] = useState(false), [submitted, setSubmitted] = useState(0);
   const stopped = useRef(false);
   const taskRunning = useRef(false);
   const [stopping, setStopping] = useState(false);
+  const [actionError, setActionError] = useState(null);
+  const [clearDialog, setClearDialog] = useState(false), [clearing, setClearing] = useState(false), [clearError, setClearError] = useState(null);
+  const clearDisabled = busy || identifying || submitting || clearing || Boolean(state.creatorProgress);
+  async function clearHistory() {
+    if (clearDisabled) return;
+    setClearing(true); setClearError(null);
+    try {
+      const result = await perform('creatorClearHistory');
+      setRecord(null); setSource(''); setSelected(new Set()); setQuery(''); setActionError(null);
+      onHistoryCleared?.(); setClearDialog(false); notify(`已清除 ${result.count} 条博主历史`);
+    } catch (e) { setClearError(e.message); } finally { setClearing(false); }
+  }
+  useEffect(() => setActionError(null), [source, record?.id]);
   const wechatSource = /https?:\/\/(?:channels\.)?weixin\.qq\.com(?:\/|\s|$)/i.test(source || '');
   const creator = record?.creator, duplicate = item => state.media.some(m => m.id === item.key && m.exists);
   const hasCreatorId = creator?.id != null && String(creator.id).trim().length > 0;
@@ -29,11 +42,11 @@ export default function CreatorPage({ state, record, setRecord, identifying, per
   async function load(reset = false, extend = false) {
     if (!canRead || identifying || taskRunning.current) return;
     if (!ensureCreatorLogin(creator.platform)) return;
-    taskRunning.current = true; stopped.current = false; setStopping(false); setBusy(true); if (reset) setSelected(new Set());
+    taskRunning.current = true; stopped.current = false; setStopping(false); setActionError(null); setBusy(true); if (reset) setSelected(new Set());
     try {
       let next = await perform('creatorPage', record.id, filters, reset, extend); setRecord(next);
       while (next.status === 'partial' && next.creator?.supported && next.creator.identityStatus !== 'pending' && String(next.creator.id || '').trim() && !stopped.current) { next = await perform('creatorPage', record.id, filters); setRecord(next); }
-    } catch (e) { if (e.code === CREATOR_LOGIN_REQUIRED) ensureCreatorLogin('B站', e.message); } finally { taskRunning.current = false; setBusy(false); }
+    } catch (e) { if (e.code === CREATOR_LOGIN_REQUIRED) ensureCreatorLogin('B站', e.message); else setActionError(e.message); } finally { taskRunning.current = false; setBusy(false); }
   }
   async function stop() {
     if (stopping) return;
@@ -50,13 +63,14 @@ export default function CreatorPage({ state, record, setRecord, identifying, per
     setSubmitting(false); if (result.added.length && !result.error) done();
   }
   return <>
+    {clearDialog && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="清除所有博主历史"><div className="modal-head"><h2>清除所有博主历史？</h2></div><p>清除本机保存的全部博主链接、作者信息、作品清单和读取位置。清除后需要重新识别和读取。</p><p>已下载视频、下载任务、平台账号、文案和转写结果都会保留。</p>{clearError && <p role="alert">{clearError}</p>}<div className="modal-actions"><button className="button" autoFocus disabled={clearing} onClick={() => setClearDialog(false)}>取消</button><button className="button danger" disabled={clearDisabled} onClick={clearHistory}>{clearing ? '正在清除…' : '清除全部博主历史'}</button></div></section></div>}
     {waitingWeChat && <CollectorConnectionPrompt connection={state.collectorConnection} perform={perform} onStop={stop} stopping={stopping}/>}
     <div className="workflow-strip"><span><b>1</b>识别博主</span><span><b>2</b>读取作品</span><span><b>3</b>勾选下载</span></div>
-    <header className="page-heading"><div><h1>博主批量下载</h1><p>确认博主和读取范围，勾选作品后加入下载队列</p></div><button className="button" onClick={back}><ArrowLeft size={17}/>返回链接输入</button></header>
+    <header className="page-heading"><div><h1>博主批量下载</h1><p>确认博主和读取范围，勾选作品后加入下载队列</p></div><div className="ai-actions"><button className="button" disabled={clearDisabled} onClick={() => { setClearError(null); setClearDialog(true); }}>清除博主历史</button><button className="button" onClick={back}><ArrowLeft size={17}/>返回链接输入</button></div></header>
     <section className="panel creator-source"><label>博主主页或原视频链接<input aria-label="博主链接" value={source || ''} onChange={e=>setSource(e.target.value)} placeholder="粘贴博主主页或任意一条作品链接" disabled={busy || identifying}/></label><button className="button primary" disabled={!source?.trim() || busy || identifying} onClick={()=>identify()}><Search size={17}/>{creator?'识别新博主':'识别博主'}</button></section>
     {loginIssue && <div className="creator-notice"><CircleHelp size={18}/><span>{loginIssue.message}</span><button className="button" disabled={busy || identifying} onClick={() => ensureCreatorLogin('B站')}>登录后读取</button></div>}
     {state.collectorConnection && ['preparing','trusting','waiting','restoring'].includes(state.collectorConnection.phase) && <div className="creator-notice"><LoaderCircle className="spin" size={17}/>{state.collectorConnection.label}</div>}
-    {error && <div className="creator-notice unavailable"><CircleHelp size={18}/><span>{error}</span><button className="text-button" onClick={() => source?.includes('weixin.qq.com') ? settings() : accounts()}>检查连接与登录</button></div>}
+    {(error || actionError) && <div className="creator-notice unavailable"><CircleHelp size={18}/><span>{error || actionError}</span><button className="text-button" onClick={() => source?.includes('weixin.qq.com') ? settings() : accounts()}>检查连接与登录</button></div>}
     {identifying ? <section className="panel creator-loading"><LoaderCircle className="spin"/><h3>正在从原链接识别博主…</h3><p>{wechatSource ? state.collectorConnection?.phase === 'waiting' ? '请在微信中保持官方视频号窗口打开并刷新；连接成功后自动继续。' : '正在确认原链接作者；正在自动准备微信连接。' : '正在读取官方页面；出现登录或验证时，请在打开的官方窗口完成后重试。无需逐条播放视频。'}</p><button className="button" disabled={stopping} onClick={stop}><Square size={15}/>{stopping ? '正在停止…' : '停止识别'}</button></section> : !creator ? <section className="panel empty"><Users size={36}/><h3>读取博主的发布作品</h3><p>粘贴主页或任意作品的分享文案 → 识别博主 → 读取作品 → 勾选下载。无需逐条播放。</p>{wechatSource && <button className="button" onClick={settings}>视频号连接</button>}</section> : <>
       <section className="panel creator-identity"><div className="creator-avatar">{creator.avatar?.startsWith('https://') ? <img src={thumbnailUrl(creator.avatar)} alt="" referrerPolicy="no-referrer" onError={e => e.currentTarget.style.display = 'none'}/> : null}<Users size={30}/></div><div className="creator-name"><span className="badge blue">采集对象 · {creator.platform}</span><h2>{creator.name}</h2><p>{hasCreatorId ? `作者 ID：${creator.id}${creatorConfirmed ? '' : ' · 身份待确认'}` : '作者 ID 尚未取得 · 作者待确认'}</p><p>{record.total != null ? `平台报告作品数：${record.total}（不等于本次读取数）` : '作品总数：尚未取得，读取后以平台返回为准'}</p>{creator.url && <button className="text-button" onClick={() => safe('openSource', creator.url)}><ExternalLink size={14}/>查看博主主页</button>}</div><div className="creator-login">{creator.platform === '视频号' ? <><span>作品读取与下载</span><strong>使用微信视频号连接</strong><small>无需元宝账号 · 按任务自动连接</small><button className="text-button" onClick={settings}>视频号连接设置</button></> : <><span>使用的登录账号</span><strong>{login ? login.name : creator.platform === 'B站' ? '请先登录 B站账号' : '未选择账号 · 尝试公开内容'}</strong><small>{login?.status || (creator.platform === 'B站' ? '浏览器登录不会自动共享' : '需要时请先登录')}</small><button className="text-button" onClick={() => accounts(creator.platform)}>管理平台账号</button></>}</div></section>
       {(!creator.supported || creator.needsCollector) && creator.reason && <div className={`creator-notice ${creator.supported ? '' : 'unavailable'}`}><CircleHelp size={18}/><div><span>{creator.reason}</span>{creator.needsCollector && <div className="ai-actions"><button className="button" onClick={settings}>准备微信连接</button><button className="button" onClick={reidentify}>重新识别原链接</button><button className="text-button" onClick={back}>返回批量链接下载</button></div>}</div></div>}

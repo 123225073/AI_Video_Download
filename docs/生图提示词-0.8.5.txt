@@ -1,0 +1,66 @@
+两张图均使用内置 image_gen；未使用外部生图 API。下面保存初稿提示词；最终图采用后附精确性修订。
+
+图 1：故障链
+Use case: infographic-diagram
+Asset type: Chinese technical explainer for a non-programmer, a polished illustrated editorial infographic, portrait 4:5, high resolution, large readable Chinese typography.
+Primary request: Explain why a Windows WeChat Channels downloader repeatedly failed. Accurate causal chain, no invented diagnoses. Modern cream background, dark navy text, teal working paths, coral failure tags, small friendly computer/window/bridge icons. Beautiful but very clear. Do not use a real product screenshot, logos or fake UI.
+Title exact: “视频号为什么反复失败？”
+Subtitle exact: “同一条读取链，卡在了不同位置”
+Main visual: five numbered stations connected top-to-bottom with arrows, showing dependencies. Each station has a short large title and small supporting labels:
+1 “准备本机连接” — “检查代理入口与临时分流”
+Coral note: “例外列表变化，也被误判为入口变化”
+Teal solution: “0.8.5：只检查本路径真正依赖的入口”
+2 “微信页面真正重新载入” — “窗口开着 ≠ 已接入采集”
+Coral note: “旧页面、刷新未生效或连接超时”
+Teal solution: “在倒计时内用菜单刷新或重新进入”
+3 “适配脚本进入页面” — “把请求交给微信实际可用的接口”
+Coral note: “额外脚本资源加载失败，旧调用仍执行”
+Teal solution: “0.8.4：适配随页面内联载入”
+4 “核对作者，再分页读取” — “原链接 → 作者 ID → 作品 ID → 下一页”
+Coral note: “有昵称不代表身份已确认”
+Teal note: “每条作品都核对作者，按作品 ID 去重”
+5 “恢复网络并停止采集代理” — “恢复分流、临时信任与代理状态”
+Coral note: “旧停止请求其实又启动了代理”
+Teal solution: “0.8.4：明确停止，确认端口释放”
+Side explanatory ribbon associated with stations 2 and3: “曾有新控制进程与旧代理混用”
+Bottom important yellow panel heading “还有一个让人误判的界面问题”
+Text “打开请求没有成功反馈；读取失败提示消失后，按钮恢复原样。”
+Text “0.8.5：显示打开请求状态，持续保留失败原因。”
+Footer exact: “这是多次故障的归纳，不代表每次都同时发生。没有证据证明由某个特定软件改动了例外列表。”
+Constraints: No claim of WeChat banning account, login expiration, network speed, platform version update, antivirus causing failure, or a proven modifier of the proxy bypass list. Don't say merely clearing cache solves it. Do not say automatic opening or F5 reliably reloads WeChat. Keep all text legible, visual hierarchy strong, plenty of whitespace. Chinese only apart from ID and version numbers.
+
+图 2：验收缺口
+Use case: infographic-diagram
+Asset type: Chinese software repair acceptance explanation, landscape 3:2, crisp large text, professional illustrated editorial infographic, cream background, navy typography, teal verified areas, amber limited-evidence labels, muted coral crossed-out conclusions. Match a friendly illustrated laptop/bridge/clipboard visual style.
+Title exact: “为什么前面说能用，你打开却仍失败？”
+Subtitle exact: “问题不只在代码，也在验收结论说得太满”
+Two clearly separated side-by-side columns:
+LEFT heading “0.8.4 当时实际验证”
+Four stacked short rows, with simple icons:
+“后台独立流程：真实作者和 10 条作品”
+“第二批 5 条：来自上一批剩余记录”
+“安装界面：启动和打开页面”
+“尚未证明：安装界面完整识别与远端分页”
+Under these rows, a coral conclusion box with exact text:
+“不能据此说：你从桌面点击就一定能完成全流程”
+RIGHT heading “0.8.5 这次实际验证”
+Four stacked short rows:
+“源码候选：连续两轮，各读 50 条”
+“最终安装界面：再识别并读取 50 条”
+“4 次远端列表请求；作品不重、作者一致”
+“重启保留清单；任务结束恢复网络”
+Teal conclusion box:
+“已证明：当前环境下，安装界面的读取链路通过”
+Bottom spanning full width, amber box heading “仍然要说明的边界”
+Three short lines exact:
+“测试时微信页面已完成接入；没有证明所有新开页面都能自动连接。”
+“没有遍历博主全部历史，也没有重新验证批量视频文件下载。”
+“清除历史是新增功能，不是这些连接错误的根治办法。”
+Footer small exact: “依据本次源码、失败复现与安装验收记录；不把测试通过当成永不出错。”
+Constraints: All Chinese text accurate and legible, no invented statistics, no claims all platforms are fixed, no blame on the user, no emojis as substitute for proper layout, avoid tiny print. Exactly 50 works, 4 remote requests per round, no implication 150 distinct videos. No claim to know which external program changed proxy exceptions.
+
+最终修订图 1：
+Edit only the attached infographic. Preserve the overall design, composition, illustrations, all other text and colors. In station 4, replace the teal text “每条作品都核对作者，按作品 ID 去重” with two readable lines: “核对列表作者，过滤明确异作者” and “按作品 ID 去重”. This corrects an overstatement: missing raw item author IDs are not independently verified, while known mismatches are filtered. Do not add that technical explanation into the image. Change the small bottom text only if needed for layout, preserving meaning. No other changes.
+
+最终修订图 2：
+Edit the attached Chinese infographic only for factual precision. Preserve the overall composition, title, illustrations, colors and other text. In the right column replace “4 次远端列表请求；作品不重、作者一致” with “4 个分页位置；组件返回 50 条清单” (two lines, large readable text). In the amber boundary area, use these four concise bullets, adapting space slightly while preserving the design: 1 “微信页面已接入；未证明所有新页面都能自动连接。” 2 “组件缓存 5 分钟；连续测试可能复用缓存。” 3 “未遍历全部历史，也未重新验证批量文件下载。” 4 “清除历史是新增功能，不是连接错误的根治办法。” This is a correction: the recorded pagination count doesn't independently prove four fresh official-server requests. No new claims. All Chinese text crisp and legible.

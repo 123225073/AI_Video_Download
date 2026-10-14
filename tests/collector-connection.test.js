@@ -44,8 +44,8 @@ test('分流后系统代理快照键序不同但四项 present/value 相同不�
   await connection.withConnection(undefined,async()=>calls.push('collect'));
   assert.ok(calls.includes('collect'));assert.ok(calls.includes('restore'));await connection.close();store.close();
 });
-test('分流后已知四项任何 value 或 present 真正变化均停止采集并恢复',async()=>{
-  for(const key of ['ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL'])for(const field of ['value','present']){
+test('分流后代理入口或 PAC 的 value 或 present 变化仍停止采集并恢复',async()=>{
+  for(const key of ['ProxyEnable','ProxyServer','AutoConfigURL'])for(const field of ['value','present']){
     const plan={directory:'fixture',rulesDigest:'fixture'},after=structuredClone(before);
     after[key][field]=field==='present'?!after[key].present:key==='ProxyEnable'?0:'fixture-changed-value';
     const {connection,store,calls}=await fixture({routing:{discover:async()=>plan,begin:async()=>{}}});
@@ -54,6 +54,17 @@ test('分流后已知四项任何 value 或 present 真正变化均停止采集�
     await assert.rejects(connection.withConnection(undefined,async()=>calls.push('collect')),/系统代理发生变化/);
     assert.ok(!calls.includes('collect'),`${key}.${field}`);assert.ok(calls.includes('restore'));await connection.close();store.close();
   }
+});
+test('专用分流期间外部更新代理例外列表不误停，也不覆盖最新例外',async()=>{
+  const plan={directory:'fixture',rulesDigest:'fixture'},after=structuredClone(before);
+  after.ProxyOverride.value+=';company.example';
+  const {connection,store,calls}=await fixture({routing:{discover:async()=>plan,begin:async()=>{}}});
+  const system=connection.system;let inspections=0;
+  connection.system=async(action,file)=>action==='inspect'?{proxy:++inspections===1?before:after,ownerStarted:'start'}:system(action,file);
+  await connection.withConnection(undefined,async()=>calls.push('collect'));
+  assert.ok(calls.includes('collect'));assert.ok(calls.includes('restore'));
+  assert.equal(after.ProxyOverride.value,'localhost;<local>;company.example');
+  await connection.close();store.close();
 });
 async function fixture(options={}) {
   const directory=path.resolve('output/unit-connection',randomUUID()),store=await Store.open(directory,{}),calls=[];let online=false;

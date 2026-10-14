@@ -148,6 +148,17 @@ export class Creators {
     }, '正在从原链接识别博主');
   }
   last() { const id = this.store.get('meta', 'lastCreator')?.id; const r = id ? this.store.get('creator', id) : null; if (!r) return null; return { ...r, recoveryAvailable: !r.items.length && Boolean(this.previous(r)), ...(r.status === 'reading' ? { status: 'interrupted', message: '上次读取被中断，可继续读取已保存清单' } : {}) }; }
+  clearHistory() {
+    if (this.active) throw new Error('请先停止当前博主识别或读取，再清除历史');
+    const db = this.store.db; let count;
+    db.run('BEGIN TRANSACTION');
+    try {
+      db.run("DELETE FROM records WHERE kind='creator'"); count = db.getRowsModified();
+      db.run("DELETE FROM records WHERE kind='meta' AND id='lastCreator'");
+      db.run('COMMIT');
+    } catch (error) { db.run('ROLLBACK'); throw error; }
+    this.store.flush(); this.changed(); return { cleared: true, count };
+  }
   previous(record) {
     if (record?.creator.platform !== 'B站') return null;
     return this.store.list('creator').filter(old => old.id !== record.id && old.creator?.platform === 'B站' && old.creator.id === record.creator.id && (old.creator.accountId || null) === (record.creator.accountId || null) && old.items?.length).sort((a, b) => b.createdAt - a.createdAt)[0] || null;

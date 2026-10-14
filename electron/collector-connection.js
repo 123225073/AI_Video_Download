@@ -228,7 +228,9 @@ export class CollectorConnection {
     if(signal.aborted)throw new Error('CANCELLED');
     const applied = await this.system('inspect');
     if(plan){
-      const unchanged=['ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL'].every(key=>applied.proxy?.[key]?.present===inspected.proxy?.[key]?.present&&applied.proxy?.[key]?.value===inspected.proxy?.[key]?.value);
+      // Routed mode never writes system proxy exceptions. Other applications
+      // refresh that list independently; retain it and validate our entrypoint.
+      const unchanged=['ProxyEnable','ProxyServer','AutoConfigURL'].every(key=>applied.proxy?.[key]?.present===inspected.proxy?.[key]?.present&&applied.proxy?.[key]?.value===inspected.proxy?.[key]?.value);
       if(!unchanged)throw new Error('连接准备期间系统代理发生变化，视频号采集已停止，请重试');
     }
     else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('系统代理切换未生效或已被其他程序修改，微信采集已停止；请检查代理软件的系统代理设置后再试');

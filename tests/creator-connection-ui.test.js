@@ -29,18 +29,21 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
       const [state,setState]=useState({accounts:[],media:[],settings:{concurrency:2},
         collectorConnection:options.connection||{phase:'idle',needsPage:false}});
       const [error,setError]=useState(null);
+      const [source,setSource]=useState(options.source||'https://channels.weixin.qq.com/fixture');
       window.patchConnection=value=>flushSync(()=>setState(old=>({...old,collectorConnection:value})));
       window.endIdentify=value=>flushSync(()=>{setIdentifying(false);setError(value);});
       async function perform(method,...args){
         if(!window.apiNames.includes(method))throw Error('Not exported by preload: '+method);
         window.calls.push({method,args});
-        if(method==='collectorOpenPage')return {opened:true};
+        if(method==='collectorOpenPage')return {attempted:true};
         if(method==='collectorStatus'){
           if(window.holdProbe)await new Promise(resolve=>window.releaseProbe=resolve);
           if(window.failProbe)throw Error('连接检测失败，请刷新官方窗口');
           return window.probeResult;
         }
+        if(method==='creatorClearHistory'){if(window.failClear)throw Error('清除失败，历史仍保留');return {cleared:true,count:2};}
         if(method==='creatorPage'){
+          if(window.failPage)throw Error('连接前代理状态核对失败，请重新读取');
           const next=await new Promise(resolve=>window.releasePage=resolve);
           return next;
         }
@@ -53,14 +56,15 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
       }
       const safe=(...args)=>perform(...args).catch(noop);
       return <CreatorPage state={state} record={record} setRecord={setRecord}
-        identifying={identifying} source={options.source||'https://channels.weixin.qq.com/fixture'}
+        identifying={identifying} source={source}
         perform={perform} safe={safe} notify={message=>window.notices.push(message)}
         error={error} identify={()=>window.identifyCalls++} ensureCreatorLogin={()=>true}
-        back={noop} accounts={noop} settings={noop} reidentify={noop} done={noop} setSource={noop}/>;
+        back={noop} accounts={noop} settings={noop} reidentify={noop} done={noop} setSource={setSource}/>;
     }
     window.mountCreator=(options={})=>{
       window.calls=[];window.notices=[];window.identifyCalls=0;window.cancelled=false;
       window.releasePage=null;window.releaseProbe=null;window.holdProbe=false;window.failProbe=false;
+      window.failPage=false;window.failClear=false;
       window.probeResult={phase:'waiting',needsPage:true,ready:true,connected:false};
       window.fengsha=Object.fromEntries(window.apiNames.map(name=>[name,()=>{}]));
       flushSync(()=>root.render(<Fixture key={++key} options={options}/>));
@@ -88,15 +92,33 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
   const calls=()=>page.evaluate(()=>window.calls);
   const waitCalls=n=>page.waitForFunction(n=>window.calls.length===n,n);
 
+  await t.test('清除历史需要确认，取消保留；成功后清空链接和清单',async()=>{
+    await mount();await button('清除博主历史').click();
+    assert.match(await page.getByRole('dialog').innerText(),/已下载视频、下载任务、平台账号/);
+    await button('取消').click();assert.equal((await calls()).length,0);
+    await button('清除博主历史').click();await button('清除全部博主历史').click();
+    await page.getByRole('dialog').waitFor({state:'hidden'});
+    assert.equal(await page.getByRole('textbox',{name:'博主链接',exact:true}).inputValue(),'');
+    assert.equal(await page.getByText('测试作者',{exact:true}).count(),0);
+    assert.deepEqual((await calls()).map(c=>c.method),['creatorClearHistory']);
+  });
+  await t.test('清除失败保留历史并显示原因，识别期间不能清除',async()=>{
+    await mount();await page.evaluate(()=>window.failClear=true);await button('清除博主历史').click();await button('清除全部博主历史').click();
+    await page.getByRole('alert').waitFor();assert.equal(await page.getByText('测试作者',{exact:true}).count(),1);
+    assert.match(await page.getByRole('textbox',{name:'博主链接',exact:true}).inputValue(),/weixin/);
+    await mount({identifying:true});assert.equal(await button('清除博主历史').isDisabled(),true);
+  });
   await t.test('识别等待必须显示操作弹窗、官方窗口刷新步骤和超时说明',async()=>{
     await mount({identifying:true,record:null,connection:waiting});
     assert.equal(await page.getByRole('dialog').count(),1,'连接等待不能只显示转圈');
     const text=await page.getByRole('dialog').innerText();
     assert.match(text,/官方.*视频号.*窗口|视频号.*官方.*窗口/);
-    assert.match(text,/F5/);assert.match(text,/菜单.*刷新/);assert.match(text,/保持|保留/);
+    assert.match(text,/关闭视频号页面后重新进入/);assert.match(text,/菜单.*刷新/);assert.match(text,/保持|保留/);
     assert.match(text,/超时/);assert.match(text,/已有.*保留|已读取.*保留/);
     await button('打开微信视频号').click();await waitCalls(1);
     assert.deepEqual((await calls())[0],{method:'collectorOpenPage',args:[]});
+    await page.getByRole('status').getByText(/已发送.*打开请求/).waitFor();
+    assert.match(await page.getByRole('status').innerText(),/未出现.*手动/);
   });
   await t.test('已操作继续检测只探测现有连接，防重复且未连接时不误报成功',async()=>{
     await mount({identifying:true,record:null,connection:waiting});
@@ -111,6 +133,13 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
     assert.equal(await page.evaluate(()=>window.identifyCalls),0);
     await page.evaluate(()=>window.patchConnection({phase:'connected',needsPage:false}));
     assert.equal(await page.getByRole('dialog').count(),0);
+  });
+  await t.test('读取连接失败后原因持续可见，不只恢复为无反应的读取按钮',async()=>{
+    await mount();await page.evaluate(()=>window.failPage=true);
+    await button('确认博主并读取作品').click();
+    await page.getByText('连接前代理状态核对失败，请重新读取',{exact:true}).waitFor();
+    assert.equal(await button('确认博主并读取作品').isEnabled(),true);
+    assert.equal((await calls()).filter(c=>c.method==='creatorPage').length,1);
   });
   await t.test('检测失败可重试并显示说明，不启动新的作者任务',async()=>{
     await mount({identifying:true,record:null,connection:waiting});

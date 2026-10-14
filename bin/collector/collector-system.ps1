@@ -61,6 +61,15 @@ function Read-State {
   if ($state.schema -ne 1 -or $state.proxyAddress -ne '127.0.0.1:2023' -or $state.certificateName -notlike 'Fengsha-WeChat-*') { throw '无效的恢复记录' }
   return $state
 }
+function Assert-ProxyBaseline($state, $nowProxy) {
+  $names = @('ProxyEnable','ProxyServer','AutoConfigURL')
+  # Routed mode owns no registry settings. Preserve independently refreshed
+  # bypass lists instead of rejecting a valid route because their text changed.
+  if ($state.mode -ne 'routed') { $names += 'ProxyOverride' }
+  foreach ($name in $names) {
+    if ($nowProxy[$name].present -ne $state.before.$name.present -or [string]$nowProxy[$name].value -ne [string]$state.before.$name.value) { $script:proxyMismatchField=$name; throw 'Proxy changed during connection preparation' }
+  }
+}
 function Restore-State {
   $script:taskStage='restore-state'
   $state = Read-State
@@ -137,9 +146,7 @@ if ($Action -eq 'apply') {
   $state = Read-State
   $script:taskStage='certificate-proxy-baseline'
   $nowProxy=Read-Proxy
-  foreach ($name in @('ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL')) {
-    if ($nowProxy[$name].present -ne $state.before.$name.present -or [string]$nowProxy[$name].value -ne [string]$state.before.$name.value) { $script:proxyMismatchField=$name; throw 'Proxy changed during connection preparation' }
-  }
+  Assert-ProxyBaseline $state $nowProxy
   $script:taskStage='certificate-parse'
   $pem=Get-Content -LiteralPath $state.certificateFile -Raw -Encoding UTF8
   $encoded=$pem -replace '-----BEGIN CERTIFICATE-----','' -replace '-----END CERTIFICATE-----','' -replace '\s',''

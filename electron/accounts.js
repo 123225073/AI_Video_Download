@@ -31,7 +31,7 @@ export class AccountManager {
     this.sessions.set(id, s);
     s.cookies.on('changed', () => {
       clearTimeout(this.timers.get(id));
-      this.timers.set(id, setTimeout(() => { if (this.account(id).lastSync) void this.persist(id).catch(() => this.save({ ...this.account(id), message: '本机会话保存失败，请检查磁盘或重新登录' })); }, 250));
+      this.timers.set(id, setTimeout(() => { if (this.store.get('account', id)?.lastSync) void this.persist(id).catch(() => { const current = this.store.get('account', id); if (current?.lastSync) this.save({ ...current, message: '本机会话保存失败，请检查磁盘或重新登录' }); }); }, 250));
     });
     return s;
   }
@@ -39,7 +39,7 @@ export class AccountManager {
   persist(id) {
     const pending = this.writes.get(id) || Promise.resolve();
     const write = pending.catch(() => {}).then(async () => {
-      if (!this.account(id).lastSync) return;
+      if (!this.store.get('account', id)?.lastSync) return;
       if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows 登录会话加密暂不可用，请稍后重试');
       const s = this.getSession(id); await s.cookies.flushStore(); s.flushStorageData();
       const cookies = (await s.cookies.get({})).filter(c => allowedCookie(this.account(id).platform, c));
@@ -82,7 +82,7 @@ export class AccountManager {
     const allowed = value => { try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.port; } catch { return false; } };
     w.webContents.setWindowOpenHandler(({ url }) => { if (allowed(url)) void w.loadURL(url).catch(() => {}); return { action: 'deny' }; });
     w.webContents.on('will-navigate', (e, url) => { if (!allowed(url)) e.preventDefault(); });
-    w.on('closed', () => { this.windows.delete(id); const latest = this.account(id); if (latest.status === '登录中') this.save({ ...latest, status: latest.lastSync ? '会话已保存' : '未登录' }); });
+    w.on('closed', () => { this.windows.delete(id); const latest = this.store.get('account', id); if (latest?.status === '登录中') this.save({ ...latest, status: latest.lastSync ? '会话已保存' : '未登录' }); });
     this.save({ ...a, status: '登录中' });
     try { await w.loadURL(websites[a.platform], { userAgent: officialUserAgent }); } catch { if (!w.isDestroyed()) w.close(); throw new Error('network 官方登录页加载失败，请检查网络后重试'); }
   }
@@ -131,5 +131,18 @@ export class AccountManager {
     const file = path.join(this.directory, 'sessions', id, 'download-cookies.txt');
     if (fs.existsSync(file)) fs.unlinkSync(file);
     if (fs.existsSync(this.backupFile(id))) fs.unlinkSync(this.backupFile(id));
+  }
+  async remove(id) {
+    const a = this.account(id);
+    await this.logout(id);
+    const s = this.getSession(id);
+    await s.clearAuthCache(); await s.clearCache();
+    const temporary = `${this.backupFile(id)}.tmp`;
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    clearTimeout(this.timers.get(id)); this.timers.delete(id); this.writes.delete(id);
+    this.store.db.run('DELETE FROM records WHERE kind=? AND id=?', ['account', id]);
+    if (this.store.get('active-account', a.platform)?.id === id) this.store.db.run('DELETE FROM records WHERE kind=? AND id=?', ['active-account', a.platform]);
+    this.store.flush(); this.changed();
+    return { removed: true };
   }
 }
