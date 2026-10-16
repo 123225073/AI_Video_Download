@@ -4,10 +4,14 @@ import { contentItem, xhsContent, douyinContent, mergeContent } from './content-
 import { officialUserAgent } from './account-session.js';
 import {contentLoadMessage} from './content-network.js';
 import {contentNavigation} from './content-navigation.js';
+import {navigateOfficialPage,transientNavigationError} from './browser-navigation.js';
+import {douyinPageState} from './douyin-page.js';
+import {externalBrowserWindow} from './external-browser-window.js';
+import {openDouyinSearch,selectDouyinWork as selectVisibleDouyinWork} from './douyin-navigation.js';
 export function contentSearchURL(platform, keyword,options={}) {
   const q = encodeURIComponent(keyword),today=new Date(),month=new Date(today.getFullYear(),today.getMonth()-1,Math.min(today.getDate(),new Date(today.getFullYear(),today.getMonth(),0).getDate())),year=new Date(today.getFullYear()-1,today.getMonth(),today.getDate());
   const from=options.from?new Date(options.from+'T00:00:00'):month,filter=from>=month?'CAISAggE':from>=year?'CAISAggF':'EgIQAfABAQ%253D%253D';
-  return { '小红书':`https://www.xiaohongshu.com/search_result/?keyword=${q}&source=web_explore_feed&type=0`, '抖音':`https://www.douyin.com/search/${q}?type=video`, YouTube:`https://www.youtube.com/results?search_query=${q}&sp=${filter}` }[platform];
+  return { '小红书':`https://www.xiaohongshu.com/search_result/?keyword=${q}&source=web_explore_feed&type=0`, '抖音':`https://www.douyin.com/jingxuan/search/${q}?type=general`, YouTube:`https://www.youtube.com/results?search_query=${q}&sp=${filter}` }[platform];
 }
 // Only fields needed for the selected work are returned; tokens and storage stay in the official session.
 export function renderedContent(platform, keyword, detail = false) {
@@ -34,9 +38,14 @@ export function renderedContent(platform, keyword, detail = false) {
     }
     return {items:[]};
   }
+  let douyinSearch=false;
+  if(platform==='抖音'&&here.hostname==='www.douyin.com')try{
+    const path=decodeURIComponent(here.pathname).replace(/\/+$/,''),type=here.searchParams.get('type');
+    douyinSearch=path===`/search/${keyword}`&&type==='video'||path===`/jingxuan/search/${keyword}`&&(type===null||type==='general'||type==='video');
+  }catch{ /* A malformed address is outside this search, not a script failure. */ }
   const validPage = platform === 'YouTube' ? here.hostname === 'www.youtube.com' && here.pathname === '/results' && here.searchParams.get('search_query') === keyword
     : platform === '小红书' ? ['www.xiaohongshu.com','xiaohongshu.com'].includes(here.hostname) && here.pathname.replace(/\/+$/,'') === '/search_result' && here.searchParams.get('keyword') === keyword
-    : here.hostname === 'www.douyin.com' && decodeURIComponent(here.pathname) === `/search/${keyword}` && here.searchParams.get('type') === 'video';
+    : douyinSearch;
   if (!validPage) return {blocked:true,message:'官方窗口已离开本次作品搜索，请重新搜索。',items:[]};
   const items=[];
   const dateText = text => {
@@ -67,7 +76,7 @@ export function renderedContent(platform, keyword, detail = false) {
 }
 export class ContentBrowser {
   constructor(accounts){this.accounts=accounts;this.window=null;this.items=new Map();}
-  close(){if(this.window&&!this.window.isDestroyed())this.window.destroy();this.window=null;}
+  close(){if(this.window&&!this.window.isDestroyed())this.window.destroy();this.window=null;this.pendingDouyinSearch=false;}
   pause(){this.onProgress=null;if(this.window&&!this.window.isDestroyed())this.window.hide();}
   show(){if(this.window&&!this.window.isDestroyed()){this.window.show();this.window.focus();}}
   async open(url, record, signal, {reuse=false,early=false}={}) {
@@ -75,8 +84,8 @@ export class ContentBrowser {
     const previous=reuse&&this.window&&!this.window.isDestroyed()&&this.accountId===record.accountId?this.window:null;
     if(!previous)this.close();this.items=new Map();this.recordId=record.id;this.complete=false;this.networkError=null;this.networkSignal=signal;this.scope=record;this.accountId=record.accountId;this.scrollSteps=0;
     const s=record.accountId?this.accounts.getSession(record.accountId):undefined;
-    const w=this.window=previous||new BrowserWindow({show:!this.hidden,width:1100,height:800,autoHideMenuBar:true,title:'作品搜索 · 完成官方登录或验证后继续',webPreferences:{session:s,partition:s?undefined:`fengsha-content-${record.platform}`,sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,autoplayPolicy:'document-user-activation-required'}});
-    w.setMenu(null);w.webContents.setAudioMuted(true);w.webContents.setWindowOpenHandler(()=>({action:'deny'}));
+    const w=this.window=previous||(this.accounts.usesExternal?.(record.platform,record.accountId)?await externalBrowserWindow(this.accounts.externalBrowser,url,record.platform,{session:s}):new BrowserWindow({show:!this.hidden,width:1100,height:800,autoHideMenuBar:true,title:'作品搜索 · 完成官方登录或验证后继续',webPreferences:{session:s,partition:s?undefined:`fengsha-content-${record.platform}`,sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,autoplayPolicy:'document-user-activation-required'}}));
+    w.setMenu(null);w.webContents.setAudioMuted(true);w.webContents.setWindowOpenHandler(({url:target})=>{if(record.platform==='YouTube'&&contentNavigation(target,url,record.platform).authentication)void w.loadURL(target,{userAgent:officialUserAgent}).catch(()=>{});return {action:'deny'};});
     const allowed=value=>contentNavigation(value,url,record.platform).allowed;let upgrade;
     this.navigationCleanup?.();const navigate=(e,u)=>{const next=contentNavigation(u,url,record.platform);if(!next.allowed){e.preventDefault();if(next.upgrade)upgrade=next.upgrade;}};
     for(const event of ['will-navigate','will-redirect'])w.webContents.on(event,navigate);
@@ -113,27 +122,43 @@ export class ContentBrowser {
     // Chromium may not acknowledge Network.enable until the first page exists.
     // Keep navigation independent of that acknowledgment, as CreatorBrowser does.
     void debuggerApi.sendCommand('Network.enable',{maxResourceBufferSize:6*1024*1024,maxTotalBufferSize:12*1024*1024}).catch(()=>{});
-    let rejectAbort;const aborted=new Promise((_resolve,reject)=>{rejectAbort=reject;});
-    const abort=()=>{this.close();rejectAbort(new Error('已停止搜索'));};signal.addEventListener('abort',abort,{once:true});
-    try{let next=url;const visited=new Set();for(let attempt=0;attempt<4;attempt++){signal.throwIfAborted();if(visited.has(next))throw Error('官方页面重复跳转，请在官方窗口检查登录或验证');visited.add(next);upgrade=null;let ready,timer;const dom=new Promise(resolve=>{ready=()=>resolve();w.webContents.once('dom-ready',ready);});const timeout=new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ERR_TIMED_OUT')),30000);});try{await Promise.race([w.loadURL(next,{userAgent:officialUserAgent}),...(early?[dom]:[]),timeout,aborted]);if(!upgrade)break;}catch(e){if(!upgrade)throw e;}finally{clearTimeout(timer);if(!w.isDestroyed())w.webContents.removeListener('dom-ready',ready);}if(upgrade&&attempt===3)throw Error('官方页面跳转次数过多');next=upgrade;}}
-    catch(e){if(signal.aborted)throw new Error('已停止搜索');if(!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(e.message)||w.isDestroyed()||!allowed(w.webContents.getURL())){this.close();throw new Error(contentLoadMessage(e));}}
+    const abort=()=>this.close();signal.addEventListener('abort',abort,{once:true});
+    try{
+      if(w.externalTab&&record.platform==='抖音'&&record.keyword&&!record.detailId){
+        this.pendingDouyinSearch=true;
+        await openDouyinSearch(w,record.keyword,signal,{restart:true,navigate:target=>navigateOfficialPage(w,target,{userAgent:officialUserAgent,early:false,signal,allowed})});
+        this.pendingDouyinSearch=false;
+      }else{
+        let next=url;const visited=new Set();for(let attempt=0;attempt<4;attempt++){signal.throwIfAborted();if(visited.has(next))throw Error('官方页面重复跳转，请在官方窗口检查登录或验证');visited.add(next);upgrade=null;for(let retry=0;retry<2;retry++){try{await navigateOfficialPage(w,next,{userAgent:officialUserAgent,early,signal,allowed});break;}catch(e){if(upgrade)break;if(retry||!transientNavigationError(e)||signal.aborted||w.isDestroyed())throw e;await delay(350,undefined,{signal});}}if(!upgrade)break;if(attempt===3)throw Error('官方页面跳转次数过多');next=upgrade;}
+      }
+    }
+    catch(e){if(signal.aborted)throw new Error('已停止搜索');if(e.keepWindow){this.show();throw e;}if(!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(e.message)||w.isDestroyed()||!allowed(w.webContents.getURL())){this.close();throw new Error(contentLoadMessage(e));}}
     finally{signal.removeEventListener('abort',abort);}
     return w;
   }
   async read(record, signal, initial=false,onProgress=()=>{}){
     this.onProgress=onProgress;this.networkSignal=signal;
     const resumeAt=initial?0:record.browserScroll||0;
-    try{if(initial||!this.window||this.window.isDestroyed()||this.recordId!==record.id)await this.open(contentSearchURL(record.platform,record.keyword,record.options),record,signal,{early:true});}catch(e){this.onProgress=null;throw e;}
-    const w=this.window;let snapshot,verified=false;const seen=new Set(this.items.keys());let stable=0;
+    try{
+      if(initial||!this.window||this.window.isDestroyed()||this.recordId!==record.id)await this.open(contentSearchURL(record.platform,record.keyword,record.options),record,signal,{early:true});
+      else if(this.pendingDouyinSearch&&this.window.externalTab&&record.platform==='抖音'){
+        await openDouyinSearch(this.window,record.keyword,signal);this.pendingDouyinSearch=false;
+      }
+    }catch(e){this.onProgress=null;throw e;}
+    const w=this.window;let snapshot,verified=false,serviceRetried=false;const seen=new Set(this.items.keys());let stable=0;
     const abort=()=>this.pause();signal.addEventListener('abort',abort,{once:true});
     try{
       for(let i=0;i<12;i++){
         signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方搜索窗口已关闭，请重新搜索');
+        if(record.platform==='抖音'){
+          const state=await w.webContents.executeJavaScript(`(${douyinPageState.toString()})()`);
+          if(state.retryable){if(serviceRetried)throw Error('抖音官方搜索暂时不可用；本次已自动重连，已有结果保留。');serviceRetried=true;await this.open(contentSearchURL(record.platform,record.keyword,record.options),record,signal,{reuse:true,early:true});continue;}
+        }
         snapshot=await w.webContents.executeJavaScript(`(${renderedContent.toString()})(${JSON.stringify(record.platform)},${JSON.stringify(record.keyword)})`);
         signal.throwIfAborted();
         for(const raw of snapshot.items||[]){const item=contentItem(record.platform,raw);if(item)this.items.set(item.id,mergeContent(this.items.get(item.id),item));}
-        if(snapshot.reason==='device-limit'&&record.accountId)this.accounts.markExpired?.(record.platform,record.accountId,snapshot.message);
-        if(!verified&&snapshot.loggedIn&&this.items.size&&record.accountId){this.accounts.markVerified?.(record.platform,record.accountId,'已确认官方页面登录并成功读取作品；平台过期或设备超限时需重新登录');verified=true;}
+        if(!w.externalTab&&snapshot.reason==='device-limit'&&record.accountId)this.accounts.markExpired?.(record.platform,record.accountId,snapshot.message);
+        if(!w.externalTab&&!verified&&snapshot.loggedIn&&this.items.size&&record.accountId){this.accounts.markVerified?.(record.platform,record.accountId,'已确认官方页面登录并成功读取作品；平台过期或设备超限时需重新登录');verified=true;}
         if(this.networkError){snapshot.blocked=true;snapshot.message=this.networkError;snapshot.complete=false;snapshot.empty=false;}
         const stop=onProgress({items:[...this.items.values()],needsAction:!!snapshot.blocked,message:snapshot.blocked?snapshot.message:undefined});if(snapshot.blocked)this.show();
         if(stop||snapshot.blocked||snapshot.empty||snapshot.complete||this.complete)break;
@@ -147,6 +172,12 @@ export class ContentBrowser {
       return {items:[...this.items.values()],complete:!snapshot.blocked&&!!(snapshot.empty||snapshot.complete||this.complete),needsAction:!!snapshot.blocked,message:snapshot.blocked?snapshot.message:(this.scrollSteps||0)<resumeAt?'官方窗口已重建，正在逐批恢复此前读取位置，可继续读取。':'已读取官方页面展示的作品；未公开日期的条目单独标记。'};
     }finally{signal.removeEventListener('abort',abort);this.onProgress=null;if(!signal.aborted)this.networkError=null;}
   }
+  async selectDouyinWork(item,signal,{sourceBrowser=this}={}){
+    // Source tasks retain ownership while CommentWorkflow borrows their tab.
+    const w=sourceBrowser?.window;
+    if(!w||w.isDestroyed()||!w.externalTab)throw Object.assign(Error('原抖音搜索或博主窗口已不可用，请打开包含目标作品的原页面后继续。'),{needsAction:true});
+    return selectVisibleDouyinWork(w,item,signal);
+  }
   async detail(item,accountId,signal,{metadataOnly=false,reuse=false}={}){
     if(item.platform==='YouTube'&&metadataOnly){
       const record={id:'detail-'+item.id,detailId:item.id,platform:item.platform,accountId},w=await this.open(item.url,record,signal,{reuse,early:true});
@@ -156,7 +187,7 @@ export class ContentBrowser {
 
     if(item.platform==='小红书'){
       const record={id:'detail-'+item.id,detailId:item.id,platform:item.platform,accountId};const w=await this.open(item.url,record,signal,{reuse,early:metadataOnly});
-      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);signal.throwIfAborted();if(result.blocked||result.unavailable){if(result.blocked){this.show();if(result.reason==='device-limit'&&accountId)this.accounts.markExpired?.(item.platform,accountId,result.message);}throw new Error(result.message);}const found=mergeContent(mergeContent(this.items.get(item.id),xhsContent(result.note)),contentItem(item.platform,result.detail));if(found?.id===item.id&&(metadataOnly?found.publishedAt:found.bodyComplete))return found;await delay(metadataOnly?300:800,undefined,{signal});}
+      for(let i=0;i<8;i++){signal.throwIfAborted();if(w.isDestroyed())throw new Error('官方详情窗口已关闭');const result=await w.webContents.executeJavaScript(`(${renderedContent.toString()})('小红书','',true)`);signal.throwIfAborted();if(result.blocked||result.unavailable){if(result.blocked){this.show();if(!w.externalTab&&result.reason==='device-limit'&&accountId)this.accounts.markExpired?.(item.platform,accountId,result.message);}throw new Error(result.message);}const found=mergeContent(mergeContent(this.items.get(item.id),xhsContent(result.note)),contentItem(item.platform,result.detail));if(found?.id===item.id&&(metadataOnly?found.publishedAt:found.bodyComplete))return found;await delay(metadataOnly?300:800,undefined,{signal});}
       throw new Error(metadataOnly?'这篇笔记尚未返回确切发布时间，已有结果保留，可继续补查':'尚未取得这篇笔记的完整正文，请在官方窗口检查页面后重试克隆');
     }
     return item;

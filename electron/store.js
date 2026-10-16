@@ -32,6 +32,7 @@ export class Store {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.flush(), 200);
   }
+  remove(kind,id) { this.db.run('DELETE FROM records WHERE kind=? AND id=?',[kind,id]); }
   settings() { return { ...this.defaults, ...(this.get('settings', 'main') || {}) }; }
   flush() {
     clearTimeout(this.timer);

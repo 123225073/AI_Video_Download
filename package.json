@@ -1,6 +1,6 @@
 {
   "name": "fengsha-video-downloader",
-  "version": "0.8.5",
+  "version": "0.8.9",
   "description": "风沙全平台视频下载器：链接识别、批量下载与本地媒体管理",
   "private": true,
   "type": "module",
@@ -35,7 +35,10 @@
     "test:comparison": "node scripts/studio-compare-e2e.mjs",
     "test:studio-races": "node scripts/studio-races-e2e.mjs",
     "test:preview": "node scripts/media-preview-e2e.mjs",
-    "test:studio-transcription": "node scripts/studio-transcription-e2e.mjs"
+    "test:creative": "node scripts/video-creative-086-e2e.mjs",
+    "test:studio-transcription": "node scripts/studio-transcription-e2e.mjs",
+    "test:stability": "node scripts/video-stability-087-e2e.mjs",
+    "test:records": "node scripts/records-088-e2e.mjs"
   },
   "dependencies": {
     "yaml": "^2.9.1",
@@ -119,6 +122,22 @@
       {
         "from": "docs/作品二创与评论采集.md",
         "to": "作品二创与评论采集.md"
+      },
+      {
+        "from": "docs/视频创作续接与批量配图-0.8.6.md",
+        "to": "视频创作续接与批量配图-0.8.6.md"
+      },
+      {
+        "from": "docs/图文自动恢复说明-0.8.7.md",
+        "to": "图文自动恢复说明-0.8.7.md"
+      },
+      {
+        "from": "docs/记录删除与评论实测-0.8.8.md",
+        "to": "记录删除与评论实测-0.8.8.md"
+      },
+      {
+        "from": "docs/Chrome登录与采集修复-0.8.9.md",
+        "to": "Chrome登录与采集修复-0.8.9.md"
       }
     ],
     "win": {

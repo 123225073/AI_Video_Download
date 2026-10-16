@@ -148,6 +148,7 @@ async function launch(seed=false) {
       let data;try{data=JSON.parse(content);}catch{throw Error('Unexpected non-JSON model input');}
       const audit=system.includes('VIDEO_ARTICLE_FACT_AUDIT');
       f.models.push({kind:audit?'audit':'planning',system,data});
+      if(system.includes('VIDEO_ARTICLE_REPAIR'))return JSON.stringify({page:{title:'未采用测试候选',text:'机器人遇到风险在0.02秒内停止。',imagePrompt:'安全暂停示意'}});
       if(data.outputLanguage!=='chinese')throw Error('Chinese contract must reach actual model boundary');
       if(audit){await gate('audit',signal);return JSON.stringify({faithful:true,issues:[]});}
       if(data.reference!=='corrected'||!data.source.text.includes('0.2 seconds')||data.source.text.includes('0.02'))

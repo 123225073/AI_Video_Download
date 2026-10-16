@@ -51,6 +51,18 @@ export class Queue {
     if (JSON.stringify(next) !== JSON.stringify(this.schedule)) { this.schedule = next; this.changed(); }
   }
   scheduler() { return this.schedule; }
+  async removeRecords(kind,ids) {
+    if(!['task','media'].includes(kind)||!Array.isArray(ids)||!ids.length||ids.length>1000||ids.some(id=>typeof id!=='string'||!id||id.length>200))throw Error('请选择有效的任务或媒体记录，每批最多1000条');
+    const unique=[...new Set(ids)],records=unique.map(id=>this.store.get(kind,id)).filter(Boolean);
+    if(kind==='media'&&records.some(m=>this.tasks().some(t=>t.item.key===m.id&&(this.active.has(t.id)||['queued','retry-wait'].includes(t.status)))))throw Error('所选视频仍有下载任务，请先暂停或取消对应任务，再删除媒体记录');
+    // Mark the entire selection before awaiting aborts, so the pump cannot
+    // start another selected queued task between two removals.
+    const pending=[];
+    if(kind==='task')for(const task of records){const run=this.active.get(task.id);if(run){run.controller.abort();pending.push(run.promise);}if(!['completed','cancelled'].includes(task.status))this.save({...task,status:'cancelled',message:'已停止，准备删除任务记录'});}
+    await Promise.all(pending);
+    for(const record of records)this.store.remove(kind,record.id);
+    this.store.flush();this.changed();this.pump();return {kind,removed:records.length,missing:unique.length-records.length,filesDeleted:0};
+  }
   async run(task) {
     const controller = new AbortController();
     const run = { controller, promise: null }; this.active.set(task.id, run);

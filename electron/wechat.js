@@ -10,7 +10,8 @@ import { wechatMetadata } from './wechat-creators.js';
 export class WeChat {
   constructor(accounts, bin) { this.accounts = accounts; this.bin = bin; this.resolved=new Map(); }
   async request(id, url, body, authenticated, signal) {
-    const response = await this.accounts.getSession(id).fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(url).origin, Referer: `${new URL(url).origin}/` }, credentials: authenticated ? 'include' : 'omit', redirect: 'error', body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
+    const options={ method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(url).origin, Referer: `${new URL(url).origin}/` }, credentials: authenticated ? 'include' : 'omit', redirect: 'error', body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) };
+    const response = this.accounts.account?.(id)?.loginBackend==='external-chrome'?await this.accounts.fetch(id,url,options):await this.accounts.getSession(id).fetch(url,options);
     if (response.status === 401 || response.status === 403) throw new Error('WECHAT_LOGIN_REQUIRED');
     if (!response.ok) throw new Error(`WECHAT_SERVICE_HTTP_${response.status}`);
     const text = await response.text(); if (text.length > 2 * 1024 * 1024) throw new Error('WECHAT_INVALID_RESPONSE');

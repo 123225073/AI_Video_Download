@@ -3,6 +3,7 @@ const invoke = (name) => (...args) => ipcRenderer.invoke(`fengsha:${name}`, ...a
 contextBridge.exposeInMainWorld('fengsha', {
   videoStart:invoke('video-start'),videoList:invoke('video-list'),videoGet:invoke('video-get'),videoOpenDraft:invoke('video-open-draft'),videoAction:invoke('video-action'),videoChoose:invoke('video-choose'),
   snapshot: invoke('snapshot'), parse: invoke('parse'), enqueue: invoke('enqueue'),
+  removeRecords:invoke('remove-records'),
   contentSearch:invoke('content-search'),contentMore:invoke('content-more'),contentLast:invoke('content-last'),contentCancel:invoke('content-cancel'),contentTranscriptResume:invoke('content-transcript-resume'),contentTranscriptStart:invoke('content-transcript-start'),contentUseCollected:invoke('content-use-collected'),contentShow:invoke('content-show'),contentClone:invoke('content-clone'),contentSource:invoke('content-source'),contentDrafts:invoke('content-drafts'),contentDraftLast:invoke('content-draft-last'),contentDraftGet:invoke('content-draft-get'),contentDraftSave:invoke('content-draft-save'),contentAssetsAdd:invoke('content-assets-add'),contentImageEdit:invoke('content-image-edit'),contentRenderVideo:invoke('content-render-video'),contentVideoPreview:invoke('content-video-preview'),contentExport:invoke('content-export'),contentPublishOpen:invoke('content-publish-open'),contentPublishFill:invoke('content-publish-fill'),
   creatorIdentify: invoke('creator-identify'), creatorPage: invoke('creator-page'), creatorLast: invoke('creator-last'), creatorCancel: invoke('creator-cancel'), creatorRecover: invoke('creator-recover'),
   creatorRefresh: invoke('creator-refresh'),
@@ -15,7 +16,7 @@ contextBridge.exposeInMainWorld('fengsha', {
   contentVideoFrames:invoke('content-video-frames'),
   contentPublishSubmit:invoke('content-publish-submit'),
   commentsStart:invoke('comments-start'),commentsMore:invoke('comments-more'),commentsLast:invoke('comments-last'),commentsExport:invoke('comments-export'),commentsShow:invoke('comments-show'),commentsCancel:invoke('comments-cancel'),contactPrepare:invoke('contact-prepare'),contactSend:invoke('contact-send'),contactBatchPreview:invoke('contact-batch-preview'),contactBatchSend:invoke('contact-batch-send'),contactBatchLast:invoke('contact-batch-last'),contactCancel:invoke('contact-cancel'),
-  login: invoke('login'), accounts: invoke('accounts'), addAccount: invoke('account-add'), importAccount: invoke('account-import'), accountAction: invoke('account-action'), environment: invoke('environment'),
+  login: invoke('login'), externalBrowserStatus:invoke('external-browser-status'),openExternalLogin:invoke('external-login'),completeAccount:invoke('complete-account'), accounts: invoke('accounts'), addAccount: invoke('account-add'), importAccount: invoke('account-import'), accountAction: invoke('account-action'), environment: invoke('environment'),
   openFile: invoke('open-file'), locateFile: invoke('locate-file'), relocate: invoke('relocate'),
   updateTags: invoke('tags'), openSource: invoke('source'), windowAction: invoke('window'),
   clipboard: invoke('clipboard'), openHelp: invoke('help'),

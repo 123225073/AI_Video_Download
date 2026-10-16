@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron';
+import {externalBrowserWindow} from './external-browser-window.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { searchUrl, renderedSearch, searchUser } from './user-search-data.js';
 
@@ -9,7 +10,7 @@ export class UserSearchBrowser {
     if (initial || !this.window || this.window.isDestroyed() || this.recordId !== record.id) {
       this.close(); this.recordId = record.id;
       const s = record.accountId ? this.accounts.getSession(record.accountId) : undefined;
-      const window = this.window = new BrowserWindow({ width: 1100, height: 800, autoHideMenuBar: true, title: '用户搜索 · 完成登录或验证后，返回风沙读取官方页面结果', webPreferences: { session: s, partition: s ? undefined : `fengsha-user-search-${record.platform}`, sandbox: true, contextIsolation: true, nodeIntegration: false, autoplayPolicy: 'document-user-activation-required' } });
+      const window = this.window = this.accounts.usesExternal?.(record.platform,record.accountId)?await externalBrowserWindow(this.accounts.externalBrowser,searchUrl(record.platform,record.keyword),record.platform,{session:s}):new BrowserWindow({ width: 1100, height: 800, autoHideMenuBar: true, title: '用户搜索 · 完成登录或验证后，返回风沙读取官方页面结果', webPreferences: { session: s, partition: s ? undefined : `fengsha-user-search-${record.platform}`, sandbox: true, contextIsolation: true, nodeIntegration: false, autoplayPolicy: 'document-user-activation-required' } });
       window.setMenu(null); window.webContents.setAudioMuted(true);
       const origin = new URL(searchUrl(record.platform, record.keyword)).origin;
       const origins = record.platform === '小红书' ? [origin, 'https://xiaohongshu.com'] : [origin];

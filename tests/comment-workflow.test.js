@@ -168,7 +168,7 @@ test('DOM批次超出上限的真实回复持久化缓冲，滚动后继续不�
 
 test('视频号批次实时落盘，取消后的晚响应不冒充完成，重启沿用原分页位置',async()=>{
   const gate=deferred();let calls=0;
-  const item={id:'18446744073709551000',platform:'视频号',url:'https://channels.weixin.qq.com/web/pages/feed?oid=18446744073709551000'};
+  const item={id:'18446744073709551000',objectNonceId:'fixture-nonce',platform:'视频号',url:'https://channels.weixin.qq.com/web/pages/feed?oid=18446744073709551000'};
   const f=fixture({item,request:async()=>++calls===1?{commentInfo:[{commentId:'18446744073709551615',username:'one@finder',nickname:'用户一',content:'首批评论'}],lastBuffer:'next cursor'}:gate.promise});
   const pending=f.workflow.start('search','work');await tick();
   try{
@@ -182,7 +182,7 @@ test('视频号批次实时落盘，取消后的晚响应不冒充完成，重�
 });
 
 test('视频号上限缓冲和根评论回复分支重启后去重继续，不损失大整数与真实回复',async()=>{
-  const item={id:'18446744073709551000',platform:'视频号',url:'https://channels.weixin.qq.com/web/pages/feed?oid=18446744073709551000'};
+  const item={id:'18446744073709551000',objectNonceId:'fixture-nonce',platform:'视频号',url:'https://channels.weixin.qq.com/web/pages/feed?oid=18446744073709551000'};
   const root={commentId:'18446744073709551615',username:'one@finder',nickname:'用户一',content:'主评论',expandCommentCount:1,levelTwoComment:[{commentId:'18446744073709551614',nickname:'匿名回复者',content:'已展开回复',headUrl:'https://example.com/avatar.png'}]};
   const f=fixture({item,request:async(_url,params)=>({commentInfo:params.comment_id?[root.levelTwoComment[0],{commentId:'last',username:'two@finder',nickname:'用户二',content:'分支回复'}]:[root,{commentId:'another',username:'one@finder',nickname:'用户一',content:'另一条主评论'}],lastBuffer:''})});
   await f.workflow.start('search','work',1);assert.equal(f.workflow.view().status,'limited');
@@ -202,6 +202,20 @@ test('打开官方页面失败仍保留初始任务；DOM重复评论ID不重复
   await dup.workflow.start('search','work');assert.equal(dup.workflow.view().comments.length,2);assert.equal(dup.workflow.view().comments[1].isReply,true);
 });
 
+test('媒体库内部hash不作为微信作品ID，评论只要求本任务所需接口',async()=>{
+ const item={id:'local-library-key',sourceId:'18446744073709551000',objectNonceId:'nonce',platform:'视频号',url:'https://channels.weixin.qq.com/web/pages/feed'};let params,required;
+ const f=fixture({item,request:async(_url,p)=>{params=p;return {commentInfo:[{commentId:'c',content:'有效评论'}],lastBuffer:''};}});
+ f.workflow.connection.withConnection=async(signal,fn,caps)=>{required=Array.from(caps);return fn();};await f.workflow.start('s','v');assert.equal(params.oid,item.sourceId);assert.deepEqual(required,['comments']);assert.equal(f.workflow.view().comments.length,1);
+});
+
+test('旧分享记录缺少nonce时先从原作品确认，不向评论接口发送内部ID',async()=>{
+ const routes=[],f=fixture({item:{id:'local-key',platform:'视频号',url:'https://weixin.qq.com/sph/example'},request:async(url,p)=>{routes.push(url);if(url.endsWith('/profile'))return{object:{id:'18446744073709551000',objectNonceId:'real-nonce'}};assert.equal(p.oid,'18446744073709551000');assert.equal(p.nid,'real-nonce');return {commentInfo:[],lastBuffer:''};}});await f.workflow.start('s','v');assert.deepEqual(routes,['/api/channels/feed/profile','/api/channels/feed/comment/list']);
+});
+
+test('登录提示先于评论加载时短暂等待，公开首屏仍保留',async()=>{
+ let calls=0;const f=fixture({read:async()=>++calls===1?{blocked:true,reason:'login',comments:[],message:'请登录'}:{blocked:true,reason:'login',comments:[{id:'public',text:'公开首屏'}],message:'更多需登录'}});await f.workflow.start('s','v');assert.equal(calls,2);assert.equal(f.workflow.view().comments.length,1);assert.equal(f.workflow.view().status,'needs-action');
+});
+
 test('已有评论时出现验证也需要暂停；折叠已加载回复的英文按钮不被点击',()=>{
   const root=element('div',{class:'comments-container'},'',[xhsCard('c1','已加载评论'),element('div',{class:'login-modal'},'官方登录')]);
   assert.equal(render(root).blocked,true);
@@ -216,4 +230,40 @@ test('view暴露每次运行的startedAt和已持久化updatedAt，供采集计�
   assert.equal(f.restore().view().startedAt,view.startedAt);assert.equal(f.restore().view().updatedAt,view.updatedAt);
   const nextStart=Date.now();await f.workflow.more(view.id);
   assert.ok(f.workflow.view().startedAt>=nextStart);assert.ok(f.workflow.view().updatedAt>=f.workflow.view().startedAt);
+});
+
+const wechatWork={id:'15029976334673250691',objectNonceId:'original_nonce_0_140',platform:'视频号',url:'https://channels.weixin.qq.com/web/pages/feed'};
+test('微信明确末页即使仍带lastBuffer也完成，空末页不是采集异常',async()=>{
+ let calls=0;const f=fixture({item:wechatWork,request:async()=>{calls++;return {BaseResponse:{Ret:0},commentInfo:[],lastBuffer:'terminal-buffer',upContinueFlag:1,downContinueFlag:0};}});
+ await f.workflow.start('s','v');assert.equal(calls,1);assert.equal(f.workflow.view().status,'complete');assert.equal(f.workflow.record.branches.length,0);
+});
+
+test('微信BaseResponse各大小写的非零Ret是平台错误，不合并伪成功评论',async()=>{
+ for(const [key,retKey] of [['BaseResponse','Ret'],['baseResponse','ret'],['baseresponse','Ret']]){
+  const f=fixture({item:wechatWork,request:async()=>({[key]:{[retKey]:-200},commentInfo:[{commentId:'bad',content:'错误响应的评论'}],lastBuffer:'',downContinueFlag:0})});
+  await assert.rejects(f.workflow.start('s','v'),/微信.*错误.*-200/);assert.equal(f.workflow.view().status,'interrupted');assert.equal(f.workflow.view().comments.length,0);assert.equal(f.workflow.record.branches[0].cursor,'');
+ }
+});
+
+test('微信空续页可自动接着读取新游标，首次空页不要求用户重来',async()=>{
+ const requested=[];const pages=[{commentInfo:[],lastBuffer:'page-2',downContinueFlag:1},{commentInfo:[],lastBuffer:'page-3',downContinueFlag:true},{commentInfo:[{commentId:'real',content:'后续公开评论'}],lastBuffer:'ignored-end',downContinueFlag:false}];
+ const f=fixture({item:wechatWork,request:async(_url,p)=>{requested.push(decodeURIComponent(p.next_marker));return pages.shift();}});
+ await f.workflow.start('s','v');assert.deepEqual(requested,['','page-2','page-3']);assert.equal(f.workflow.view().status,'complete');assert.equal(f.workflow.view().comments[0].id,'real');
+});
+
+test('微信三页连续空续页有界暂停并保存新游标，恢复时保留待输出评论和回复分支',async()=>{
+ let calls=0;const requested=[];const f=fixture({item:wechatWork,request:async(_url,p)=>{requested.push({...p,next_marker:decodeURIComponent(p.next_marker)});calls++;return {commentInfo:[],lastBuffer:'page-'+calls,downContinueFlag:1};}});
+ await assert.rejects(f.workflow.start('s','v'),/连续.*3.*页/);assert.equal(calls,3);assert.equal(f.workflow.record.branches[0].cursor,'page-3');assert.equal(f.workflow.view().status,'interrupted');
+ const restored=f.restore();restored.record.pendingComments.push(f.publicComment('视频号',{id:'queued',text:'待输出评论'}));restored.record.branches.push({id:'root-reply',cursor:'saved-replies'});restored.record.replyTargets.push('root-reply');
+ const resumed=[];restored.wechat={request:async(_url,p)=>{resumed.push({...p,next_marker:decodeURIComponent(p.next_marker)});return {commentInfo:[],lastBuffer:'terminal',downContinueFlag:0};}};
+ await restored.more(restored.record.id,10);assert.deepEqual(resumed.map(p=>[p.comment_id,p.next_marker]),[['','page-3'],['root-reply','saved-replies']]);assert.equal(restored.view().comments[0].id,'queued');assert.equal(restored.view().status,'complete');
+});
+
+test('微信显式续页不能缺失或重复游标；无flag仍保留旧分页契约',async()=>{
+ for(const page of [{commentInfo:[],downContinueFlag:1},{commentInfo:[],lastBuffer:'',downContinueFlag:true},{commentInfo:[],lastBuffer:4,downContinueFlag:1}]){
+  const f=fixture({item:wechatWork,request:async()=>page});await assert.rejects(f.workflow.start('s','v'),/分页/);assert.equal(f.workflow.record.branches[0].cursor,'');
+ }
+ let calls=0;const repeating=fixture({item:wechatWork,request:async()=>({commentInfo:[{commentId:String(++calls),content:'公开评论'}],lastBuffer:'same',downContinueFlag:1})});
+ await assert.rejects(repeating.workflow.start('s','v'),/重复.*分页/);assert.equal(calls,2);assert.equal(repeating.workflow.record.branches[0].cursor,'same');
+ const legacy=fixture({item:wechatWork,request:async()=>({commentInfo:[],lastBuffer:'legacy-next'})});await assert.rejects(legacy.workflow.start('s','v'),/未返回新条目/);assert.equal(legacy.workflow.record.branches[0].cursor,'legacy-next');
 });

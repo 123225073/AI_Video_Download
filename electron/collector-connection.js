@@ -8,9 +8,9 @@ import YAML from 'yaml';
 
 const bundledHash = '26a99c72dc1873982671426af2b60a20ceef9f7bb31e47fb7db42f94de45a818';
 const adapterCapabilities=['search','detail','creatorFeeds'];
-const capabilityLabels={search:'搜索',detail:'详情',creatorFeeds:'作者作品'};
+const capabilityLabels={search:'搜索',detail:'详情',creatorFeeds:'作者作品',comments:'评论'};
 function requiredCapabilities(required=adapterCapabilities){
-  if(!Array.isArray(required)||required.some(key=>!adapterCapabilities.includes(key)))throw new Error('视频号接口能力要求无效');
+  if(!Array.isArray(required)||required.some(key=>![...adapterCapabilities,'comments'].includes(key)))throw new Error('视频号接口能力要求无效');
   return [...new Set(required)];
 }
 // The build reader can reuse this before copying bytes. Compile only; never run
@@ -51,7 +51,7 @@ export class CollectorConnection {
   constructor(store, bin, directory, changed, options = {}) {
     this.store=store; this.bin=bin; this.directory=directory; this.changed=changed; this.fetch=options.request || fetch; this.system=options.system || this.runSystem.bind(this); this.guard=options.guard || this.startGuard.bind(this); this.consent=options.consent || (async()=>false); this.waitMs=options.waitMs ?? 120000; this.members=new Set(); this.state={phase:'idle',label:'未使用时保持原网络设置'}; this.started=null; this.ending=null; this.leaseFile=null; this.controller=null; this.closed=false; this.worker=null;
     fs.mkdirSync(directory,{recursive:true});
-    this.routing=options.routing || new ClashRoute();this.openPage=options.openPage;
+    this.routing=options.routing || new ClashRoute();this.openPage=options.openPage;this.windowHelper=options.windowHelper;
   }
   config() { return { enabled: true, automatic: true, baseUrl:'http://127.0.0.1:2022', ...this.store.get('collector-config','wechat') }; }
   status() { const policy=this.store.get('collector-policy','automatic');return {...this.state, activeTasks:this.members.size, bundled:fs.existsSync(path.join(this.bin,'collector','wx_video_download.exe')), allowed:Boolean(policy?.allowed && (!this.certificate || policy.certificateFingerprint===this.certificate.fingerprint))}; }
@@ -98,6 +98,32 @@ export class CollectorConnection {
       return `微信页面已连接，但${missing.join('、')||'采集'}接口尚未加载；请更新页面适配后重试，无需反复登录或开关视频号`;
     }
     return '微信页面已连接，但采集适配版本未就绪；请刷新视频号页面以载入更新，已有内容和登录保留';
+  }
+  async bootstrapPage(signal,deadline){
+    // This helper is called only after apply + route activation and the final
+    // network snapshot check. Its native side revalidates the exact document
+    // immediately before invoking the owned toolbar; an acknowledgement is not
+    // a websocket/adapter readiness signal.
+    if(!this.windowHelper||!this.leaseFile||!this.status().allowed)return null;
+    const manual=(status,found=false,refreshRequested=false)=>({status,found,refreshRequested,needsPage:true,message:
+      status==='timeout'?(found?'已检测到微信视频号页面，但自动刷新确认超时；请在该页面选择“更多 → 刷新”，当前连接会继续等待。':'视频号页面检测超时，无法确认当前页面状态；请在微信视频号页面选择“更多 → 刷新”，当前连接会继续等待。'):
+      status==='scan-limited'?'视频号页面检测达到安全上限，无法确认当前页面状态；请在微信视频号页面选择“更多 → 刷新”，当前连接会继续等待。':
+      status==='not-found'?'尚未检测到可验证的视频号页面，请在电脑微信中打开视频号；当前连接会继续等待。':
+      found?'已检测到微信视频号页面，但当前工具栏暂不支持自动刷新；请在该页面选择“更多 → 刷新”，连接后会继续当前任务。':
+      '当前 Windows 暂不支持自动确认视频号页面状态；请在微信视频号页面选择“更多 → 刷新”，当前连接会继续等待。'});
+    let found=false;signal.throwIfAborted();this.update('waiting','正在检测电脑微信中已打开的视频号页面',{needsPage:false,waitingUntil:deadline});
+    try{
+      signal.throwIfAborted();const state=await abortable(Promise.resolve().then(()=>{signal.throwIfAborted();return this.windowHelper.inspect(signal);}),signal);
+      signal.throwIfAborted();
+      if(state?.ok!==true||state.status!=='found'||state.matched!==1){const result=manual(state?.status||'unavailable');this.update('waiting',result.message,{needsPage:true,waitingUntil:deadline,pageDetection:result.status});return result;}
+      found=true;this.update('waiting','已检测到微信视频号页面，正在接入当前任务连接',{needsPage:false,waitingUntil:deadline,pageDetection:'found'});
+      signal.throwIfAborted();if(Date.now()>=deadline||!this.status().allowed){const result=manual('unavailable',true);this.update('waiting',result.message,{needsPage:true,waitingUntil:deadline,pageDetection:'found'});return result;}
+      const refreshed=await abortable(Promise.resolve().then(()=>{signal.throwIfAborted();return this.windowHelper.refresh(signal);}),signal);
+      signal.throwIfAborted();
+      const invoked=refreshed?.ok===true&&refreshed.status==='invoked'&&refreshed.refreshAttempted===true&&refreshed.refreshed===true;
+      const result=invoked?{status:'invoked',found:true,refreshRequested:true,needsPage:false,message:'已检测到视频号页面并请求在该页刷新，正在等待接入采集组件和当前任务所需接口。'}:manual(refreshed?.status||'unavailable',true,refreshed?.refreshAttempted===true);
+      this.update('waiting',result.message,{needsPage:result.needsPage,waitingUntil:deadline,pageDetection:result.status});return result;
+    }catch(error){if(signal.aborted)throw Error('CANCELLED');const result=manual('unavailable',found);this.update('waiting',result.message,{needsPage:true,waitingUntil:deadline,pageDetection:result.status});return result;}
   }
   runSystem(action,stateFile=null,signal=null) {
     const systemScript=path.join(this.bin,'collector','collector-system.ps1');
@@ -236,8 +262,18 @@ export class CollectorConnection {
     else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('系统代理切换未生效或已被其他程序修改，微信采集已停止；请检查代理软件的系统代理设置后再试');
     const deadline=Date.now()+this.waitMs;
     this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续',{needsPage:!pageReady,waitingUntil:deadline});
-    if(!pageReady&&this.openPage){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续当前任务。若未自动进入，请按连接提示打开并刷新视频号。',{needsPage:true,waitingUntil:deadline});try{await this.openPage(signal);}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号并刷新；无需关闭现有代理。',{needsPage:true,waitingUntil:deadline});}}
-    let pageOnline=false,refreshRequested=false;
+    let pageBootstrap=!pageReady?await this.bootstrapPage(signal,deadline):null,pageOpened=false;
+    if(!pageReady&&this.openPage&&(!pageBootstrap||pageBootstrap.status==='not-found')){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续当前任务。若未自动进入，请按连接提示打开并刷新视频号。',{needsPage:true,waitingUntil:deadline});try{signal.throwIfAborted();await this.openPage(signal);pageOpened=true;}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号并刷新；无需关闭现有代理。',{needsPage:true,waitingUntil:deadline});}}
+    // The registered URI may reveal a cached page that existed before this
+    // lease. Recheck once after opening, rather than waiting forever for an old
+    // page to attach. Already-online pages and unsupported inspections are not
+    // touched, and the same lease deadline/cancellation still bounds the work.
+    if(pageOpened&&pageBootstrap?.status==='not-found'&&Date.now()<deadline&&!await abortable(this.online(),signal)){
+      signal.throwIfAborted();this.update('waiting','已请求打开视频号，正在等待页面就绪后核对当前任务连接',{needsPage:true,waitingUntil:deadline});
+      await delay(Math.max(1,Math.min(500,deadline-Date.now())),signal);signal.throwIfAborted();
+      if(Date.now()<deadline&&!await abortable(this.online(),signal))pageBootstrap=await this.bootstrapPage(signal,deadline);
+    }
+    let pageOnline=false,refreshRequested=pageBootstrap?.refreshRequested===true;
     do {
       if(signal.aborted)throw new Error('CANCELLED');
       if(await abortable(this.online(),signal)){
@@ -266,12 +302,12 @@ export class CollectorConnection {
           // not an HTTP route. Never guess GET/POST endpoints or treat a failed
           // refresh as ready. A refreshed page is verified by the next probe.
           this.update('waiting','新版适配需要首次刷新：内置 v260907 没有公开自动刷新接口；当前临时连接保持开启，请刷新视频号页面以载入更新，已有登录保留',{needsPage:true,waitingUntil:deadline});
-        }else if(refreshRequested)this.update('waiting','刷新请求已发送，正在等待新版适配和当前任务所需接口；已有登录保留',{needsPage:false});
+        }else if(refreshRequested)this.update('waiting',pageBootstrap?.message||'刷新请求已发送，正在等待新版适配和当前任务所需接口；已有登录保留',{needsPage:pageBootstrap?.needsPage??false,waitingUntil:deadline});
         else this.update('waiting',this.adapterMessage(required),{needsPage:true,waitingUntil:deadline});
       }
       await delay(Math.max(1,Math.min(1000,deadline-Date.now())),signal);
     }while(Date.now()<deadline);
-    throw new Error(pageOnline?this.adapterMessage(required)+'；原网络将自动恢复':'微信视频号页面尚未连接，原网络将自动恢复；请打开视频号页面后重试');
+    throw new Error(pageOnline?this.adapterMessage(required)+'；原网络将自动恢复':pageBootstrap&&pageBootstrap.status!=='not-found'?pageBootstrap.message+'；尚未接入采集组件，原网络将自动恢复':'微信视频号页面尚未连接，原网络将自动恢复；请打开视频号页面后重试');
   }
   async withConnection(signal,operation,required=adapterCapabilities) {
     required=requiredCapabilities(required);

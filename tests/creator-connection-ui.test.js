@@ -48,6 +48,7 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
           return next;
         }
         if(method==='creatorCancel'||method==='creatorPageCancel'){
+          if(window.failCancel)throw Error('停止作者读取失败，请重试');
           window.cancelled=true;
           if(window.releasePage)window.releasePage({...record,status:'partial'});
           return true;
@@ -65,6 +66,7 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
       window.calls=[];window.notices=[];window.identifyCalls=0;window.cancelled=false;
       window.releasePage=null;window.releaseProbe=null;window.holdProbe=false;window.failProbe=false;
       window.failPage=false;window.failClear=false;
+      window.failCancel=false;
       window.probeResult={phase:'waiting',needsPage:true,ready:true,connected:false};
       window.fengsha=Object.fromEntries(window.apiNames.map(name=>[name,()=>{}]));
       flushSync(()=>root.render(<Fixture key={++key} options={options}/>));
@@ -156,6 +158,14 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
     await page.evaluate(()=>{window.patchConnection({phase:'idle',needsPage:false});window.endIdentify('微信视频号页面尚未连接，等待超时；原网络将自动恢复');});
     assert.equal(await page.getByRole('dialog').count(),0);
     assert.match(await page.locator('#root').innerText(),/等待超时/);
+  });
+  await t.test('停止失败在连接弹窗里可见，允许重试且不悄悄吞错',async()=>{
+    await mount({identifying:true,record:null,connection:waiting});
+    await page.evaluate(()=>window.failCancel=true);await button('停止并保留已有结果').click();
+    await page.getByRole('dialog').getByText('停止作者读取失败，请重试',{exact:true}).waitFor();
+    assert.equal(await button('停止并保留已有结果').isEnabled(),true);
+    await page.evaluate(()=>window.failCancel=false);await button('停止并保留已有结果').click();
+    assert.equal((await calls()).filter(c=>c.method==='creatorCancel').length,2);
   });
   await t.test('waitingUntil显示剩余等待时间，截止后仍等待后台返回失败原因',async()=>{
     await mount({identifying:true,record:null,connection:{...waiting,waitingUntil:Date.now()+90000}});

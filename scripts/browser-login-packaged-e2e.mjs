@@ -1,0 +1,13 @@
+import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';import {_electron as electron} from 'playwright';import {Store} from '../electron/store.js';
+const exe=path.resolve(process.argv[2]),out=path.resolve('output','browser-login-packaged-'+Date.now()),profile=path.join(out,'profile');fs.mkdirSync(out,{recursive:true});
+const store=await Store.open(profile,{});store.put('account','fixture',{id:'fixture',platform:'YouTube',name:'隔离账号',status:'未登录',lastSync:null});store.close();
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;delete env.FENGSHA_TEST_MODE;delete env.FENGSHA_TEST_DATA;
+const result={exe,out,isolated:true,cases:[],errors:[],noLoginRequested:true};let app;
+try{app=await electron.launch({executablePath:exe,args:['--agent-data-dir',profile],env,timeout:45000});const page=await app.firstWindow();page.setDefaultTimeout(15000);page.on('pageerror',e=>result.errors.push(e.message));
+ await page.getByRole('heading',{name:'链接下载',exact:true}).waitFor();const s=await page.evaluate(async()=>(await window.fengsha.snapshot()).value);assert.equal(s.version,'0.8.9');
+ await page.locator('nav').getByRole('button',{name:'账号管理',exact:true}).click();const row=page.locator('.account-row').filter({hasText:'隔离账号'});await row.getByRole('button',{name:'Chrome 官方登录',exact:true}).waitFor();
+ assert.equal(await row.getByRole('button',{name:'使用内置窗口登录（兼容）',exact:true}).isVisible(),false);result.cases.push('default action is Chrome; embedded login hidden in explicit advanced control');
+ await page.getByRole('button',{name:'检查 Chrome 接入',exact:true}).click();await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('检查 Chrome 接入'))?.disabled);const r=await page.evaluate(()=>window.fengsha.externalBrowserStatus());assert.equal(r.ok,true);assert.equal(typeof r.value.available,'boolean');assert.ok(r.value.message);result.cases.push('packaged preload/main Chrome status IPC returns a real connection status');
+ await row.locator('summary').click();assert.equal(await row.getByRole('button',{name:'使用内置窗口登录（兼容）',exact:true}).isVisible(),true);const after=await page.evaluate(async()=>(await window.fengsha.snapshot()).value);assert.equal(after.accounts[0].status,'未登录');assert.equal(after.accounts[0].lastSync,null);result.cases.push('status check and advanced expansion never falsely mark the platform logged in');
+ fs.writeFileSync(path.join(out,'accounts.png'),await page.screenshot());assert.deepEqual(result.errors,[]);result.ok=true;
+}catch(e){result.error=e.stack;process.exitCode=1;}finally{await app?.close();fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));}

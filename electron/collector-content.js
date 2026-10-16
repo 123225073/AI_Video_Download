@@ -4,7 +4,7 @@
 (() => {
   if(window.__fengshaContentInstalled)return;window.__fengshaContentInstalled=true;
   const registry=new Map(),subscribed=new WeakSet(),modules=new Map();
-  const capture=variables=>{for(const methods of Object.values(variables||{})){if(!methods||!['object','function'].includes(typeof methods))continue;for(const name of ['finderSearch','finderUserPage','finderGetCommentDetail'])if(typeof methods[name]==='function')registry.set(name,{owner:methods,fn:methods[name]});}};
+  const capture=variables=>{for(const methods of Object.values(variables||{})){if(!methods||!['object','function'].includes(typeof methods))continue;for(const name of ['finderSearch','finderUserPage','finderGetCommentDetail','finderGetCommentList'])if(typeof methods[name]==='function')registry.set(name,{owner:methods,fn:methods[name]});}};
   const refresh=()=>{
     if(typeof WXU==='undefined')return;
     capture({a:WXU.API,b:WXU.API2,c:WXU.API3,d:WXU.API4});
@@ -76,6 +76,14 @@
           const result=await found.fn.call(found.owner,{username,finderUsername:typeof __wx_username==='string'?__wx_username:'',lastBuffer:marker?decodeURIComponent(marker):'',needFansCount:0,objectId:'0'});
           send(result);return;
         }
+        if(msg.key==='key:channels:fetch_feed_comment_list'){
+          const input=msg.data||{},oid=String(input.oid||''),nid=String(input.nid||''),root=String(input.comment_id||''),marker=String(input.next_marker||'');
+          if(!/^\d{1,24}$/.test(oid)||(!nid&&!root)||nid.length>300||root.length>300||marker.length>20000)throw Error('视频号评论缺少有效的作品标识或分页信息，请重新选择原作品');
+          const found=await wait('finderGetCommentList');
+          if(!found){send({errCode:1009,errMsg:'微信评论接口尚未加载；已保存位置保留，请刷新视频号页面后继续。'});return;}
+          const payload={objectId:oid,direction:2,identityScene:2,lastBuffer:marker?decodeURIComponent(marker):undefined,...(root?{rootCommentId:root}:{objectNonceId:nid,enterSessionId:String(Date.now()),finderBasereq:{scene:140,ctxInfo:{clientReportBuff:'{"entranceId":"1002"}'},objectBaseInfos:[]}})};
+          send(await found.fn.call(found.owner,payload));return;
+        }
         if(msg.key==='key:channels:contact_list'){
           const keyword=String(msg.data?.keyword||'');
           const content=keyword.startsWith('__fengsha_content__:'),input=content?JSON.parse(keyword.slice(20)):null;
@@ -88,8 +96,8 @@
               if(reloading){window.__fengshaReloadTarget=input.expectedHash;setTimeout(()=>window.location.reload(),200);}
               return;
             }
-            await Promise.all(['finderSearch','finderGetCommentDetail','finderUserPage'].map(wait));
-            send({errCode:0,data:{fengshaAdapterVersion:4,fengshaContentHash:currentHash,canRefreshAdapter:true,capabilities:{search:registry.has('finderSearch'),detail:registry.has('finderGetCommentDetail'),creatorFeeds:registry.has('finderUserPage')}}});return;
+            await Promise.all(['finderSearch','finderGetCommentDetail','finderUserPage','finderGetCommentList'].map(wait));
+            send({errCode:0,data:{fengshaAdapterVersion:4,fengshaContentHash:currentHash,canRefreshAdapter:true,capabilities:{search:registry.has('finderSearch'),detail:registry.has('finderGetCommentDetail'),creatorFeeds:registry.has('finderUserPage'),comments:registry.has('finderGetCommentList')}}});return;
           }
           const query=content?input.query:keyword;
           if(typeof query!=='string'||!query.trim()||query.length>100)throw new Error('搜索关键词无效');

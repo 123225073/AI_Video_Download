@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {ContentSearch} from '../electron/content-search.js';
 import {mergeContent,xhsContent} from '../electron/content-data.js';
 import {service,card,rawWechat,options,record,rendered,harness} from '../scripts/search-regression-harness.mjs';
+import {douyinPageState} from '../electron/douyin-page.js';
 
 for(const platform of ['B站','视频号'])test(`${platform}: 页51之后的日期匹配保留，游标不跳过有效页`,async()=>{
   let pages=0;
@@ -45,7 +46,7 @@ for(const platform of ['抖音','小红书']){
   });
   for(const failed of [false,true])test(`${platform}: 已有卡片仍呈现${failed?'网络':'接口'}错误并保留继续`,async()=>{
     const r=record(platform),h=harness(()=>({items:[card(platform)]})),signal=new AbortController().signal;
-    await h.browser.open('https://example.invalid',r,signal);await h.response(r,platform==='小红书'?{success:false,code:300012,msg:'登录已失效'}:{status_code:8,status_msg:'访问受限'},failed);
+    await h.browser.open(h.searchURL(r),r,signal);await h.response(r,platform==='小红书'?{success:false,code:300012,msg:'登录已失效'}:{status_code:8,status_msg:'访问受限'},failed);
     const result=await h.browser.read(r,signal);assert.equal(result.items.length,1);assert.equal(result.complete,false);assert.equal(result.needsAction,true);assert.match(result.message,/失效|受限|失败|错误/);
   });
   test(`${platform}: 停止保留滚动位置，首次继续即可取得新作品`,async()=>{
@@ -109,7 +110,7 @@ test('停止关闭应用时销毁自建搜索窗口；普通停止仅隐藏保�
 
 test('API成功末页依然生效；明确错误覆盖末页并保留部分结果',async()=>{
   const r=record('小红书'),h=harness(()=>({items:[card('小红书')]})),signal=new AbortController().signal;
-  await h.browser.open('https://example.invalid',r,signal);await h.response(r,{success:true,data:{items:[],has_more:false}});
+  await h.browser.open(h.searchURL(r),r,signal);await h.response(r,{success:true,data:{items:[],has_more:false}});
   assert.equal((await h.browser.read(r,signal)).complete,true);
   await h.response(r,{success:false,code:1,msg:'登录失效'});const failed=await h.browser.read(r,signal);assert.equal(failed.complete,false);assert.equal(failed.needsAction,true);assert.equal(failed.items.length,1);
 });
@@ -125,7 +126,7 @@ test('停止发生在快照等待期间，迟到卡片不能写入浏览器缓�
 });
 
 test('取消前发出的旧API响应，继续后仍必须被忽略',async()=>{
-  const r=record('小红书'),h=harness(()=>({items:[card('小红书')]})),controller=new AbortController();await h.browser.open('https://example.invalid',r,controller.signal);
+  const r=record('小红书'),h=harness(()=>({items:[card('小红书')]})),controller=new AbortController();await h.browser.open(h.searchURL(r),r,controller.signal);
   const w=h.browser.window,listener=w.webContents.debugger.listeners('message')[0];
   await listener({},'Network.requestWillBeSent',{requestId:'old',request:{url:'https://edith.xiaohongshu.com/api/sns/web/v1/search/notes',postData:JSON.stringify({keyword:r.keyword})}});controller.abort();
   await h.browser.read(r,new AbortController().signal);
@@ -142,4 +143,41 @@ test('打开官方页面尚未完成时停止，不能等30秒超时', {timeout:
 test('搜索服务保留接口失败的原始提示与部分卡片，而非普通成功消息',async()=>{
   const r=record('抖音');let failed=false,h;h=harness(async()=>{if(!failed){failed=true;await h.response(r,{status_code:8,status_msg:'访问受限'});}return {items:[card('抖音')]};});
   const s=service(h.browser),result=await s.start('抖音',r.keyword,options);assert.equal(result.status,'needs-action');assert.match(result.message,/访问受限/);assert.equal(result.items.length,1);assert.equal(result.canContinue,true);
+});
+
+test('真实导航helper处理暂时连接失败，错误文档dom-ready不能冒充成功',async()=>{
+  const h=harness(()=>({items:[card('抖音')]}),()=>{},{loadErrors:['net::ERR_CONNECTION_CLOSED']});
+  const result=await h.browser.read(record('抖音'),new AbortController().signal,true);
+  assert.equal(h.stats().loads,2,'必须实际重试导航，不能用错误文档的dom-ready放行');assert.equal(result.items.length,1);assert.equal(result.needsAction,false);
+});
+
+test('真实导航helper重复连接失败仍报错并关闭失败窗口，不吞成普通成功',async()=>{
+  let snapshots=0;const h=harness(()=>{snapshots++;return {items:[]};},()=>{},{loadErrors:['net::ERR_CONNECTION_CLOSED','net::ERR_CONNECTION_CLOSED']});
+  await assert.rejects(h.browser.read(record('抖音'),new AbortController().signal,true),/ERR_CONNECTION_CLOSED/);assert.equal(h.stats().loads,2);assert.equal(snapshots,0);assert.equal(h.browser.window,null);
+});
+
+test('真实抖音状态helper识别官方服务错误，仅重试一次且不误读业务快照',async()=>{
+  let snapshots=0;const h=harness(()=>{snapshots++;return {items:[card('抖音')]};},()=>{},{serviceMessage:'服务器出现问题'});
+  await assert.rejects(h.browser.read(record('抖音'),new AbortController().signal,true),/本次已自动重连/);assert.equal(h.stats().loads,2);assert.equal(snapshots,0,'DOM状态探针不能被伪装成业务快照读取');
+});
+
+test('真实抖音状态helper区分验证码与普通登录字样，并读取真实导航就绪状态',async()=>{
+  const h=harness(()=>{throw Error('状态探针不得调用业务快照');}),r=record('抖音'),signal=new AbortController().signal;
+  const window=await h.browser.open(h.searchURL(r),r,signal);
+  const ready=await window.webContents.executeJavaScript('({url:location.href,ready:document.readyState,content:!!document.body&&(document.body.children.length>0||!!document.body.innerText.trim())})');assert.equal(ready.url,h.searchURL(r));assert.equal(ready.ready,'complete');assert.equal(ready.content,true);
+  window.page.title='验证码中间页';let state=await window.webContents.executeJavaScript(`(${douyinPageState.toString()})()`);assert.equal(state.kind,'verification');assert.equal(state.retryable,false);
+  window.page.title='合成官方页面';window.page.text='登录';state=await window.webContents.executeJavaScript(`(${douyinPageState.toString()})()`);assert.equal(state.kind,'unconfirmed','页面普通登录字样不能冒充登录拦截');
+  window.page.loginText='扫码登录';state=await window.webContents.executeJavaScript(`(${douyinPageState.toString()})()`);assert.equal(state.kind,'login');assert.equal(state.retryable,false);
+});
+
+for(const external of [false,true])test(`${external?'Chrome':'原生'}搜索页面登录标识只更新对应会话，不能改写旧native账号`,async()=>{
+  let verified=0,expired=0;const h=harness(()=>({items:[card('小红书')],loggedIn:true})),r=record('小红书');r.accountId='native-account';h.browser.accounts={getSession:()=>undefined,markVerified:()=>verified++,markExpired:()=>expired++};
+  await h.browser.open(h.searchURL(r),r,new AbortController().signal);if(external)h.browser.window.externalTab={};await h.browser.read(r,new AbortController().signal);assert.equal(verified,external?0:1);assert.equal(expired,0);
+});
+
+test('Chrome搜索和详情的设备超限保留本次异常，但不能使旧native下载会话过期',async()=>{
+  let expired=0;const h=harness(()=>({items:[],blocked:true,reason:'device-limit',message:'设备登录超限'})),r=record('小红书');r.accountId='native-account';h.browser.accounts={getSession:()=>undefined,markExpired:()=>expired++};
+  const open=h.browser.open.bind(h.browser);h.browser.open=async(...args)=>{const w=await open(...args);w.externalTab={};return w;};
+  const result=await h.browser.read(r,new AbortController().signal,true);assert.equal(result.needsAction,true);assert.match(result.message,/设备登录超限/);assert.equal(expired,0);
+  await assert.rejects(h.browser.detail(card('小红书'),'native-account',new AbortController().signal,{metadataOnly:true}),/设备登录超限/);assert.equal(expired,0);
 });

@@ -1,4 +1,5 @@
 import { BrowserWindow, net } from 'electron';
+import {externalBrowserWindow} from './external-browser-window.js';
 import { profileFromUrl } from './creators.js';
 import { platformOf } from './core.js';
 import { resolveDouyin, douyinUrl, douyinResponse, douyinPayload } from './douyin.js';
@@ -76,7 +77,7 @@ export class CreatorBrowser {
     if (this.window && !this.window.isDestroyed() && this.creatorUrl === source && this.accountId === accountId && this.window.webContents.getURL() === this.targetUrl) { if (visible) this.window.show(); return this.window; }
     this.close();
     const session = accountId ? this.accounts.getSession(accountId) : undefined;
-    this.window = new BrowserWindow({ show: visible, width: 1100, height: 850, autoHideMenuBar: true, title: '博主作品 · 在官方页面完成登录或验证后返回风沙继续读取', webPreferences: { session, partition: session ? undefined : `fengsha-creator-guest-${platform}`, sandbox: true, nodeIntegration: false, contextIsolation: true, autoplayPolicy: 'document-user-activation-required' } });
+    this.window = this.accounts.usesExternal?.(platform,accountId)?await externalBrowserWindow(this.accounts.externalBrowser,source,platform,{session}):new BrowserWindow({ show: visible, width: 1100, height: 850, autoHideMenuBar: true, title: '博主作品 · 在官方页面完成登录或验证后返回风沙继续读取', webPreferences: { session, partition: session ? undefined : `fengsha-creator-guest-${platform}`, sandbox: true, nodeIntegration: false, contextIsolation: true, autoplayPolicy: 'document-user-activation-required' } });
     this.window.setMenu(null);
     this.window.webContents.setAudioMuted(true);
     const allowed = value => { try { const url = new URL(value); return platformOf(value) === platform && url.protocol === 'https:' && !url.username && !url.password && !url.port; } catch { return false; } };

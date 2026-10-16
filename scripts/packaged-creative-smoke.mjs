@@ -1,0 +1,23 @@
+import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';import {createRequire} from 'node:module';
+import {_electron as electron} from 'playwright';import {Store} from '../electron/store.js';import {prepareArticlePrompts} from '../electron/article-prompts.js';
+const require=createRequire(import.meta.url),root=path.resolve('.'),expectedVersion=JSON.parse(fs.readFileSync('package.json','utf8')).version,exe=path.resolve(process.argv[2]),out=path.join(root,'output','packaged-creative-'+Date.now()),profile=path.join(out,'profile');
+fs.mkdirSync(out,{recursive:true});const store=await Store.open(profile,{});
+store.put('transcription','t',{id:'t',title:'已保存的图文任务',source:{kind:'text',text:'先明确目标，再使用工具。'},status:'ready',transcript:'先明确目标，再使用工具。',correctedTranscript:'先明确目标，再使用工具。',segments:[]});
+const base={source:{id:'s',platform:'抖音',type:'video',title:'已保存的图文任务',url:'https://www.douyin.com/video/111'},original:{title:'已保存的图文任务',text:'先明确目标，再使用工具。',images:[]},title:'已保存的图文任务',body:'先明确目标，再使用工具。',assets:[],assetOrder:[],revision:1,status:'draft',createdAt:Date.now()};
+store.put('content-draft','d',{...base,id:'d',transcriptionId:'t'});
+const article=prepareArticlePrompts({title:'图文方案',body:'分页正文',pages:[1,2,3].map(index=>({id:'p'+index,index,title:'明确目标',text:'先明确目标，再使用工具。',imagePrompt:'纸卡场景'})),generatedCount:0,draftId:'a',status:'completed'});
+store.put('content-draft','a',{...base,id:'a',source:{...base.source,type:'image'},title:article.title,body:article.body,articlePages:article.pages});
+store.put('video-workflow','v',{id:'v',draftId:'d',transcriptionId:'t',article,createdAt:Date.now(),autoCorrect:false,articlePreview:{status:'failed',stage:'validating',label:'历史事实差异候选',validation:{structure:'passed',numeric:'passed',audit:'failed'},auditIssues:['第1页有原意差异'],pages:[{index:1,title:'已完成页',text:'先明确目标，再使用工具。',contentComplete:true}],contentComplete:false}});
+store.flush();store.close();
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;delete env.FENGSHA_TEST_DATA;delete env.FENGSHA_TEST_MODE;
+let app;const result={out,executable:exe,isolated:true,cases:[],errors:[]};
+const launch=async()=>{app=await electron.launch({executablePath:exe,args:['--agent-data-dir',profile],env,timeout:45000});await app.evaluate(({session})=>session.defaultSession.webRequest.onBeforeRequest((d,cb)=>cb({cancel:/^https?:/.test(d.url)})));const page=await app.firstWindow();page.setDefaultTimeout(15000);page.on('pageerror',e=>result.errors.push(e.message));await page.getByRole('heading',{name:'链接下载',exact:true}).waitFor();return page;};
+const open=async page=>{await page.locator('nav').getByRole('button',{name:'作品搜索与二创',exact:true}).click();await page.getByRole('tab',{name:'视频复刻',exact:true}).click();await page.getByLabel('视频任务',{exact:true}).selectOption('v');await page.locator('.video-workbench[data-workflow-id="v"]').waitFor();};
+try{
+ let page=await launch();assert.equal((await page.evaluate(()=>window.fengsha.snapshot())).value.version,expectedVersion);await open(page);
+ await page.getByRole('tab',{name:'视频转图文',exact:true}).click();assert.equal(await page.getByRole('button',{name:'继续图文处理',exact:true}).isEnabled(),true);result.cases.push('packaged UI exposes continuation for old candidate');
+ await page.getByRole('tab',{name:'生图提示词',exact:true}).click();await page.getByLabel('整组统一画风',{exact:true}).fill('打包版持久化测试：米白纸卡、深蓝标题、柔和自然光');await page.getByRole('button',{name:'保存生图提示词',exact:true}).click();await page.waitForFunction(()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='保存生图提示词')?.disabled);result.cases.push('packaged real IPC saves editable prompts');
+ await app.close();app=null;page=await launch();await open(page);await page.getByRole('tab',{name:'生图提示词',exact:true}).click();assert.match(await page.getByLabel('整组统一画风',{exact:true}).inputValue(),/打包版持久化测试/);await page.getByRole('button',{name:/批量生成配图/}).click();await page.getByRole('dialog',{name:'确认批量生成配图',exact:true}).waitFor();await page.getByRole('button',{name:'返回编辑',exact:true}).click();result.cases.push('restart restores prompt edits and batch confirmation opens without paid request');
+ fs.writeFileSync(path.join(out,'packaged-prompts.png'),Buffer.from(await app.evaluate(async({BrowserWindow})=>(await BrowserWindow.getAllWindows()[0].webContents.capturePage()).toPNG().toString('base64')),'base64'));
+ assert.deepEqual(result.errors,[]);result.ok=true;
+}catch(e){result.error=e.stack;process.exitCode=1;}finally{await app?.close();fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));}

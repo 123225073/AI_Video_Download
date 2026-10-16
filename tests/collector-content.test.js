@@ -73,12 +73,12 @@ test('selected feed detail recovers a cached service even when WXU.API has no de
  });
  test('probe reports missing official capabilities rather than claiming all operations work',async()=>{
   const f=fixture({api:{finderSearch(){}}});const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});
-  assert.deepEqual(r.data.capabilities,{search:true,detail:false,creatorFeeds:false});
+  assert.deepEqual(r.data.capabilities,{search:true,detail:false,creatorFeeds:false,comments:false});
  });
 
 test('cached module capabilities are recovered before the connection readiness gate',async()=>{
  const f=fixture({resources:[moduleURL],load:async()=>({merged:{finderSearch:()=>{throw Error('probe must not search');},finderGetCommentDetail(){},finderUserPage(){}}})});
- const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});assert.equal(r.errCode,0);assert.deepEqual(r.data.capabilities,{search:true,detail:true,creatorFeeds:true});assert.equal(f.imports.length,1);
+ const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});assert.equal(r.errCode,0);assert.deepEqual(r.data.capabilities,{search:true,detail:true,creatorFeeds:true,comments:false});assert.equal(f.imports.length,1);
 });
 
 test('share resolution needs no axios or dynamically injected asset scripts',async()=>{
@@ -115,4 +115,11 @@ test('invalid refresh fingerprints do not navigate or call an official service',
 test('probe identifies runtime content independently of the deployed file',async()=>{
  const f=fixture({api:{finderSearch(){},finderGetCommentDetail(){},finderUserPage(){}}});f.sandbox.window.__fengshaContentHash='abcdef123456';
  const r=await f.request({keyword:'__fengsha_content__:{"probe":true}'});assert.equal(r.data.fengshaContentHash,'abcdef123456');assert.equal(r.data.canRefreshAdapter,true);
+});
+
+test('评论接口在API2或缓存模块时仍可读取，不落回缺失WXU.API方法',async()=>{
+ let payload;const service={finderGetCommentList:async function(p){assert.equal(this,service);payload=p;return {errCode:0,data:{commentInfo:[{commentId:'c1',content:'真实首批'}],lastBuffer:''}};}};
+ const f=fixture({resources:[moduleURL],load:async()=>({comments:service})});
+ const result=await f.request({oid:'15029976334673250691',nid:'nonce',comment_id:'',next_marker:encodeURIComponent('next+/=')},'key:channels:fetch_feed_comment_list');
+ assert.equal(result?.errCode,0);assert.equal(result.data.commentInfo.length,1);assert.equal(payload.objectId,'15029976334673250691');assert.equal(payload.lastBuffer,'next+/=');assert.equal(f.calls.length,0);
 });

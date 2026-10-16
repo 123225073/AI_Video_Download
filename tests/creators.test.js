@@ -60,3 +60,13 @@ test('日期过滤补取详情；登录失败不会跳过该页或假装完成',
   service.engine.parse = async () => ({ items: [{ publishedAt: '20260930' }] });
   const fixed = await service.page('creator', {}); assert.equal(fixed.items.length, 1); assert.equal(fixed.items[0].publishedAt, '20260930'); store.close();
 });
+
+for(const external of [false,true])test(`${external?'Chrome':'原生'}博主网页认证失败保留清单，只失效对应原生会话`,async()=>{
+  const {store,service}=await fixture();let expired=0;
+  try{
+    const row=store.get('creator','creator');row.creator={id:'63a58bb000000000260073cd',platform:'小红书',name:'原作者',url:'https://www.xiaohongshu.com/user/profile/63a58bb000000000260073cd',supported:true,adapter:'browser',accountId:'native-account'};row.items=[{key:'saved-work',title:'已保存作品'}];row.seen=['saved-work'];row.scanned=1;row.cursor=2;row.filters=normalizeFilters({period:'all',limit:50});store.put('creator',row.id,row);
+    service.engine.accounts={active:()=>({id:'native-account'}),usesExternal:()=>external,markExpired:()=>expired++};
+    service.browser={async page(){throw Error('Login required');}};
+    const result=await service.page('creator',{},false);assert.equal(result.status,'interrupted');assert.equal(result.complete,false);assert.equal(result.items[0].key,'saved-work');assert.equal(result.cursor,2);assert.equal(expired,external?0:1);
+  }finally{store.close();}
+});

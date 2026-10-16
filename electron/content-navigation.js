@@ -1,4 +1,6 @@
+import {youtubeOfficialNavigation} from './youtube-session.js';
 export function contentNavigation(value,initialURL,platform){
+  if(platform==='YouTube')return youtubeOfficialNavigation(value);
   try{const u=new URL(value),initial=new URL(initialURL),official=u.hostname===initial.hostname||platform==='小红书'&&u.hostname==='xiaohongshu.com';
     if(!official||u.username||u.password||u.port)return {allowed:false};
     if(u.protocol==='https:')return {allowed:true};

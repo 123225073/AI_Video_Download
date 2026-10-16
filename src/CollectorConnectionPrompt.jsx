@@ -2,9 +2,10 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { ExternalLink, LoaderCircle, Square } from 'lucide-react';
 import './CollectorConnectionPrompt.css';
 
-export default function CollectorConnectionPrompt({ connection, perform, onStop, stopping = false }) {
+export default function CollectorConnectionPrompt({ connection, perform, onStop, stopping = false, onUseCollected, collectedLabel, collectedUnavailable, error }) {
   const titleId = useId(), dialog = useRef(null), checking = useRef(false), mounted = useRef(false);
   const [detecting, setDetecting] = useState(false), [message, setMessage] = useState('');
+  const action = useRef(null), [acting, setActing] = useState(null);
   const [now, setNow] = useState(Date.now);
   const deadline = Number(connection.waitingUntil);
   const hasDeadline = Number.isFinite(deadline) && deadline > 0;
@@ -21,6 +22,13 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
     dialog.current?.querySelector('button')?.focus();
     return () => { mounted.current = false; if (previous?.isConnected) previous.focus(); };
   }, []);
+  async function performAction(kind, fn) {
+    if (action.current || checking.current || stopping) return;
+    action.current = kind; setActing(kind); setMessage('');
+    try { await fn(); }
+    catch (error) { if (mounted.current) setMessage(error.message); }
+    finally { action.current = null; if (mounted.current) setActing(null); }
+  }
   async function openPage() {
     try {
       setMessage('正在向电脑微信发送打开请求…');
@@ -30,7 +38,7 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
     catch (error) { if (mounted.current) setMessage(error.message); }
   }
   async function detect() {
-    if (checking.current || stopping) return;
+    if (checking.current || action.current || stopping) return;
     checking.current = true; setDetecting(true); setMessage('正在检测当前连接，原任务保持等待…');
     try {
       const status = await perform('collectorStatus');
@@ -41,6 +49,7 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
     finally { checking.current = false; if (mounted.current) setDetecting(false); }
   }
   function keepFocus(event) {
+    if (event.key === 'Escape') { event.preventDefault(); performAction('stop', onStop); return; }
     if (event.key !== 'Tab') return;
     const buttons = [...dialog.current.querySelectorAll('button:not(:disabled)')];
     const first = buttons[0], last = buttons.at(-1);
@@ -58,11 +67,13 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
         <li>在倒计时结束前，用视频号窗口菜单选择“刷新”；没有刷新选项或刷新无效时，关闭视频号页面后重新进入（不用退出微信）。仅切换正在播放的视频不能建立连接。</li>
         <li>完成后点击“已操作，继续检测”。连接就绪后原任务自动继续，不会重新启动识别或作品读取。</li>
       </ol>
-      <p role="status" aria-live="polite">{message || '等待期间已有结果保留；无需关闭代理软件或反复登录。'}</p>
+      <p role="status" aria-live="polite">{message || error || '等待期间已有结果保留；无需关闭代理软件或反复登录。'}</p>
+      {collectedUnavailable && <p>{collectedUnavailable}</p>}
       <div className="collector-prompt-actions">
-        <button className="button primary" disabled={stopping} onClick={openPage}><ExternalLink size={16}/>打开微信视频号</button>
-        <button className="button" disabled={detecting || stopping} onClick={detect}>{detecting && <LoaderCircle className="spin" size={16}/>}{detecting ? '正在检测…' : '已操作，继续检测'}</button>
-        <button className="button" disabled={stopping} onClick={onStop}><Square size={16}/>{stopping ? '正在停止…' : '停止并保留已有结果'}</button>
+        <button className="button primary" disabled={!!acting || detecting || stopping} onClick={()=>performAction('open',openPage)}><ExternalLink size={16}/>打开微信视频号</button>
+        <button className="button" disabled={!!acting || detecting || stopping} onClick={detect}>{detecting && <LoaderCircle className="spin" size={16}/>}{detecting ? '正在检测…' : '已操作，继续检测'}</button>
+        {onUseCollected && <button className="button primary" disabled={!!acting || detecting || stopping} onClick={()=>performAction('use',onUseCollected)}>{acting==='use'?'正在使用已有内容…':collectedLabel||'直接使用已采集内容'}</button>}
+        <button className="button" disabled={!!acting || detecting || stopping} onClick={()=>performAction('stop',onStop)}><Square size={16}/>{stopping||acting==='stop' ? '正在停止…' : '停止并保留已有结果'}</button>
       </div>
       <small>当前播放哪个视频不影响识别，作者以下载器中粘贴的原链接为准。若等待超时，已读取清单保留；请先重新识别或继续读取，等连接提示出现后再刷新视频号。</small>
     </section>

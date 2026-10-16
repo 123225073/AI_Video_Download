@@ -3,6 +3,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {build} from 'esbuild';
 import {Script} from 'node:vm';
+import {prepareWeChatWindowHelper} from './prepare-wechat-window-helper.mjs';
 fs.mkdirSync('bin/collector',{recursive:true});
 const contentSource=fs.readFileSync('electron/collector-content.js');
 // Transparent file protection can temporarily expose an encrypted envelope to
@@ -17,6 +18,7 @@ if(process.platform==='win32') {
   execFileSync(compiler,['/noconfig','/nologo','/target:library','/r:System.dll',`/out:${path.resolve('bin/collector/collector-native.dll')}`,path.resolve('electron/collector-native.cs')],{windowsHide:true,stdio:'inherit'});
 }
 if(!fs.existsSync('bin/collector/collector-native.dll'))throw new Error('Missing Windows collector interop assembly');
+prepareWeChatWindowHelper();
 fs.writeFileSync('bin/collector/collector-system.ps1','\uFEFF'+fs.readFileSync('electron/collector-system.ps1','utf8').replace(/^\uFEFF/,''));
 await build({entryPoints:['scripts/clash-route-helper.mjs'],outfile:'bin/collector/clash-route-helper.cjs',bundle:true,platform:'node',format:'cjs',target:'node22',logLevel:'silent'});
 fs.writeFileSync('bin/collector/LICENSE-yaml',fs.readFileSync('node_modules/yaml/LICENSE'));

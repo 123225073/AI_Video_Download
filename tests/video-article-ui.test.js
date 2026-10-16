@@ -189,6 +189,13 @@ test('视频转图文真实 React UI：离线设置、流式输出与既有编�
     await openSettings();assert.equal(await dialog().getByText('未采用候选正文',{exact:true}).count(),0);await button('取消').click();
   });
 
+  await t.test('事实校验失败后继续按钮可用，交由后台自动校正，不强迫从头创作', async () => {
+    await mount({status:'article-failed',articlePreview:{status:'failed',label:'第3页原意有差异',validation:{structure:'passed',numeric:'passed',audit:'failed'},pages:[{title:'已完成页',text:'候选正文'}]}});
+    assert.equal(await button('继续图文处理').isEnabled(),true);
+    await button('继续图文处理').click();await waitCalls(1);
+    assert.equal((await calls())[0].kind,'article-resume');
+  });
+
   await t.test('dirty文案和校对阻止设置/创作；保存绑定不被轮询更新', async () => {
     await mount();await page.getByRole('tab',{name:'二创文案',exact:true}).click();
     await page.getByLabel('视频二创文案',{exact:true}).fill('手工保留正文');

@@ -268,7 +268,8 @@ export class Creators {
         this.store.put('creator', id, r); this.store.flush(); return r;
       } catch (error) {
         const c = classifyError(error.message);
-        if (c.category === 'auth') this.engine.accounts?.markExpired(r.creator.platform, r.creator.accountId);
+        const chromePage=r.creator.adapter==='browser'&&this.engine.accounts?.usesExternal?.(r.creator.platform,r.creator.accountId);
+        if (c.category === 'auth'&&!chromePage) this.engine.accounts?.markExpired(r.creator.platform, r.creator.accountId);
         const preserve = reset && ['B站', '视频号'].includes(original.creator.platform) && original.items.length ? original : checkpoint;
         r = { ...preserve, complete: false, restartRequired: preserve === original || Boolean(preserve.restartRequired) || /重复返回|读取期间变化/.test(error.message), status: signal.aborted ? 'cancelled' : 'interrupted', message: signal.aborted ? '已停止；已读取清单保留，可继续读取' : (preserve === original ? '重新读取失败，原清单已保留；' : '') + (c.category === 'unknown' ? safeLog(error.message) : c.message) };
         r.recoveryAvailable = !r.items.length && Boolean(this.previous(r));
