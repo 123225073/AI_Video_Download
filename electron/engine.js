@@ -4,6 +4,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { platformOf, validSource, cleanName, mediaKey, safeLog, classifyError } from './core.js';
 import { thumbnailUrl } from './thumbnail.js';
+import { wechatFeedId, wechatVideoLocator } from './wechat-creators.js';
 
 export function stopProcess(child) {
   if (!child?.pid || child.exitCode !== null) return;
@@ -55,7 +56,7 @@ export class Engine {
     if (platform !== '视频号') { const cookie = await this.accounts?.cookieFile(platform, accountId); if (cookie) args.push('--cookies', cookie); }
     return args;
   }
-  async parse(url, { limit = 30, signal, allowCollector = true } = {}) {
+  async parse(url, { limit = 30, signal, allowCollector = true, sourceItem } = {}) {
     validSource(url);
     const platform = platformOf(url);
     const account = this.accounts?.active(platform);
@@ -66,13 +67,13 @@ export class Engine {
     }
     if (platform === '视频号') {
       const source=new URL(url),collected=source.hostname==='channels.weixin.qq.com'&&source.pathname==='/web/pages/feed';
-      const sourceId=source.searchParams.get('oid');
+      const oid=source.searchParams.get('oid'),sourceId=wechatFeedId(oid)||oid,locator=wechatVideoLocator(url,sourceItem);
       if(collected&&(!sourceId||!/^[\w=-]{1,280}$/.test(sourceId)))throw new Error('视频号作品标识无效，请从搜索结果重新选择原作品');
-      if(collected){const saved=this.wechat.collector?.cached?.({sourceId});if(saved)return {url,platform,title:saved.info.title,total:1,complete:true,items:[{...this.item(saved.info,url,platform),acquisition:'wechat-collector',objectNonceId:saved.objectNonceId}]};}
+      if(collected){const saved=this.wechat.collector?.cached?.(locator||{sourceId});if(saved)return {url,platform,title:saved.info.title,total:1,complete:true,items:[{...this.item(saved.info,url,platform),acquisition:'wechat-collector',objectNonceId:saved.objectNonceId}]};}
       if(!allowCollector&&collected)throw Object.assign(new Error('旧记录没有可下载媒体。请粘贴原视频的公开分享链接，或导入本地视频；视频处理不会打开微信页面等待。'),{code:'VIDEO_SHARE_REQUIRED'});
       if(!allowCollector&&!account?.lastSync)throw new Error('WECHAT_LOGIN_REQUIRED');
       if ((collected || !account?.lastSync) && this.wechat.collector?.config().enabled) {
-        const selected=collected?{url,acquisition:'wechat-collector',sourceId,objectNonceId:source.searchParams.get('nid')||''}:{url};
+        const selected=locator||(collected?{url,acquisition:'wechat-collector',sourceId,objectNonceId:wechatFeedId(source.searchParams.get('nid'))||source.searchParams.get('nid')||'',creatorId:source.searchParams.get('username')||undefined}:{url});
         const run=async()=>{const result=await this.wechat.collector.resolve(selected,signal);return {url,platform,title:result.info.title,total:1,complete:true,items:[{...this.item(result.info,url,platform),acquisition:'wechat-collector',objectNonceId:result.objectNonceId}]};};
         return this.wechat.connection ? this.wechat.connection.withConnection(signal,run,['detail']) : run();
       }

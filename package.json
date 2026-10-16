@@ -1,6 +1,6 @@
 {
   "name": "fengsha-video-downloader",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "description": "风沙全平台视频下载器：链接识别、批量下载与本地媒体管理",
   "private": true,
   "type": "module",
@@ -138,6 +138,10 @@
       {
         "from": "docs/Chrome登录与采集修复-0.8.9.md",
         "to": "Chrome登录与采集修复-0.8.9.md"
+      },
+      {
+        "from": "docs/博主视频二创修复-0.8.10.md",
+        "to": "博主视频二创修复-0.8.10.md"
       }
     ],
     "win": {

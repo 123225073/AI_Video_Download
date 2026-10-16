@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { command, stopProcess } from './engine.js';
 import { cleanName, platformOf, mediaKey } from './core.js';
+import { wechatVideoLocator } from './wechat-creators.js';
 import { chunksOf, parseSubtitles, transcriptOf, srtOf, documentOf, correctedTextOf } from './transcript-text.js';
 
 import { runTextJob, reviewedSource, textHash, translationLanguages } from './transcript-jobs.js';
@@ -64,6 +65,7 @@ export class Transcriptions {
     else if (raw.inputId) { const input = this.store.get('transcription-input', raw.inputId); if (!input || !fs.existsSync(input.file)) throw new Error('导入文件已移动，请重新选择'); source = { ...input }; }
     else if (raw.text?.trim()) { if (raw.text.length > 2 * 1024 * 1024) throw new Error('文本过长，请拆分导入'); source = { kind: 'text', text: raw.text.trim(), title: String(raw.title || '粘贴文稿').slice(0, 180) }; }
     else source = { kind: 'url', url: transcriptionUrl(String(raw.url || '').trim(), this.options.testing), title: String(raw.title || '链接转录').slice(0, 180) };
+    if (source.kind === 'url') { const item = wechatVideoLocator(source.url, raw.sourceItem); if (item) source.item = item; }
     const mode = { correct: false, summarize: false, translate: false, language: 'zh' };
     const speechLanguage = ['auto', 'zh', 'en', 'ja', 'ko', 'de', 'fr', 'es'].includes(raw.speechLanguage) ? raw.speechLanguage : this.ai.config('speech').language;
     const fileInfo = source.file ? fs.statSync(source.file) : null;
@@ -103,10 +105,12 @@ export class Transcriptions {
     if (existing) return existing;
     if (!t.source.url) throw new Error('当前任务没有原视频链接，请导入本地视频');
     check(signal);
-    const group = await this.engine.parse(t.source.url, { limit: 1, signal, allowCollector: false }), item = group.items[0];
+    const sourceItem=t.source.item,allowCollector=!!wechatVideoLocator(t.source.url,sourceItem);
+    const group = await this.engine.parse(t.source.url, { limit: 1, signal, allowCollector, sourceItem }), item = group.items[0];
+    check(signal);
     if (!item) throw new Error('尚未取得原视频，请检查登录或原链接');
     const dir = path.join(this.directory, id, 'video'); fs.mkdirSync(dir, { recursive: true });
-    const media = await this.engine.download({ id, item: { ...item, key: item.key || mediaKey(item) }, options: { quality: 'best', allowCollector: false } }, dir, signal, () => {});
+    const media = await this.engine.download({ id, item: { ...item, key: item.key || mediaKey(item) }, options: { quality: 'best', allowCollector } }, dir, signal, () => {});
     check(signal);
     if (!media.filePath || !/\.(mp4|mkv|mov|webm)$/i.test(media.filePath) || !fs.existsSync(media.filePath)) throw new Error('未取得有效原视频文件，请检查原链接');
     const latest = this.get(id);
@@ -124,9 +128,11 @@ export class Transcriptions {
       const platform = platformOf(t.source.url);
       update({ status: 'subtitles', message: '正在读取视频资料与原字幕', progress: 5 });
       if (platform === '视频号') {
-        const group = await this.engine.parse(t.source.url, { limit: 1, signal, allowCollector:false }), item = group.items[0];
+        const sourceItem=t.source.item,allowCollector=!!wechatVideoLocator(t.source.url,sourceItem);
+        const group = await this.engine.parse(t.source.url, { limit: 1, signal, allowCollector, sourceItem }), item = group.items[0];
+        check(signal);
         update({ title: item.title, author: item.author });
-        const task = { id: t.id, item: { ...item, key: mediaKey(item) }, options: { quality: 'best', allowCollector:false } };
+        const task = { id: t.id, item: { ...item, key: mediaKey(item) }, options: { quality: 'best', allowCollector } };
         const data = await this.engine.download(task, dir, signal, p => update({status:'preparing',message:p.status==='processing'?'正在校验已下载视频':'正在下载原视频，下载后复用音轨和关键帧',downloadProgress:p,progress:p.total?Math.min(14,5+Math.floor(p.bytes/p.total*9)):5})); file = data.filePath;
       } else {
         const args = platform ? await this.engine.arguments(platform) : ['--no-warnings', '--no-playlist'];

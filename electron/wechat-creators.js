@@ -8,6 +8,24 @@ export function requireWechatIdentity(creator) {
   if (!id || creator.identityStatus === 'pending') throw new Error('尚未确认稳定作者 ID，不能读取作者作品。请在微信打开原视频或粘贴含 username 的作者主页链接后重新识别；不会按昵称匹配作者。');
   return id;
 }
+// Official jump links encode uint64 IDs; collector/cache APIs use decimal IDs.
+export function wechatFeedId(value) {
+  if (typeof value !== 'string' || !value) return null;
+  if (/^\d+$/.test(value)) return BigInt(value) <= 0xffffffffffffffffn ? value : null;
+  if (!/^[A-Za-z0-9_-]{11}=?$/.test(value)) return null;
+  const bytes = Buffer.from(value.replace(/=$/, ''), 'base64url');
+  return bytes.length === 8 && bytes.toString('base64url') === value.replace(/=$/, '') ? bytes.readBigUInt64BE().toString() : null;
+}
+export function wechatVideoLocator(url, item) {
+  const source = new URL(url);
+  if (source.hostname !== 'channels.weixin.qq.com' || source.pathname !== '/web/pages/feed' || item?.acquisition !== 'wechat-collector' || typeof item.sourceId !== 'string' || !/^\d+$/.test(item.sourceId) || !wechatCreatorId(item.creatorId)) return null;
+  if (wechatFeedId(source.searchParams.get('oid')) !== item.sourceId || source.searchParams.get('username') && source.searchParams.get('username') !== item.creatorId) throw new Error('作品链接与所选视频或作者不一致，请重新读取作品');
+  if (typeof item.objectNonceId === 'number' && !Number.isSafeInteger(item.objectNonceId)) throw new Error('作品标识精度异常，请重新读取作品');
+  const nid = wechatFeedId(source.searchParams.get('nid')),nonce = String(item.objectNonceId || nid || '');
+  if (nonce.length > 200 || /[^\w-]/.test(nonce)) throw new Error('作品标识无效，请重新读取作品');
+  if (nid && /^\d+/.test(nonce) && nonce.split('_')[0] !== nid) throw new Error('作品链接与所选视频标识不一致，请重新读取作品');
+  return {url:source.href,platform:'视频号',acquisition:'wechat-collector',sourceId:item.sourceId,objectNonceId:nonce,creatorId:item.creatorId,title:String(item.title || '').slice(0,180)};
+}
 function feedUrl(raw, username) {
   if (typeof raw.sourceUrl === 'string' && platformOf(raw.sourceUrl) === '视频号') {
     try { return validSource(raw.sourceUrl); } catch { /* Rebuild from the exact object ID below. */ }

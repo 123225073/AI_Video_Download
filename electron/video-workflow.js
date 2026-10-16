@@ -5,6 +5,7 @@ import {platformOf,validSource} from './core.js';
 import {createStableVideoArticle as createVideoArticle} from './video-article.js';
 import {prepareArticlePrompts,promptHash} from './article-prompts.js';
 import {generateArticleImages} from './article-images.js';
+import {wechatFeedId,wechatVideoLocator} from './wechat-creators.js';
 const running=new Set(['queued','preparing','subtitles','transcribing','correcting','summarizing','translating']);
 export const videoTitle=value=>String(value||'').replace(/<\/?em\b[^>]*>/gi,'').replace(/&amp;/g,'&').trim();
 const textHash=value=>createHash('sha256').update(String(value||'')).digest('hex');
@@ -42,18 +43,18 @@ export class VideoWorkflow {
   source(raw){let d=raw.draftId?this.studio.get(raw.draftId):null;let item=d?.source;if(!item&&raw.recordId)item=this.studio.search.item(raw.recordId,raw.itemId).item;
     if(!item&&raw.creatorId){const creator=this.store.get('creator',raw.creatorId);item=creator?.items.find(i=>i.key===raw.itemId||i.id===raw.itemId);if(!item)throw Error('博主作品已不存在，请重新读取列表');item={...item,type:'video'};}
     if(!item&&raw.mediaId){const media=this.store.get('media',raw.mediaId);if(!media||!fs.existsSync(media.filePath))throw Error('媒体文件已不存在，请重新定位');item={...media,id:media.sourceId||media.id,type:'video'};}
-    if(!item&&raw.item){item={id:String(raw.item.id||raw.item.key||raw.item.url),platform:raw.item.platform||platformOf(raw.item.url),type:'video',url:String(raw.item.url||''),title:videoTitle(raw.item.title),text:'',images:[]};}
+    if(!item&&raw.item){item={id:String(raw.item.id||raw.item.key||raw.item.url),platform:raw.item.platform||platformOf(raw.item.url),type:'video',url:String(raw.item.url||''),title:videoTitle(raw.item.title),text:'',images:[],sourceId:raw.item.sourceId||raw.item.id,acquisition:raw.item.acquisition,objectNonceId:raw.item.objectNonceId,creatorId:raw.item.creatorId};}
     if(raw.inputId||raw.url?.trim()&&raw.url.trim()!==item?.url){d=null;item=null;}
     if(item&&item.type!=='video')throw Error('图文作品请在图文复刻中处理');
     const url=String(raw.url||item?.url||'').trim(),input=raw.inputId?this.store.get('transcription-input',raw.inputId):null;if(raw.inputId&&(!input||!fs.existsSync(input.file)||!['mp4','mkv','mov','webm'].includes(input.ext)))throw Error('请选择有效的本地视频');
     const media=raw.mediaId&&!raw.url&&!raw.inputId?this.store.get('media',raw.mediaId):this.store.list('media').find(m=>m.platform===(item?.platform||platformOf(url))&&(item?.id&&m.sourceId===item.id||m.url===url)&&m.filePath&&fs.existsSync(m.filePath));
     const linked=d?.transcriptionId?this.store.get('transcription',d.transcriptionId):null;const local=[input?.file,d?.originalVideoFile,linked?.sourceFile,media?.filePath].find(file=>file&&fs.existsSync(file)&&/\.(mp4|mkv|mov|webm)$/i.test(file));
     if(local&&fs.existsSync(local)&&/\.(mp4|mkv|mov|webm)$/i.test(local))return {d,item,url,file:local,key:path.resolve(local)};
-    validSource(url);const u=new URL(url);if(platformOf(url)==='视频号'&&u.pathname==='/web/pages/feed'&&!this.engine.wechat.collector?.cached?.({sourceId:u.searchParams.get('oid')}))throw Object.assign(Error('这份旧记录只有说明和封面，未保存视频媒体。请粘贴视频号公开分享链接，或导入已有视频；不会再次打开微信等待。'),{code:'VIDEO_SHARE_REQUIRED'});
+    validSource(url);const u=new URL(url),locator=wechatVideoLocator(url,item);if(platformOf(url)==='视频号'&&u.pathname==='/web/pages/feed'&&!locator&&!this.engine.wechat.collector?.cached?.({sourceId:wechatFeedId(u.searchParams.get('oid'))||u.searchParams.get('oid')}))throw Object.assign(Error('这份旧记录只有说明和封面，未保存视频媒体。请粘贴视频号公开分享链接，或导入已有视频；不会再次打开微信等待。'),{code:'VIDEO_SHARE_REQUIRED'});
     return {d,item,url,key:url};
   }
   start(raw={}){if(this.closed)throw Error('应用正在退出');const s=this.source(raw),key=createHash('sha256').update(s.key).digest('hex'),existing=this.store.list('video-workflow').find(r=>r.sourceKey===key);if(existing)return {...this.get(existing.id),reused:true};
-    const input=s.file?this.transcriptions.choose(s.file):null,t=this.transcriptions.start(input?{inputId:input.id}:{url:s.url,title:s.item?.title||'视频复刻'});const id=randomUUID(),d=s.d||{id:randomUUID(),source:s.item||{id:key,platform:platformOf(s.url)||'本地视频',type:'video',url:s.url,title:path.basename(s.file||'视频复刻'),text:'',images:[]},original:{title:s.item?.title||path.basename(s.file||'视频复刻'),text:'',images:[],description:s.item?.text||''},title:s.item?.title||path.basename(s.file||'视频复刻'),body:'',tags:'',assets:[],assetOrder:[],revision:1,createdAt:Date.now()};
+    const input=s.file?this.transcriptions.choose(s.file):null,t=this.transcriptions.start(input?{inputId:input.id}:{url:s.url,title:s.item?.title||'视频复刻',sourceItem:s.item});const id=randomUUID(),d=s.d||{id:randomUUID(),source:s.item||{id:key,platform:platformOf(s.url)||'本地视频',type:'video',url:s.url,title:path.basename(s.file||'视频复刻'),text:'',images:[]},original:{title:s.item?.title||path.basename(s.file||'视频复刻'),text:'',images:[],description:s.item?.text||''},title:s.item?.title||path.basename(s.file||'视频复刻'),body:'',tags:'',assets:[],assetOrder:[],revision:1,createdAt:Date.now()};
     if(s.file)d.originalVideoFile=s.file;d.original.description=d.original.description||d.source.text||'';d.transcriptionId=t.id;d.originalTextKind='transcript';d.status='transcribing';d.extractionStartedAt=Date.now();delete d.extractionEndedAt;d.message='视频下载与转录已开始';this.studio.checkpoint(d);
     const record={id,draftId:d.id,transcriptionId:t.id,sourceKey:key,sourceUrl:s.url,autoCorrect:raw.autoCorrect!==false,createdAt:Date.now(),startedAt:Date.now(),message:'已开始独立视频处理'};this.store.put('video-workflow',id,record);this.store.flush();this.changed();return this.get(id);
   }
