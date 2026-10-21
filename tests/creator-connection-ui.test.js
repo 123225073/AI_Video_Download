@@ -125,11 +125,11 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
   await t.test('已操作继续检测只探测现有连接，防重复且未连接时不误报成功',async()=>{
     await mount({identifying:true,record:null,connection:waiting});
     await page.evaluate(()=>window.holdProbe=true);
-    await button('已操作，继续检测').click();await waitCalls(1);
+    await button('立即检测').click();await waitCalls(1);
     assert.equal(await button('正在检测…').isDisabled(),true);
     assert.deepEqual((await calls())[0],{method:'collectorStatus',args:[]});
     await page.evaluate(()=>window.releaseProbe());
-    await button('已操作，继续检测').waitFor();
+    await button('立即检测').waitFor();
     assert.match(await page.getByRole('dialog').innerText(),/尚未|仍未/);
     assert.equal((await calls()).filter(call=>/^creator/.test(call.method)).length,0);
     assert.equal(await page.evaluate(()=>window.identifyCalls),0);
@@ -146,8 +146,8 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
   await t.test('检测失败可重试并显示说明，不启动新的作者任务',async()=>{
     await mount({identifying:true,record:null,connection:waiting});
     await page.evaluate(()=>window.failProbe=true);
-    await button('已操作，继续检测').click();
-    await button('已操作，继续检测').waitFor();
+    await button('立即检测').click();
+    await button('立即检测').waitFor();
     assert.match(await page.getByRole('dialog').innerText(),/连接检测失败/);
     assert.deepEqual((await calls()).map(call=>call.method),['collectorStatus']);
   });
@@ -182,8 +182,8 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
     await button('继续读取').click();await waitCalls(1);
     await page.evaluate(waiting=>window.patchConnection(waiting),waiting);
     assert.equal(await page.getByRole('dialog').count(),1);
-    await button('已操作，继续检测').click();await waitCalls(2);
-    await button('已操作，继续检测').waitFor();
+    await button('立即检测').click();await waitCalls(2);
+    await button('立即检测').waitFor();
     await button('停止并保留已有结果').click();await waitCalls(3);
     await button('继续读取').waitFor();
     assert.equal((await calls()).filter(call=>call.method==='creatorPage').length,1);
@@ -216,8 +216,8 @@ test('作者页微信连接：真实 React 离线交互', { timeout: 120000 }, a
     assert.equal(await button('打开微信视频号').evaluate(element=>element===document.activeElement),true);
     const box=await page.getByRole('dialog').boundingBox();
     assert.ok(box.x>=0&&box.x+box.width<=390&&box.y>=0&&box.y+box.height<=700);
-    await button('已操作，继续检测').scrollIntoViewIfNeeded();
-    assert.equal(await button('已操作，继续检测').isVisible(),true);
+    await button('立即检测').scrollIntoViewIfNeeded();
+    assert.equal(await button('立即检测').isVisible(),true);
     await page.setViewportSize({width:1280,height:900});
   });
   await t.test('其他任务的等待或无需页面操作时不抢占作者页',async()=>{

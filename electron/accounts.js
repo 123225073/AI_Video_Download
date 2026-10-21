@@ -9,18 +9,41 @@ import {externalApiSpec,externalPageFetch,abortableApi} from './external-account
 
 const websites = { '视频号': 'https://yuanbao.tencent.com/', '抖音': 'https://www.douyin.com/', '小红书': 'https://www.xiaohongshu.com/', 'B站': 'https://www.bilibili.com/', 'YouTube': 'https://www.youtube.com/' };
 export class AccountManager {
-  constructor(store, directory, changed,options={}) { this.store = store; this.directory = directory; this.changed = changed; this.windows = new Map(); this.sessions = new Map(); this.timers = new Map(); this.writes = new Map();this.externalBrowser=options.externalBrowser;this.preferExternalBrowsing=options.preferExternalBrowsing===true;this.externalTabs=new Map(); }
+  constructor(store, directory, changed,options={}) { this.store = store; this.directory = directory; this.changed = changed; this.windows = new Map(); this.sessions = new Map(); this.timers = new Map(); this.writes = new Map();this.externalBrowser=options.externalBrowser;this.preferExternalBrowsing=options.preferExternalBrowsing===true;this.externalTabs=new Map();this.externalOpening=new Map(); }
   usesExternal(platform,id){const a=id?this.store.get('account',id):this.active(platform);return !!this.externalBrowser&&platform!=='视频号'&&(this.preferExternalBrowsing||!a||a.loginBackend==='external-chrome'||a.pendingLoginBackend==='external-chrome'&&!a.lastSync);}
   async externalStatus(){return this.externalBrowser?this.externalBrowser.status():{available:false,message:'本机 Chrome 连接尚未配置。'};}
+  async changeExternalBrowserMode(mode){
+    if(!this.externalBrowser?.setMode)throw Error('当前浏览器配置不支持切换');
+    const previousMode=this.externalBrowser.mode||'legacy';if(mode===previousMode)return this.externalStatus();
+    const status=await this.externalBrowser.setMode(mode);this.externalTabs.clear();
+    for(const a of this.store.list('account')){
+      if(a.loginBackend==='external-chrome'){
+        const sessions={...a.externalBrowserSessions,[a.externalBrowserMode||previousMode]:{lastSync:a.lastSync||null,lastVerified:a.lastVerified||null,status:a.status}};
+        const restored=sessions[mode];
+        this.save({...a,externalBrowserSessions:sessions,externalBrowserMode:mode,pendingLoginBackend:undefined,pendingBrowserMode:undefined,lastSync:restored?.lastSync||null,lastVerified:restored?.lastVerified||null,status:restored?.lastSync?'会话待检测':'需要重新登录',message:restored?.lastSync?'已切回该浏览器保留的会话，实际有效性以官网检测为准。':'已切换浏览器，请在新窗口首次登录；原浏览器登录和已有资料保留。'});
+      }else if(a.pendingLoginBackend==='external-chrome')this.save({...a,pendingLoginBackend:undefined,pendingBrowserMode:undefined,status:a.lastSync?'会话已保存':'未登录',message:'浏览器模式已切换，原有内置会话保留。'});
+    }
+    return status;
+  }
   async openExternalLogin(id){
+    if(this.externalOpening.has(id))return this.externalOpening.get(id);
+    const opening=this.openExternalLoginPage(id);this.externalOpening.set(id,opening);
+    try{return await opening;}finally{if(this.externalOpening.get(id)===opening)this.externalOpening.delete(id);}
+  }
+  async openExternalLoginPage(id){
     const a=this.account(id);if(!this.externalBrowser)throw Error('本机 Chrome 连接尚未配置');
+    const mode=this.externalBrowser.mode||'legacy';
     let tab=this.externalTabs.get(id);
     if(!tab||tab.closed){tab=await this.externalBrowser.open(websites[a.platform],{platform:a.platform});this.externalTabs.set(id,tab);}
-    await tab.show();this.save({...a,pendingLoginBackend:'external-chrome',status:'登录中',message:'请在本工具打开的 Chrome 标签中完成登录后返回检测；确认前保留原有内置会话。多个账号备注共用当前 Chrome 登录身份，不能隔离。'});
-    return {opened:true,browser:'Chrome',message:'已打开 Chrome 官方页，请完成登录后返回检测。多个账号备注共用当前 Chrome 登录身份，不能隔离；不会拷贝浏览器凭据。'};
+    const managed=this.externalBrowser.mode==='managed',label=managed?'专用浏览器':'Chrome';
+    await tab.show();if((this.externalBrowser.mode||'legacy')!==mode||tab.closed||this.externalTabs.get(id)!==tab)throw Error('浏览器会话已变化，请重新打开登录页');
+    this.save({...this.account(id),pendingLoginBackend:'external-chrome',pendingBrowserMode:mode,status:'登录中',message:`请在本工具打开的${label}标签中完成登录，返回软件后自动检测。多个账号备注共用当前浏览器登录身份，不能隔离。`});
+    return {opened:true,browser:label,message:`已打开${label}官方页，请完成登录后返回软件自动检测。多个账号备注共用当前浏览器登录身份，不能隔离；不会拷贝浏览器凭据。`};
   }
-  async completeExternal(id){
+  async completeExternal(id,{automatic=false}={}){
     const a=this.account(id);if(!this.externalBrowser)throw Error('本机 Chrome 连接尚未配置');let tab=this.externalTabs.get(id);
+    const mode=this.externalBrowser.mode||'legacy';
+    if(automatic&&(!tab||tab.closed))return {saved:false,verified:false};
     if(!tab||tab.closed){tab=await this.externalBrowser.open(websites[a.platform],{platform:a.platform});this.externalTabs.set(id,tab);}
     let state;
     if(a.platform==='B站'){
@@ -29,15 +52,17 @@ export class AccountManager {
       let data;if(response?.status===200&&typeof response.text==='string'&&Buffer.byteLength(response.text)<=spec.maxBytes){try{data=JSON.parse(response.text);}catch{}}
       state={authenticated:data?.code===0&&data.data?.isLogin===true,message:'Chrome 已接入，但 B站官网接口尚未确认登录；请在本工具打开的 B站官网标签中完成登录后重新检测。'};
     }else state=await tab.evaluate(`(${externalLoginState.toString()})(${JSON.stringify(a.platform)})`);
+    if((this.externalBrowser.mode||'legacy')!==mode||tab.closed||this.externalTabs.get(id)!==tab)throw Error('浏览器会话已变化，请重新检测登录');
     const verified=state.authenticated===true;
+    if(automatic&&!verified)return {saved:false,verified:false};
     const message=verified?'已在 Chrome 官方页面确认登录，后续网页采集使用同一浏览器会话。':state.message||'Chrome 已接入，平台登录尚待实际使用验证。';
     if(verified){
       const internalSession=a.loginBackend!=='external-chrome'&&a.lastSync?{lastSync:a.lastSync,lastVerified:a.lastVerified,status:'会话已保存',message:'原有内置下载会话保留'}:a.internalSession;
-      this.save({...a,loginBackend:'external-chrome',pendingLoginBackend:undefined,internalSession,status:'Chrome 登录已确认',lastSync:Date.now(),lastVerified:Date.now(),message});
+      this.save({...a,loginBackend:'external-chrome',externalBrowserMode:this.externalBrowser.mode||'legacy',pendingLoginBackend:undefined,pendingBrowserMode:undefined,internalSession,status:this.externalBrowser.mode==='managed'?'网页登录已确认':'Chrome 登录已确认',lastSync:Date.now(),lastVerified:Date.now(),message});
     }else this.save({...a,pendingLoginBackend:'external-chrome',status:'Chrome 登录待确认',...(a.loginBackend==='external-chrome'?{lastSync:null,lastVerified:null}:{}),message});
     return {saved:true,verified,message};
   }
-  list() { return this.store.list('account').map(a => ({ ...a, active: this.store.get('active-account', a.platform)?.id === a.id })); }
+  list() { return this.store.list('account').map(a => ({ ...a,...(this.externalBrowser?.mode?{browserMode:this.externalBrowser.mode}:{}), active: this.store.get('active-account', a.platform)?.id === a.id })); }
   account(id) { const a = this.store.get('account', id); if (!a) throw new Error('账号记录不存在'); return a; }
   active(platform) { const id = this.store.get('active-account', platform)?.id; return id ? this.store.get('account', id) : null; }
   async fetch(id,url,options={}){
@@ -144,9 +169,10 @@ export class AccountManager {
     this.save({ ...a, status: '登录中' });
     try { await w.loadURL(websites[a.platform], { userAgent: officialUserAgent }); } catch { if (!w.isDestroyed()) w.close(); throw new Error('network 官方登录页加载失败，请检查网络后重试'); }
   }
-  async complete(id) {
+  async complete(id,options={}) {
     const a = this.account(id);
-    if(a.loginBackend==='external-chrome'||a.pendingLoginBackend==='external-chrome')return this.completeExternal(id);
+    if(a.loginBackend==='external-chrome'||a.pendingLoginBackend==='external-chrome')return this.completeExternal(id,{automatic:options?.automatic===true});
+    if(options?.automatic===true)return {saved:false,verified:false};
     const s = this.getSession(id);
     await s.cookies.flushStore();
     const cookies = await s.cookies.get({});

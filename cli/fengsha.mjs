@@ -6,10 +6,11 @@ import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { parseArgs, usage } from './options.mjs';
 import { request } from './protocol.mjs';
+import { storagePaths, prepareDataDirectory } from './storage-paths.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packaged = fs.existsSync(path.join(root, 'app.asar'));
-const defaults = packaged ? path.resolve(root, '..', '..', '用户数据') : path.join(root, '.local', '用户数据');
+const defaultDirectory = () => storagePaths({ packaged, executable: path.resolve(root, '..', 'FengshaVideoDownloader.exe'), sourceRoot: root }).dataDirectory;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 let parsed, directory;
 async function connect() {
@@ -39,7 +40,8 @@ async function run() {
     const metadata = packaged ? JSON.parse(fs.readFileSync(path.join(root, 'cli', 'version.json'), 'utf8')) : JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     return { ok: true, data: { name: 'fengsha-cli', version: metadata.version } };
   }
-  directory = path.resolve(parsed.options['data-dir'] || (process.env.FENGSHA_TEST_MODE === '1' && process.env.FENGSHA_TEST_DATA) || defaults);
+  directory = path.resolve(parsed.options['data-dir'] || (process.env.FENGSHA_TEST_MODE === '1' && process.env.FENGSHA_TEST_DATA) || defaultDirectory());
+  prepareDataDirectory(directory);
   if (parsed.options.output) parsed.options.output = path.resolve(parsed.options.output);
   if (parsed.options.file) parsed.options.file = path.resolve(parsed.options.file);
   if (parsed.options.list) {

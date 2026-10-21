@@ -59,7 +59,7 @@ export async function externalChromeStatus({endpoint=DEFAULT_ENDPOINT,timeoutMs=
     if(response.statusCode!==200)failure=state('http-error',{httpStatus:response.statusCode});
     else{
       let data;try{data=JSON.parse(response.body);}catch{}
-      if(!data||typeof data!=='object'||typeof data.Browser!=='string'||!/(?:Chrome|Chromium)\//.test(data.Browser)||typeof data.webSocketDebuggerUrl!=='string')failure=state('invalid-response');
+      if(!data||typeof data!=='object'||typeof data.Browser!=='string'||!/(?:Chrome|Chromium|Edg)\//.test(data.Browser)||typeof data.webSocketDebuggerUrl!=='string')failure=state('invalid-response');
       else return state('ready',{socketURL:websocketURL(data.webSocketDebuggerUrl,u),browserVersion:data.Browser});
     }
   }catch(e){failure=state(e.message==='invalid-response'?'invalid-response':e.code==='ETIMEDOUT'||e.message==='timeout'?'timeout':['ECONNREFUSED','ENOTFOUND','ECONNRESET'].includes(e.code)?'not-running':'connection-failed');}
@@ -128,25 +128,36 @@ class CDPConnection extends EventEmitter{
 }
 
 export class ExternalBrowser extends EventEmitter{
-  constructor({endpoint=DEFAULT_ENDPOINT,WebSocketImpl=globalThis.WebSocket,read=readEndpoint,timeoutMs=15000,connectTimeoutMs=45000,discover=true,activePortFile,readActivePort=chromeActivePort}={}){
-    super();Object.assign(this,{endpoint,WebSocketImpl,read,timeoutMs,connectTimeoutMs,discover,activePortFile,readActivePort});this.tabs=new Map();this.connection=null;this.lastStatus=state('not-running');
+  constructor({endpoint=DEFAULT_ENDPOINT,WebSocketImpl=globalThis.WebSocket,read=readEndpoint,timeoutMs=15000,connectTimeoutMs=45000,discover=true,activePortFile,readActivePort=chromeActivePort,managed,mode=managed?'managed':'legacy'}={}){
+    super();Object.assign(this,{endpoint,WebSocketImpl,read,timeoutMs,connectTimeoutMs,discover,activePortFile,readActivePort,managed,mode});this.tabs=new Map();this.connection=null;this.lastStatus=state('not-running');this.generation=0;
+    if(!['managed','legacy'].includes(mode)||mode==='managed'&&!managed)throw Error('浏览器模式不可用');
   }
   async status(){
-    if(this.connection?.connected)return this.publicStatus(state('ready'));
-    this.lastStatus=await externalChromeStatus(this);return this.publicStatus(this.lastStatus);
+    if(this.connection?.connected)return this.publicStatus({...this.lastStatus,available:true,reason:'ready'});
+    this.lastStatus=await (this.mode==='managed'?this.managed.status():externalChromeStatus(this));return this.publicStatus(this.lastStatus);
   }
-  publicStatus(value){const {socketURL,...safe}=value;return safe;}
+  publicStatus(value){const {socketURL,...safe}=value;return {...safe,mode:this.mode,canSwitch:!!this.managed};}
+  async setMode(mode){
+    if(!['managed','legacy'].includes(mode)||mode==='managed'&&!this.managed)throw Error('浏览器模式不可用');
+    if(mode===this.mode)return this.status();
+    if(mode==='managed'){const prepared=await this.managed.status();if(!prepared.available&&!prepared.canStart)throw Error(prepared.message);}
+    await this.close();this.mode=mode;this.lastStatus=state('not-running');return this.status();
+  }
   async connect(){
+    if(this.closing)throw Error('浏览器正在切换或关闭，请稍后重试');
     if(this.connection?.connected)return this;
     if(this.connecting)return this.connecting;
+    const generation=this.generation;
     this.connecting=(async()=>{
-      const status=this.lastStatus=await externalChromeStatus(this);
+      const status=this.lastStatus=await (this.mode==='managed'?this.managed.ensure():externalChromeStatus(this));
+      if(generation!==this.generation)throw Error('浏览器连接准备已取消');
       if(!status.available&&!status.canConnect)throw Object.assign(Error(status.message),{reason:status.reason});
       if(typeof this.WebSocketImpl!=='function')throw Object.assign(Error(messages['connection-failed']),{reason:'connection-failed'});
       const connection=new CDPConnection(new this.WebSocketImpl(status.socketURL),{timeoutMs:this.timeoutMs});
-      try{await connection.ready(this.connectTimeoutMs);await connection.send('Browser.getVersion');}catch(e){connection.close();this.lastStatus=state(status.requiresApproval?'requires-approval':'connection-failed',{requiresApproval:!!status.requiresApproval});throw Object.assign(Error(this.lastStatus.message),{reason:this.lastStatus.reason,requiresApproval:!!status.requiresApproval});}
+      this.pendingConnection=connection;
+      try{await connection.ready(this.connectTimeoutMs);await connection.send('Browser.getVersion');if(generation!==this.generation)throw Error('浏览器连接准备已取消');}catch(e){connection.close();if(generation!==this.generation)throw Error('浏览器连接准备已取消');this.lastStatus=state(status.requiresApproval?'requires-approval':'connection-failed',{requiresApproval:!!status.requiresApproval});if(this.mode==='managed')this.lastStatus.message='专用浏览器连接中断，请重新打开官方页面；已有登录资料保留。';throw Object.assign(Error(this.lastStatus.message),{reason:this.lastStatus.reason,requiresApproval:!!status.requiresApproval});}finally{if(this.pendingConnection===connection)this.pendingConnection=null;}
       this.connection=connection;connection.on('event',message=>{if(message.sessionId){for(const tab of this.tabs.values())if(tab.sessionId===message.sessionId)tab.receive(message.method,message.params||{});}else if(message.method==='Target.detachedFromTarget'){for(const tab of this.tabs.values())if(tab.sessionId===message.params?.sessionId)tab.detached();}});
-      connection.once('closed',()=>{if(this.connection===connection)this.connection=null;this.lastStatus=state('not-running');for(const tab of this.tabs.values())tab.detached();this.emit('disconnected');});
+      connection.once('closed',()=>{if(this.connection!==connection)return;this.connection=null;this.lastStatus=state('not-running');for(const tab of this.tabs.values())tab.detached();this.emit('disconnected');});
       return this;
     })();
     try{return await this.connecting;}finally{this.connecting=null;}
@@ -166,8 +177,15 @@ export class ExternalBrowser extends EventEmitter{
     }catch(e){await tab.close().catch(()=>{});throw e;}
   }
   async close(){
-    const results=await Promise.allSettled([...this.tabs.values()].map(tab=>tab.close()));
-    this.connection?.close();this.connection=null;return results;
+    if(this.closing)return this.closing;
+    this.closing=(async()=>{
+      this.generation++;this.managed?.cancelPending();this.pendingConnection?.close();
+      await this.connecting?.catch(()=>{});
+      const tabs=[...this.tabs.values()],results=await Promise.allSettled(tabs.map(tab=>tab.close()));
+      for(const tab of tabs)tab.detached();
+      const connection=this.connection;this.connection=null;connection?.close();return results;
+    })();
+    try{return await this.closing;}finally{this.closing=null;}
   }
 }
 

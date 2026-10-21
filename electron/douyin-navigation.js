@@ -13,8 +13,9 @@ export function douyinVisibleState(){
   const verification=/验证码中间页|安全验证/.test(document.title)||[...document.querySelectorAll('[class*="captcha"],[id*="captcha"],iframe[src*="captcha"]')].some(visible);
   const login=[...document.querySelectorAll('[data-e2e="login-dialog"],.login-modal')].some(visible);
   const serviceError=[...document.querySelectorAll('div,p,h1,h2,h3,span,[role="alert"]')].some(e=>visible(e)&&/^(?:网络出现问题|请检查网络连接后重试|服务器出现问题|服务器开小差了|服务暂时不可用|网络开小差了)[。！!]?$/u.test(e.innerText?.trim()||''));
+  const message=verification?'请在抖音官方窗口完成安全验证，然后继续。':login?'请在抖音官方窗口完成登录，然后继续。':serviceError?'抖音官网当前显示网络或服务异常，已有结果保留，请在网络恢复后继续。':undefined;
   return {official,path:u.pathname,ready:document.readyState,searchReady:!!input&&!!button,searchValue:input?.value,searchKeyword,searchType:u.searchParams.get('type'),modalId:u.searchParams.get('modal_id'),activeId:active?.getAttribute('data-e2e-vid')||null,
-    blocked:verification||login||serviceError,message:verification?'请在抖音官方窗口完成安全验证，然后继续。':login?'请在抖音官方窗口完成登录，然后继续。':serviceError?'抖音官网当前显示网络或服务异常，已有结果保留，请在网络恢复后继续。':undefined};
+    blocked:verification||login||serviceError,message,...(message?{action:{kind:verification?'verification':login?'login':'network',message,retryable:!!serviceError}}:{})};
 }
 export function douyinVisibleAction(action,payload){
   const page=new URL(location.href);
@@ -50,8 +51,8 @@ export function douyinVisibleAction(action,payload){
 export const douyinWorkIdentity=(state,id)=>!!state?.official&&state.modalId===String(id)&&state.activeId===String(id);
 const evaluate=(w,fn,...args)=>w.webContents.executeJavaScript(`(${fn.toString()})(${args.map(v=>JSON.stringify(v)).join(',')})`);
 function requireTab(w,signal){signal?.throwIfAborted();if(!w?.externalTab)throw Error('此流程需要本工具创建的外置 Chrome 页面');if(w.isDestroyed())throw Error('抖音官方窗口已关闭，请重新搜索');}
-function pause(w,message){w.show();return Object.assign(Error(message),{needsAction:true,keepWindow:true});}
-async function state(w,signal){requireTab(w,signal);const s=await evaluate(w,douyinVisibleState);signal?.throwIfAborted();if(s.blocked)throw pause(w,s.message);return s;}
+function pause(w,message,action={kind:'page',message,retryable:false}){w.show();return Object.assign(Error(message),{needsAction:true,keepWindow:true,action,code:action.kind==='login'?'OFFICIAL_LOGIN_REQUIRED':action.kind==='verification'?'OFFICIAL_VERIFICATION_REQUIRED':action.kind==='network'?'OFFICIAL_SERVICE_UNAVAILABLE':'OFFICIAL_PAGE_NOT_READY'});}
+async function state(w,signal,{allowService=false}={}){requireTab(w,signal);const s=await evaluate(w,douyinVisibleState);signal?.throwIfAborted();if(s.blocked&&!(allowService&&s.action?.kind==='network'))throw pause(w,s.message,s.action);return s;}
 async function click(w,point,signal){
   requireTab(w,signal);
   if(!point?.found||!Number.isFinite(point.x)||!Number.isFinite(point.y))throw pause(w,'尚未找到可操作的官方控件，请检查官方窗口后继续。');
@@ -61,11 +62,16 @@ const sameSearch=(s,keyword)=>s.official&&s.searchKeyword===keyword&&[null,'gene
 
 export async function openDouyinSearch(w,keyword,signal,{restart=false,navigate=url=>w.loadURL(url),wait=delay,maxPolls=20}={}){
   requireTab(w,signal);keyword=String(keyword||'').trim();if(!keyword)throw Error('请输入抖音搜索关键词');
-  let s=await state(w,signal);
+  // A newly created CDP tab is about:blank. Its official-page guard correctly
+  // refuses script reads there, so navigate before the first DOM probe.
+  const current=w.webContents.getURL?.()||w.externalTab.url;
+  let navigated=false;
+  if(current==='about:blank'||/^chrome-error:\/\/chromewebdata\//.test(current||'')){await navigate('https://www.douyin.com/');navigated=true;}
+  let s=await state(w,signal,{allowService:restart});
   if(!restart&&sameSearch(s,keyword))return w;
   // The official homepage initializes routing/context before its search UI is
   // usable. Deep links were observed failing on the same authorized browser.
-  if(restart||!s.official||!/^\/(?:jingxuan)?\/?$/.test(s.path))await navigate('https://www.douyin.com/');
+  if(!navigated&&(restart||!s.official||!/^\/(?:jingxuan)?\/?$/.test(s.path)))await navigate('https://www.douyin.com/');
   let previousPath,stable=0,ready=false;
   for(let i=0;i<maxPolls;i++){
     s=await state(w,signal);

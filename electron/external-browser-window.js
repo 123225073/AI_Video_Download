@@ -2,9 +2,12 @@ import {EventEmitter} from 'node:events';
 
 // Adapt only app-owned Chrome tabs to the existing browser workflow boundary.
 // hide() never hides/minimizes the user's browser or any unrelated tab.
-export async function externalBrowserWindow(manager,url,platform,{session}={}){
-  const tab=await manager.open(url,{platform,deferNavigation:true});
-  try{await tab.show();}catch(error){await tab.close().catch(()=>{});throw error;}
+export async function externalBrowserWindow(manager,url,platform,{session,signal}={}){
+  signal?.throwIfAborted();let abort;
+  const opening=Promise.resolve(manager.open(url,{platform,deferNavigation:true})).then(async tab=>{if(signal?.aborted){await tab.close().catch(()=>{});signal.throwIfAborted();}return tab;});
+  const aborted=signal?new Promise((_resolve,reject)=>{abort=()=>reject(signal.reason||Error('CANCELLED'));signal.addEventListener('abort',abort,{once:true});}):null;
+  let tab;try{tab=await (aborted?Promise.race([opening,aborted]):opening);}finally{if(abort)signal.removeEventListener('abort',abort);}
+  try{signal?.throwIfAborted();await tab.show();signal?.throwIfAborted();}catch(error){await tab.close().catch(()=>{});throw error;}
   const window=new EventEmitter(),contents=new EventEmitter(),debuggerApi=new EventEmitter();
   let destroyed=false,attached=false;
   Object.assign(debuggerApi,{isAttached:()=>attached,attach:()=>{attached=true;},detach:()=>{attached=false;},sendCommand:(method,params)=>tab.send(method,params)});

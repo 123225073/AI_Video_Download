@@ -7,6 +7,7 @@ import { Engine } from './engine.js';
 import { Queue } from './queue.js';
 import { AccountManager } from './accounts.js';
 import {ExternalBrowser} from './external-browser.js';
+import {ManagedBrowser} from './managed-browser.js';
 import { WeChat } from './wechat.js';
 import { Creators } from './creators.js';
 import { CreatorBrowser } from './creator-browser.js';
@@ -29,6 +30,7 @@ import { ContentBrowser } from './content-browser.js';
 import { ContentStudio } from './content-studio.js';
 import {VideoWorkflow} from './video-workflow.js';
 import {SourceWindows} from './source-window.js';
+import {storagePaths, prepareDataDirectory} from '../cli/storage-paths.mjs';
 let sourceWindows;
 import { ContentPublisher } from './content-publisher.js';
 import {CommentWorkflow} from './comment-workflow.js';
@@ -38,14 +40,13 @@ let contentSearch,contentStudio,contentPublisher,comments,contacts,voice;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Keep mutable data outside the program directory so future installer updates cannot remove it.
-const localBase = app.isPackaged ? path.resolve(path.dirname(app.getPath('exe')), '..') : path.join(root, '.local');
 const testMode = process.env.FENGSHA_TEST_MODE === '1' && !app.isPackaged;
 const background = process.argv.includes('--agent-background');
 const dataArg = process.argv.indexOf('--agent-data-dir');
 if (testMode) console.error('FENGSHA_BOOT: module');
-if (dataArg >= 0 && process.argv[dataArg + 1]) app.setPath('userData', path.resolve(process.argv[dataArg + 1]));
-else if (testMode && process.env.FENGSHA_TEST_DATA) app.setPath('userData', path.resolve(process.env.FENGSHA_TEST_DATA));
-else app.setPath('userData', path.join(localBase, '用户数据'));
+const storage = storagePaths({packaged:app.isPackaged, executable:app.getPath('exe'), sourceRoot:root, videosDirectory:app.getPath('videos'),
+  dataDirectory:dataArg >= 0 && process.argv[dataArg + 1] ? path.resolve(process.argv[dataArg + 1]) : testMode && process.env.FENGSHA_TEST_DATA ? path.resolve(process.env.FENGSHA_TEST_DATA) : undefined});
+app.setPath('userData', prepareDataDirectory(storage.dataDirectory));
 protocol.registerSchemesAsPrivileged([{ scheme: 'fengsha-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
 let videoWorkflow;
 let win, store, queue, accounts, engine, creators, userSearch, ai, transcriptions, wechatCreators, collectorConnection, environment = [], parseProgress = null, closing = false, quitting = false;
@@ -62,14 +63,20 @@ else {
   await app.whenReady();
   if (testMode) console.error('FENGSHA_BOOT: ready');
   const bin = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(root, 'bin');
-  store = await Store.open(app.getPath('userData'), { savePath: path.join(localBase, '下载视频'), concurrency: 'auto', quality: 'best', retries: 3, archive: 'collection', skipDuplicates: true, autoStart: false });
+  store = await Store.open(app.getPath('userData'), { savePath: storage.downloadDirectory, concurrency: 'auto', quality: 'best', retries: 3, archive: 'collection', skipDuplicates: true, autoStart: false });
   if (testMode) console.error('FENGSHA_BOOT: database');
   const externalBrowsing=!testMode||process.env.FENGSHA_TEST_EXTERNAL_BROWSER==='1';
-  accounts = new AccountManager(store, path.join(app.getPath('userData'), 'accounts'), changed,{externalBrowser:externalBrowsing?new ExternalBrowser():undefined,preferExternalBrowsing:externalBrowsing});
+  const browserMode=store.get('settings','browser')?.mode || (store.list('account').some(a=>a.loginBackend==='external-chrome')?'legacy':'managed');
+  accounts = new AccountManager(store, path.join(app.getPath('userData'), 'accounts'), changed,{externalBrowser:externalBrowsing?new ExternalBrowser({managed:new ManagedBrowser({directory:path.join(app.getPath('userData'),'browser')}),mode:browserMode}):undefined,preferExternalBrowsing:externalBrowsing});
   await accounts.restore();
   handle('external-browser-status',()=>accounts.externalStatus());
+  handle('external-browser-mode',async mode=>{
+    if(agentBusy())throw new Error('请先结束当前任务，再切换浏览器。');
+    const result=await accounts.changeExternalBrowserMode(mode);
+    store.put('settings','browser',{mode});store.flush();changed();return result;
+  });
   handle('external-login',id=>accounts.openExternalLogin(id));
-  handle('complete-account',id=>accounts.complete(id));
+  handle('complete-account',(id,options)=>accounts.complete(id,{automatic:options?.automatic===true}));
   const wechat = new WeChat(accounts, bin); engine = new Engine(bin, accounts, wechat); queue = new Queue(store, engine, changed);
   engine.bilibili = new Bilibili(bilibiliRequest(accounts, () => session.fromPartition('fengsha-creator-guest-B站')));
   engine.douyinBrowser = () => new CreatorBrowser(accounts, engine);
@@ -110,6 +117,7 @@ else {
   handle('content-search',(platform,keyword,options)=>{if(parseProgress||(contentStudio.active||contentStudio.remixController||comments.active||contacts.active))throw new Error('正在识别或二创，请等待完成');return contentSearch.start(platform,keyword,options);});
   handle('content-more',id=>{if(parseProgress||(contentStudio.active||contentStudio.remixController||comments.active||contacts.active))throw new Error('正在识别或二创，请等待完成');return contentSearch.more(id);});
   handle('content-last',()=>contentSearch.view());
+  handle('content-action',(id,command)=>contentSearch.action(id,command));
   handle('content-cancel',async(_id)=>{contentSearch.cancel();comments.cancel();contacts.cancel();voice.cancel();await contentStudio.cancel(_id);});
   handle('content-transcript-resume',id=>contentStudio.resumeTranscript(id));
   videoWorkflow=new VideoWorkflow({store,studio:contentStudio,transcriptions,engine,ai,bin,changed});
@@ -147,7 +155,7 @@ else {
   handle('content-publish-open',(id,platform,accountId,mode)=>contentPublisher.open(id,platform,accountId,mode));
   handle('content-publish-fill',()=>contentPublisher.fill());
   handle('content-publish-submit',()=>contentPublisher.submit());
-  if(!testMode) await collectorConnection.recover().catch(e=>collectorConnection.update('error',e.message));
+  if(!testMode) void collectorConnection.recover().catch(e=>collectorConnection.update('error',e.message));
   protocol.handle('fengsha-media', createMediaProtocolHandler({ store, contentStudio, fetchFile: (url, options) => net.fetch(url, options) }));
   handle('snapshot', snapshot);
   handle('creator-refresh', id => { searchNotBusy(); return creators.refresh(id); });

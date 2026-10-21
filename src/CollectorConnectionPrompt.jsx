@@ -58,20 +58,20 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
   }
   return <div className="collector-prompt-backdrop">
     <section ref={dialog} className="collector-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={keepFocus}>
-      <h2 id={titleId}>需要在微信视频号窗口完成连接</h2>
+      <h2 id={titleId}>正在自动连接微信视频号</h2>
       <p>{connection.label || '原任务正在等待微信视频号连接。'}</p>
       {hasDeadline && <p>{remaining > 0 ? `剩余等待 ${remaining} 秒；完成以下操作后会自动继续。` : '等待已超时，正在等待后台返回原因；已有结果保留。'}</p>}
       <ol>
-        <li>点击“打开微信视频号”尝试唤起微信；未自动进入时，在电脑微信左侧选择“视频号”。微信未登录时，完成官方登录。</li>
+        <li>软件已尝试打开微信视频号；未出现时再点击下方“打开微信视频号”。微信未登录时，完成官方登录。</li>
         <li>保持微信的官方视频号窗口打开，不要关闭窗口；仅打开浏览器分享页不能完成连接。</li>
         <li>在倒计时结束前，用视频号窗口菜单选择“刷新”；没有刷新选项或刷新无效时，关闭视频号页面后重新进入（不用退出微信）。仅切换正在播放的视频不能建立连接。</li>
-        <li>完成后点击“已操作，继续检测”。连接就绪后原任务自动继续，不会重新启动识别或作品读取。</li>
+        <li>软件会持续自动检测，连接就绪后原任务自动继续，无需点击确认。</li>
       </ol>
       <p role="status" aria-live="polite">{message || error || '等待期间已有结果保留；无需关闭代理软件或反复登录。'}</p>
       {collectedUnavailable && <p>{collectedUnavailable}</p>}
       <div className="collector-prompt-actions">
         <button className="button primary" disabled={!!acting || detecting || stopping} onClick={()=>performAction('open',openPage)}><ExternalLink size={16}/>打开微信视频号</button>
-        <button className="button" disabled={!!acting || detecting || stopping} onClick={detect}>{detecting && <LoaderCircle className="spin" size={16}/>}{detecting ? '正在检测…' : '已操作，继续检测'}</button>
+        <button className="button" disabled={!!acting || detecting || stopping} onClick={detect}>{detecting && <LoaderCircle className="spin" size={16}/>}{detecting ? '正在检测…' : '立即检测'}</button>
         {onUseCollected && <button className="button primary" disabled={!!acting || detecting || stopping} onClick={()=>performAction('use',onUseCollected)}>{acting==='use'?'正在使用已有内容…':collectedLabel||'直接使用已采集内容'}</button>}
         <button className="button" disabled={!!acting || detecting || stopping} onClick={()=>performAction('stop',onStop)}><Square size={16}/>{stopping||acting==='stop' ? '正在停止…' : '停止并保留已有结果'}</button>
       </div>

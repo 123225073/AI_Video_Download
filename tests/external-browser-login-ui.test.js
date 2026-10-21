@@ -22,6 +22,10 @@ test('账号页 Chrome 默认登录：状态真实、同会话采集、保留内
           if(window.holdStatus)await new Promise(resolve=>window.releaseStatus=resolve);
           if(window.statusError)throw Error(window.statusError);return window.browserStatus;
         }
+        if(method==='externalBrowserMode'){
+          window.browserStatus={available:false,canStart:true,canSwitch:true,mode:args[0],message:'专用浏览器已准备'};
+          setAccounts(old=>old.map(a=>({...a,browserMode:args[0],status:'需要重新登录',lastSync:null})));return window.browserStatus;
+        }
         if(method==='openExternalLogin'||method==='login'){
           if(window.openError)throw Error(window.openError);
           setAccounts(old=>old.map(a=>a.id===args[0]?{...a,status:'登录中',loginBackend:method==='openExternalLogin'?'external-chrome':'embedded'}:a));
@@ -30,7 +34,8 @@ test('账号页 Chrome 默认登录：状态真实、同会话采集、保留内
         if(method==='completeAccount'){
           if(window.holdComplete)await new Promise(resolve=>window.releaseComplete=resolve);
           const value=window.completeResult;
-          if(value.saved)setAccounts(old=>old.map(a=>a.id===args[0]?{...a,status:value.verified?'网页登录已确认':'会话待验证',lastSync:Date.now()}:a));
+          if(args[1]?.automatic&&!value.verified)return {saved:false,verified:false};
+          if(value.saved)setAccounts(old=>old.map(a=>a.id===args[0]?{...a,status:value.verified?'网页登录已确认':'会话待验证',lastSync:value.verified?Date.now():a.lastSync}:a));
           return value;
         }
         if(method==='addAccount'){
@@ -56,8 +61,26 @@ test('账号页 Chrome 默认登录：状态真实、同会话采集、保留内
   });
   await t.test('默认网页登录明确走外置 Chrome，完成未验证时不声称登录成功',async()=>{
     await mount();await button('Chrome 官方登录').click();await button('完成登录并检测').waitFor();assert.deepEqual(await actions(),[{method:'openExternalLogin',args:['account-1']}]);
-    await button('完成登录并检测').click();await button('Chrome 重新登录').waitFor();assert.deepEqual((await actions()).map(a=>a.method),['openExternalLogin','completeAccount']);
+    await button('完成登录并检测').click();await button('完成登录并检测').waitFor();assert.deepEqual((await actions()).map(a=>a.method),['openExternalLogin','completeAccount']);
     assert.match((await page.evaluate(()=>window.notices)).at(-1),/尚待确认/);assert.doesNotMatch((await page.evaluate(()=>window.notices)).join(' '),/登录成功/);
+  });
+  await t.test('返回软件自动检测，成功后停止；重复焦点不重复保存，未验证不退出等待',async()=>{
+    await mount();await button('Chrome 官方登录').click();await button('完成登录并检测').waitFor();
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));await page.waitForFunction(()=>window.calls.filter(c=>c.method==='completeAccount').length===1);await button('完成登录并检测').waitFor();
+    assert.deepEqual((await actions()).at(-1).args,['account-1',{automatic:true}]);
+    await page.evaluate(()=>{window.holdComplete=true;window.completeResult={saved:true,verified:true,message:'已自动确认官方登录'};window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('focus'));});
+    await button('正在检测登录…').waitFor();assert.equal((await actions()).filter(a=>a.method==='completeAccount').length,2);
+    await page.evaluate(()=>window.releaseComplete());await button('Chrome 重新登录').waitFor();await page.evaluate(()=>window.dispatchEvent(new Event('focus')));assert.equal((await actions()).filter(a=>a.method==='completeAccount').length,2);
+    assert.equal((await page.evaluate(()=>window.notices)).at(-1),'已自动确认官方登录');
+    await mount();await page.evaluate(()=>window.dispatchEvent(new Event('focus')));assert.deepEqual(await actions(),[],'unmounted login does not keep an automatic checker');
+  });
+  await t.test('旧浏览器切换专用模式仅一次操作，保留首次登录说明并清除旧等待状态',async()=>{
+    await mount();await button('Chrome 官方登录').click();await button('完成登录并检测').waitFor();
+    await page.evaluate(()=>window.browserStatus={available:false,mode:'legacy',canSwitch:true,message:'旧浏览器会话'});await button('检查 Chrome 接入').click();await button('使用专用浏览器（推荐）').waitFor();
+    assert.match(await page.getByRole('region',{name:'网页登录浏览器设置'}).innerText(),/仅首次需要登录/);
+    await button('使用专用浏览器（推荐）').click();await button('官方网页登录').waitFor();await page.getByText('使用时自动启动',{exact:true}).waitFor();
+    assert.equal((await actions()).filter(x=>x.method==='externalBrowserMode').length,1);assert.equal(await page.getByRole('dialog').count(),0);await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    assert.equal((await actions()).filter(x=>x.method==='completeAccount').length,0,'switching mode clears the old automatic login watcher');
   });
   await t.test('检测失败原因可见，检测中阻止重复请求，确认结果以后台为准',async()=>{
     await mount({account:{status:'登录中',loginBackend:'external-chrome'}});await page.evaluate(()=>window.completeResult={saved:false,verified:false,message:'请先在官方页面完成登录，当前仍是访客'});

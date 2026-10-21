@@ -43,9 +43,28 @@ export function upstreamProxy(before, guardedProxy = false) {
   if (guardedProxy) throw new Error('系统代理守卫正在接管网络，但未能确认专用分流配置；原网络保持不变。请检查代理软件的本机控制接口和规则模式，或使用已配置的手动连接。');
   if (before.AutoConfigURL?.value) throw new Error('当前使用自动代理脚本，不能安全自动切换；请在视频号连接的高级选项中使用手动连接');
   if (!Number(before.ProxyEnable?.value)) return '';
-  const address = String(before.ProxyServer?.value || '');
-  if (!/^[\w.-]+:\d{1,5}$/.test(address) || address === '127.0.0.1:2023') throw new Error('当前代理配置不能安全自动切换；请使用手动连接，原代理保持不变');
-  return `http://${address}`;
+  const address = String(before.ProxyServer?.value || '').trim();
+  const invalid=()=>new Error('当前代理地址或端口无效，不能安全自动切换；原代理保持不变');
+  const endpoint=value=>{
+    const match=/^(\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9.-]+):(\d{1,5})$/.exec(value);
+    if(!match||Number(match[2])<1||Number(match[2])>65535)throw invalid();
+    let url;try{url=new URL(`http://${value}`);}catch{throw invalid();}
+    if(Number(match[2])===2023&&['127.0.0.1','localhost','[::1]','[::ffff:7f00:1]'].includes(url.hostname))throw invalid();
+    return `http://${url.hostname}:${Number(match[2])}`;
+  };
+  if(!address.includes('='))return endpoint(address);
+  // The collector has one upstream for all proxied traffic. Only collapse an
+  // equivalent HTTP/HTTPS pair; choosing just HTTPS from a mixed configuration
+  // would silently change how other applications' HTTP traffic is routed.
+  const unsupported=()=>new Error('当前分协议代理的 HTTP/HTTPS 配置不同或不完整，不能安全自动连接；原网络保持不变，可使用已配置的手动连接');
+  const proxies=new Map();
+  for(const entry of address.split(';').map(value=>value.trim()).filter(Boolean)){
+    const match=/^(http|https)\s*=\s*(.+)$/i.exec(entry);
+    if(!match||proxies.has(match[1].toLowerCase()))throw unsupported();
+    proxies.set(match[1].toLowerCase(),endpoint(match[2].trim()));
+  }
+  if(proxies.size!==2||proxies.get('http')!==proxies.get('https'))throw unsupported();
+  return proxies.get('https');
 }
 export class CollectorConnection {
   constructor(store, bin, directory, changed, options = {}) {
@@ -155,13 +174,29 @@ export class CollectorConnection {
     for(let i=0;i<40;i++){if(fs.existsSync(file+'.guard-ready'))return;if(failed || (child.exitCode!==null && child.exitCode!==0))break;await delay(250);}
     throw new Error('网络恢复守护未能启动，本次不切换系统代理');
   }
-  async recover() {
-    for(const name of fs.readdirSync(this.directory).filter(n=>/^lease-[\w-]+\.json$/.test(n))) {
-      const file=path.join(this.directory,name); let saved;try{saved=JSON.parse(fs.readFileSync(file,'utf8'));}catch{saved=await this.system('state-status',file);}
-      if(saved.phase!=='restored') { await this.system('restore',file); this.update('idle','已恢复上次中断的网络设置'); }
-    }
+  recover() {
+    if(this.recovering)return this.recovering;
+    // Install the shared barrier before emitting state or starting I/O. The
+    // application can show its window immediately without racing a new lease.
+    this.recovering=Promise.resolve().then(async()=>{
+      for(const name of fs.readdirSync(this.directory).filter(n=>/^lease-[\w-]+\.json$/.test(n))) {
+        const file=path.join(this.directory,name); let saved;try{saved=JSON.parse(fs.readFileSync(file,'utf8'));}catch{saved=await this.system('state-status',file);}
+        if(saved.phase!=='restored')await this.system('restore',file);
+      }
+      this.update('idle','原网络设置已恢复');
+    }).catch(error=>{
+      this.update('error',`上次网络恢复尚未完成：${error.message}`);throw error;
+    }).finally(()=>{this.recovering=null;});
+    this.update('recovering','正在恢复上次中断的网络设置，本地资料可正常查看');
+    return this.recovering;
   }
-  prepare() {if(this.state.phase==='error')return Promise.reject(new Error('上次网络恢复尚未完成，请先点击恢复原网络'));if(!this.preparing)this.preparing=this.prepareComponent().finally(()=>this.preparing=null);return this.preparing;}
+  async prepare() {
+    if(this.recovering)await this.recovering;
+    if(this.closed)throw new Error('应用正在退出');
+    if(this.state.phase==='error')throw new Error('上次网络恢复尚未完成，请先点击恢复原网络');
+    if(!this.preparing)this.preparing=this.prepareComponent().finally(()=>this.preparing=null);
+    return this.preparing;
+  }
   async prepareComponent() {
     this.update('preparing','正在准备内置视频号组件');
     // v260907 contentScript is read locally and inlined into the HTML. An
@@ -313,6 +348,9 @@ export class CollectorConnection {
     required=requiredCapabilities(required);
     if(this.closed) throw new Error('应用正在退出');
     if(signal?.aborted)throw new Error('CANCELLED');
+    if(this.recovering)await abortable(this.recovering,signal);
+    if(this.closed||signal?.aborted)throw new Error('CANCELLED');
+    if(this.state.phase==='error')throw new Error('上次网络恢复尚未完成，请先在视频号连接中恢复原网络');
     if(!this.config().automatic) return operation();
     if(!this.config().enabled) throw new Error('请先在视频号连接中启用作者作品读取');
     if(this.ending) await this.ending;
@@ -349,5 +387,10 @@ export class CollectorConnection {
     finally {this.started=null;this.startedRequired=null;this.controller=null;if(this.state.phase!=='error'){this.leaseFile=null;this.leaseMode=null;}}
   }
   async restore() { if(this.members.size) throw new Error('请先停止作品读取和视频号下载，再恢复网络');await this.recover();if(this.leaseFile)await this.stopProxy();this.leaseFile=null;this.leaseMode=null;this.update('idle','原网络设置已恢复');return this.status(); }
-  async close(){this.closed=true;this.controller?.abort();await this.ending;await this.finish();this.worker?.kill();}
+  async close(){
+    this.closed=true;this.controller?.abort();
+    await this.recovering;await this.ending;
+    if(this.state.phase==='error'&&!this.leaseFile)throw new Error(this.state.label);
+    await this.finish();this.worker?.kill();
+  }
 }

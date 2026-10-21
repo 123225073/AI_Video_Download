@@ -70,6 +70,43 @@ test('Chrome打开失败不修改旧账号标记、验证时间和内部备份',
   await assert.rejects(f.manager.openExternalLogin('old'),/未授权/);assert.deepEqual(f.account('old'),before);assert.deepEqual(f.files.get(file),bytes);assert.deepEqual(credentials(f.calls),[]);
 });
 
+test('切换专用浏览器不把旧浏览器身份当成已登录，切回保留原元数据且不拷贝凭据',async()=>{
+  const old={...oldAccount('YouTube','saved'),loginBackend:'external-chrome',lastSync:401,lastVerified:402};
+  const f=fixture([old,oldAccount('B站','embedded')]);f.browser.mode='legacy';f.browser.setMode=async mode=>{f.browser.mode=mode;for(const tab of f.tabs)await tab.close();return {mode,canSwitch:true,canStart:true};};
+  await f.manager.openExternalLogin('saved');await f.manager.changeExternalBrowserMode('managed');
+  assert.equal(f.account('saved').externalBrowserMode,'managed');assert.equal(f.account('saved').lastSync,null);assert.equal(f.account('saved').lastVerified,null);assert.equal(f.account('saved').status,'需要重新登录');assert.equal(f.manager.externalTabs.size,0);
+  assert.equal(f.account('embedded').lastSync,100);assert.equal(f.account('saved').externalBrowserSessions.legacy.lastSync,401);
+  await f.manager.changeExternalBrowserMode('legacy');assert.equal(f.account('saved').lastSync,401);assert.equal(f.account('saved').lastVerified,402);assert.deepEqual(credentials(f.calls),[]);
+});
+
+test('切换浏览器失败保留原账号状态和窗口归属',async()=>{
+  const f=fixture([{...oldAccount(),loginBackend:'external-chrome'}]);f.browser.mode='legacy';f.browser.setMode=async()=>{throw Error('专用浏览器不可用');};
+  await f.manager.openExternalLogin('old');const before=f.account('old');await assert.rejects(f.manager.changeExternalBrowserMode('managed'),/不可用/);assert.deepEqual(f.account('old'),before);assert.equal(f.manager.externalTabs.size,1);
+});
+
+test('返回软件自动检测不新开关闭的登录页，未确认时不修改账号，成功时保存真实验证',async()=>{
+  const f=fixture([{id:'new',name:'专用账号',platform:'YouTube',lastSync:null,status:'未登录'}]);f.browser.mode='managed';
+  assert.deepEqual(plain(await f.manager.complete('new',{automatic:true})),{saved:false,verified:false});assert.equal(f.tabs.length,0);
+  await f.manager.openExternalLogin('new');const before=f.account('new');f.browser.loginState={authenticated:false};
+  assert.deepEqual(plain(await f.manager.complete('new',{automatic:true})),{saved:false,verified:false});assert.deepEqual(f.account('new'),before);
+  f.browser.loginState={authenticated:true};assert.equal((await f.manager.complete('new',{automatic:true})).verified,true);assert.equal(f.account('new').externalBrowserMode,'managed');assert.ok(f.account('new').lastSync);assert.equal(f.account('new').status,'网页登录已确认');
+  await f.tabs[0].close();const after=f.account('new');assert.equal((await f.manager.complete('new',{automatic:true})).saved,false);assert.deepEqual(f.account('new'),after);assert.equal(f.tabs.length,1);assert.deepEqual(credentials(f.calls),[]);
+});
+
+test('并发打开同一账号仅创建一个登录页，后续打开复用该页',async()=>{
+  const f=fixture([oldAccount()]);await Promise.all([f.manager.openExternalLogin('old'),f.manager.openExternalLogin('old')]);assert.equal(f.tabs.length,1);
+  await f.manager.openExternalLogin('old');assert.equal(f.tabs.length,1);assert.equal(f.manager.externalOpening.size,0);
+});
+
+test('模式切换前发出的登录检测结果不能把新浏览器误标为已登录',async()=>{
+  const f=fixture([{...oldAccount('B站','bili'),loginBackend:'external-chrome'}]);f.browser.mode='legacy';
+  f.browser.setMode=async mode=>{f.browser.mode=mode;for(const tab of f.tabs)await tab.close();return {mode,canStart:true};};
+  await f.manager.openExternalLogin('bili');f.browser.holdApi=true;
+  const pending=f.manager.complete('bili',{automatic:true});while(!f.browser.releaseApi)await new Promise(resolve=>setImmediate(resolve));
+  await f.manager.changeExternalBrowserMode('managed');f.browser.releaseApi();await assert.rejects(pending,/会话已变化/);
+  assert.equal(f.account('bili').lastSync,null);assert.equal(f.account('bili').externalBrowserMode,'managed');assert.equal(f.account('bili').status,'需要重新登录');
+});
+
 test('新Chrome账号未确认时不生成登录时间，不读取导出Cookie或内部备份',async()=>{
   const f=fixture([{id:'new',platform:'YouTube',name:'Chrome备注',status:'未登录',lastSync:null}]);
   await f.manager.openExternalLogin('new');const result=await f.manager.complete('new');

@@ -1,3 +1,5 @@
+import {contentLoadCode} from './content-network.js';
+
 // An error document also emits dom-ready. Only a committed official HTTPS
 // document can release early navigation; load failures must still reject.
 export async function navigateOfficialPage(window,url,{userAgent,early=false,signal,allowed,timeoutMs=30000}={}){
@@ -26,4 +28,7 @@ export async function navigateOfficialPage(window,url,{userAgent,early=false,sig
     if(!window.isDestroyed())window.webContents.removeListener('dom-ready',ready);
   }
 }
-export const transientNavigationError=error=>/ERR_(?:FAILED|CONNECTION_(?:CLOSED|RESET|ABORTED|TIMED_OUT)|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED)/.test(String(error?.message||''));
+export const transientNavigationError=error=>{
+  if(error?.action&&['login','verification'].includes(error.action.kind))return false;
+  return /^(?:ERR_(?:FAILED|CONNECTION_(?:CLOSED|RESET|ABORTED|TIMED_OUT)|TIMED_OUT|NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED)|BROWSER_(?:CONNECTION_CLOSED|CONTEXT_CHANGED)|OFFICIAL_SERVICE_UNAVAILABLE)$/.test(contentLoadCode(error));
+};

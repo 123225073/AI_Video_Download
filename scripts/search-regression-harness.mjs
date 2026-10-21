@@ -6,10 +6,10 @@ import {EventEmitter} from 'node:events';
 import {ContentSearch} from '../electron/content-search.js';
 import {contentItem,xhsContent,douyinContent,mergeContent} from '../electron/content-data.js';
 import {contentNavigation} from '../electron/content-navigation.js';
-import {contentLoadMessage} from '../electron/content-network.js';
+import {contentLoadMessage,contentLoadError,contentAction} from '../electron/content-network.js';
 import {navigateOfficialPage,transientNavigationError} from '../electron/browser-navigation.js';
 import {douyinPageState} from '../electron/douyin-page.js';
-import {openDouyinSearch,selectDouyinWork as selectVisibleDouyinWork} from '../electron/douyin-navigation.js';
+import {openDouyinSearch,douyinVisibleState,selectDouyinWork as selectVisibleDouyinWork} from '../electron/douyin-navigation.js';
 
 const source=fs.readFileSync(new URL('../electron/content-browser.js',import.meta.url),'utf8');
 const renderSource=source.slice(source.indexOf('export function renderedContent'),source.indexOf('export class ContentBrowser')).replace('export function','function');
@@ -54,7 +54,7 @@ export function harness(snapshotFn,onDelay=()=>{},pageOptions={}){
       this.url=url;this.webContents.emit('dom-ready');this.webContents.emit('did-finish-load');
     }
   }
-  const context={BrowserWindow:FakeWindow,URL,Date,Map,Set,Buffer,contentItem,xhsContent,douyinContent,mergeContent,contentNavigation,contentLoadMessage,navigateOfficialPage,transientNavigationError,douyinPageState,openDouyinSearch,selectVisibleDouyinWork,officialUserAgent:'NO-NETWORK',setTimeout,clearTimeout,delay:async(_ms,_value,{signal}={})=>{waits++;onDelay(waits);signal?.throwIfAborted();}};
+  const context={BrowserWindow:FakeWindow,URL,Date,Map,Set,Buffer,AbortController,contentItem,xhsContent,douyinContent,mergeContent,contentNavigation,contentLoadMessage,contentLoadError,contentAction,navigateOfficialPage,transientNavigationError,douyinPageState,openDouyinSearch,douyinVisibleState,selectVisibleDouyinWork,officialUserAgent:'NO-NETWORK',setTimeout,clearTimeout,delay:async(_ms,_value,{signal}={})=>{waits++;onDelay(waits);signal?.throwIfAborted();}};
   vm.runInNewContext(source.replace(/^import .*;\r?\n/gm,'').replace(/export /g,'')+'\nglobalThis.Adapter=ContentBrowser;globalThis.searchURL=contentSearchURL;',context);
   const browser=new context.Adapter({});browser.hidden=true;
   return {browser,searchURL:r=>context.searchURL(r.platform,r.keyword,r.options),stats:()=>({scrolls,loads,shown,waits,hidden}),async response(r,payload,failed=false){const w=browser.window;w.body=payload;const request=r.platform==='小红书'?{url:'https://edith.xiaohongshu.com/api/sns/web/v1/search/notes',postData:JSON.stringify({keyword:r.keyword})}:{url:'https://www.douyin.com/aweme/v1/web/search/item/?keyword='+encodeURIComponent(r.keyword)};const listener=w.webContents.debugger.listeners('message')[0];await listener({},'Network.requestWillBeSent',{requestId:'fixture',request});await listener({},failed?'Network.loadingFailed':'Network.loadingFinished',{requestId:'fixture',encodedDataLength:100,errorText:'net::ERR_CONNECTION_RESET'});}};

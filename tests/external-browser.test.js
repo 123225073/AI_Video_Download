@@ -118,3 +118,20 @@ test('closing an owned tab releases a pending navigation immediately instead of 
  const loading=tab.navigate('https://www.youtube.com/',{timeoutMs:10000});const rejected=assert.rejects(loading,/网页已关闭/);
  await tab.close();await rejected;await browser.close();
 });
+
+test('an old delayed socket close never detaches pages created after reconnecting',async()=>{
+ class DelayedCloseSocket extends Socket{close(){this.readyState=3;}finishClose(){this.dispatchEvent(new Event('close'));}}
+ const browser=new ExternalBrowser({read,discover:false,WebSocketImpl:DelayedCloseSocket,timeoutMs:100,connectTimeoutMs:100});
+ await browser.open('https://www.youtube.com/',{platform:'YouTube'});const oldSocket=Socket.instances.at(-1);await browser.close();
+ const current=await browser.open('https://www.youtube.com/',{platform:'YouTube'});oldSocket.finishClose();
+ assert.equal(current.closed,false);assert.equal(browser.tabs.get(current.targetId),current);assert.equal((await browser.status()).available,true);
+ await current.evaluate('document.title');await browser.close();
+});
+
+test('failed owned-tab close releases only its local binding before reconnecting',async()=>{
+ class FailedCloseSocket extends Socket{send(raw){const m=JSON.parse(raw);if(m.method==='Target.closeTarget'){queueMicrotask(()=>this.message({id:m.id,result:{success:false}}));return;}return super.send(raw);}}
+ const browser=new ExternalBrowser({read,discover:false,WebSocketImpl:FailedCloseSocket,timeoutMs:100,connectTimeoutMs:100});
+ const tab=await browser.open('https://www.youtube.com/',{platform:'YouTube'});const results=await browser.close();
+ assert.equal(results[0].status,'rejected');assert.equal(tab.closed,true);assert.equal(browser.tabs.size,0);
+ await browser.open('https://www.youtube.com/',{platform:'YouTube'});assert.equal(browser.tabs.size,1);await browser.close();
+});

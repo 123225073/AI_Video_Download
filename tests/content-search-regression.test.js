@@ -47,7 +47,7 @@ for(const platform of ['抖音','小红书']){
   for(const failed of [false,true])test(`${platform}: 已有卡片仍呈现${failed?'网络':'接口'}错误并保留继续`,async()=>{
     const r=record(platform),h=harness(()=>({items:[card(platform)]})),signal=new AbortController().signal;
     await h.browser.open(h.searchURL(r),r,signal);await h.response(r,platform==='小红书'?{success:false,code:300012,msg:'登录已失效'}:{status_code:8,status_msg:'访问受限'},failed);
-    const result=await h.browser.read(r,signal);assert.equal(result.items.length,1);assert.equal(result.complete,false);assert.equal(result.needsAction,true);assert.match(result.message,/失效|受限|失败|错误/);
+    const result=await h.browser.read(r,signal);assert.equal(result.items.length,1);assert.equal(result.complete,false);assert.equal(result.needsAction,true);assert.match(result.message,/失效|受限|失败|错误|断开/);
   });
   test(`${platform}: 停止保留滚动位置，首次继续即可取得新作品`,async()=>{
     const controller=new AbortController(),r=record(platform),h=harness(({scrolls})=>({items:[card(platform,scrolls+1)]}),n=>{if(n===12)controller.abort();});let first=[];
