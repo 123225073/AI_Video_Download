@@ -6,6 +6,7 @@ import './workflow.css';
 import './creator-workflow.css';
 import CreatorPage from './CreatorPage.jsx';
 import ContentPage from './ContentPage.jsx';
+import ArticlePage from './ArticlePage.jsx';
 import { enqueueInChunks, concurrencyLabel } from './batch.js';
 import SettingsPage from './SettingsPage.jsx';
 import TranscriptionPage from './TranscriptionPage.jsx';
@@ -56,13 +57,14 @@ function App() {
   }
   async function identifyCreator(source = text) { const input = typeof source === 'string' ? source : text; setPage('creator'); if (bilibiliCreatorSource(input) && !ensureCreatorLogin('B站')) return; setIdentifying(true); setCreatorError(null); try { setCreatorRecord(await perform('creatorIdentify', input)); } catch (e) { if (e.code === CREATOR_LOGIN_REQUIRED) ensureCreatorLogin('B站', e.message); else { setCreatorRecord(null); setCreatorError(e.message); } } finally { setIdentifying(false); } }
   if (!state) return <div className="boot"><Wind size={48}/><h2>风沙全平台视频下载器</h2><p>正在读取本地资料库…</p></div>;
-  const menus = [['new', Plus, '链接下载'], ['creator', Users, '博主批量下载'], ['search', Search, '作品搜索与二创'], ['tasks', ListTodo, '任务中心'], ['library', Library, '媒体库'], ['transcription', FileText, '转录与翻译'], ['accounts', Users, '账号管理']];
+  const menus = [['new', Plus, '链接下载'], ['creator', Users, '博主批量下载'], ['search', Search, '作品搜索与二创'], ['tasks', ListTodo, '任务中心'], ['library', Library, '媒体库'], ['articles', FileText, '文章中心'], ['transcription', FileText, '转录与翻译'], ['accounts', Users, '账号管理']];
   const running = state.tasks.filter(t => ['downloading', 'processing'].includes(t.status));
   const speed = running.reduce((a, t) => a + (t.progress.speed || 0), 0);
   return <div className={`application ${['transcription', 'archive'].includes(page) ? 'manuscript-mode' : page === 'settings' ? 'settings-mode' : ''}`}>
     <div className="titlebar"><div><Wind size={18}/><span>风沙全平台视频下载器</span></div><div className="window-controls"><button aria-label="最小化" onClick={() => safe('windowAction', 'minimize')}><Minus size={16}/></button><button aria-label="最大化" onClick={() => safe('windowAction', 'maximize')}><Square size={13}/></button><button className="window-close" aria-label="关闭应用" onClick={() => safe('windowAction', 'close')}><X size={18}/></button></div></div>
     <div className="body"><aside className="sidebar"><div className="brand"><Wind size={46}/><div><strong>风沙</strong><span>全平台视频下载器</span></div></div><nav>{menus.map(([id, Icon, label]) => <button key={id} aria-label={label} className={page === id || (id === 'new' && page === 'selection') ? 'active' : ''} onClick={() => setPage(id)}><Icon size={21}/><span>{label}</span>{id === 'tasks' && running.length > 0 ? <b>{running.length}</b> : null}</button>)}</nav><div className="sidebar-bottom"><div className="local-note"><HardDrive size={16}/><span>视频与资料保存在本机</span></div><button aria-label="设置" className={page === 'settings' ? 'active' : ''} onClick={() => goSettings(settingsSection)}><Settings size={20}/><span>设置</span></button><button onClick={() => safe('openHelp')}><CircleHelp size={20}/>帮助与使用说明</button></div></aside>
     <main className="main">
+      <div hidden={page !== 'articles'}><ArticlePage {...{state,perform,safe}}/></div>
       <div hidden={page !== 'search'}><ContentPage {...{state,perform,safe,notify,externalVideoSeed}} accounts={goAccounts} settings={section => goSettings(section || 'collector')}/></div>
       {page === 'new' && <NewDownload {...{ state, text, setText, results, parsing, parse, safe, perform, notify, identifyCreator, identifying }} resumeCreator={creatorRecord ? () => setPage('creator') : null} open={g => { setGroup(g); setPage('selection'); }} settings={() => goSettings('download')} accounts={goAccounts}/>}
       {page === 'creator' && <CreatorPage onVideo={goVideo} onTranscribe={transcribeSource} {...{ state, identifying, perform, safe, notify, ensureCreatorLogin }} onHistoryCleared={() => setCreatorError(null)} error={creatorError} record={creatorRecord} setRecord={setCreatorRecord} back={() => setPage('new')} accounts={goAccounts} settings={() => goSettings('collector')} source={text} setSource={setText} identify={identifyCreator} reidentify={() => identifyCreator(creatorRecord?.source || text)} done={() => setPage('tasks')}/>}

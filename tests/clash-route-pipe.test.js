@@ -34,6 +34,22 @@ test('pipe identity fallback never extracts an embedded production suffix from a
  assert.equal(currentVergePipe(configured,[production]),configured);
 });
 
+test('Windows: legacy fixed Verge pipe is accepted without widening the local pipe allowlist',{skip:!windows},async t=>{
+ const socketPath=String.raw`\\.\pipe\verge-mihomo`;
+ const route=fixture(t,{'external-controller':'','external-controller-pipe':socketPath});
+ const calls=[];
+ route.fetch=async(url,options)=>{calls.push({url,options});return new Response('{"version":"legacy-verge"}');};
+ const context=route.load();
+ assert.equal(context.socketPath,socketPath);
+ assert.equal(currentVergePipe(socketPath,['verge-mihomo-production-'+'a'.repeat(64)]),socketPath);
+ assert.deepEqual(await route.api(context,'/version'),{version:'legacy-verge'});
+ assert.equal(calls[0].options.socketPath,socketPath);
+ assert.equal(calls[0].options.headers.Authorization,'Bearer fixture-private-token');
+ for(const invalid of [String.raw`\\remote-host\pipe\verge-mihomo`,socketPath+'-other',socketPath+'\\other',socketPath+'\n']){
+  assert.throws(()=>fixture(t,{'external-controller':'','external-controller-pipe':invalid}).load(),noPrivateDetails);
+ }
+});
+
 test('Windows service mode: stale sidecar configuration resolves only its matching live production pipe',{skip:!windows},async t=>{
  const identity=randomBytes(32).toString('hex'),production=String.raw`\\.\pipe\verge-mihomo-production-${identity}`,stale=String.raw`\\.\pipe\verge-mihomo-sidecar-release-${identity}`;
  await pipeServer(t,(req,res)=>{assert.equal(req.headers.authorization,'Bearer fixture-private-token');res.setHeader('Content-Type','application/json');res.end('{"version":"production-fixture"}');},production);

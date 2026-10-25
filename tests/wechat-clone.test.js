@@ -43,3 +43,20 @@ test('采集作品地址缺少 oid 时应明确拒绝，不伪装成登录问题
   const engine=new Engine('',{active:()=>({lastSync:1})},{resolve:async()=>{throw Error('WECHAT_INVALID_LINK');},collector:{config:()=>({enabled:true})}});
   await assert.rejects(engine.parse('https://channels.weixin.qq.com/web/pages/feed?oid='),/作品标识/);
 });
+
+test('已缓存媒体被上游拒绝后仅刷新一次，同步校验身份，不在重试时复用失效地址',async()=>{
+ const f=cachedFixture(),item={sourceId:rawVideo().id,acquisition:'wechat-collector',platform:'视频号'};f.collector.remember(rawVideo());
+ let reads=0,connections=0,transfers=0;const fresh=rawVideo();fresh.objectDesc.media[0].urlToken='?token=fresh';
+ f.collector.fetch=async()=>{reads++;return new Response(JSON.stringify({data:{object:fresh}}));};
+ const wechat={collector:f.collector,connection:{withConnection:async(s,run)=>{connections++;return run();}},download:async()=>{transfers++;const media=await f.collector.resolve(item);if(media.url.endsWith('fixture'))throw Error('WECHAT_MEDIA_UNAVAILABLE');return {filePath:'downloaded'};}};
+ const engine=new Engine('',null,wechat),signal=new AbortController().signal;assert.equal((await engine.download({item,options:{}},'.',signal,()=>{})).filePath,'downloaded');assert.equal(reads,1);assert.equal(connections,1);assert.equal(transfers,2);assert.ok(f.collector.cached(item).url.endsWith('fresh'));
+ wechat.download=async()=>{await f.collector.resolve(item);throw Error('WECHAT_MEDIA_UNAVAILABLE');};await assert.rejects(engine.download({item,options:{}},'.',signal,()=>{}),/WECHAT_MEDIA_UNAVAILABLE/);assert.equal(connections,2);
+ const before=connections;await assert.rejects(engine.download({item,options:{allowCollector:false}},'.',signal,()=>{}),/WECHAT_MEDIA_UNAVAILABLE/);assert.equal(connections,before);
+});
+
+test('缓存下载的非地址错误和取消不会触发微信重连',async()=>{
+ const f=cachedFixture(),item={sourceId:rawVideo().id,acquisition:'wechat-collector',platform:'视频号'};f.collector.remember(rawVideo());let connections=0;
+ const controller=new AbortController(),wechat={collector:f.collector,connection:{withConnection:()=>{connections++;}},download:async()=>{throw Error('WECHAT_FILE_WRITE_FAILED');}},engine=new Engine('',null,wechat);
+ await assert.rejects(engine.download({item,options:{}},'.',controller.signal,()=>{}),/WECHAT_FILE_WRITE_FAILED/);
+ wechat.download=async()=>{controller.abort();throw Error('WECHAT_MEDIA_UNAVAILABLE');};await assert.rejects(engine.download({item,options:{}},'.',controller.signal,()=>{}),{name:'AbortError'});assert.equal(connections,0);assert.ok(f.collector.cached(item));
+});

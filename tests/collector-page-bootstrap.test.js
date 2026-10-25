@@ -66,3 +66,24 @@ test('打开后的延迟内自动online，重检前再次核验网络而不刷�
  const changed=x.connection.changed;x.connection.changed=()=>{changed();if(x.connection.state.label.includes('页面就绪后'))setTimeout(()=>x.setOnline(true),10);};
  await x.connection.withConnection(undefined,async()=>x.events.push('collect'));assert.equal(checks,1);assert.equal(refreshes,0);assert.ok(x.events.includes('collect'));
 });
+
+test('视频号迟于首次延迟检查才打开，等待期间继续检测并只刷新一次',async()=>{
+ let checks=0,refreshes=0;const x=fixture({waitMs:4200,windowHelper:{inspect:async()=>++checks<3?{ok:true,status:'not-found',matched:0}:{ok:true,status:'found',matched:1},refresh:async()=>{refreshes++;x.setOnline(true);return {ok:true,status:'invoked',matched:1,refreshAttempted:true,refreshed:true};}}});
+ x.connection.openPage=async()=>{};
+ await x.connection.withConnection(undefined,async()=>x.events.push('collect'));
+ assert.equal(checks,3);assert.equal(refreshes,1);assert.ok(x.events.includes('collect'));assert.ok(x.events.includes('restore'));
+});
+
+test('已验证页面不支持菜单刷新时，通过固定微信入口接入而不要求人工刷新',async()=>{
+ let opened=0,refreshes=0;const x=fixture({windowHelper:{inspect:async()=>({ok:true,status:'found',matched:1}),refresh:async()=>{refreshes++;return {ok:true,status:'unsupported-toolbar',matched:1,refreshAttempted:false,refreshed:false};}}});
+ x.connection.openPage=async()=>{assert.ok(x.applied);opened++;x.setOnline(true);};
+ await x.connection.withConnection(undefined,async()=>x.events.push('collect'));
+ assert.equal(opened,1);assert.equal(refreshes,1);assert.ok(x.events.includes('collect'));assert.ok(x.events.includes('restore'));
+});
+
+test('微信入口返回成功但页面没有接入，仍超时恢复且不重复打开',async()=>{
+ let opened=0;const x=fixture({windowHelper:{inspect:async()=>({ok:true,status:'found',matched:1}),refresh:async()=>({ok:true,status:'unsupported-toolbar',matched:1,refreshAttempted:false,refreshed:false})}});
+ x.connection.openPage=async()=>opened++;
+ await assert.rejects(x.connection.withConnection(undefined,async()=>{throw Error('must not collect');}),/尚未接入|尚未连接/);
+ assert.equal(opened,1);assert.ok(x.events.includes('restore'));assert.ok(!x.states.some(s=>s.phase==='connected'));
+});

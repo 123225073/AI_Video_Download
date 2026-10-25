@@ -146,7 +146,14 @@ export class Engine {
     if (task.item.platform === '视频号') {
       const run=()=>this.wechat.download(task,directory,signal,progress,this);
       if(task.options?.allowCollector===false){if(task.item.acquisition==='wechat-collector'&&!this.wechat.collector?.cached?.(task.item))throw Object.assign(new Error('已保存媒体地址不可用，请补充公开分享链接或本地视频'),{code:'VIDEO_SHARE_REQUIRED'});return run();}
-      return task.item.acquisition === 'wechat-collector' && this.wechat.connection && !this.wechat.collector?.cached?.(task.item) ? this.wechat.connection.withConnection(signal,run,['detail']) : run();
+      const collected=task.item.acquisition==='wechat-collector',cached=collected&&this.wechat.collector?.cached?.(task.item);
+      if(collected&&this.wechat.connection&&!cached)return this.wechat.connection.withConnection(signal,run,['detail']);
+      try{return await run();}catch(error){
+        if(!cached||error.message!=='WECHAT_MEDIA_UNAVAILABLE'||!this.wechat.connection)throw error;
+        signal?.throwIfAborted();this.wechat.collector.invalidate(task.item);
+        progress({status:'downloading',message:'已保存的视频地址已失效，正在从微信重新获取'});
+        return this.wechat.connection.withConnection(signal,run,['detail']);
+      }
     }
     const args = await this.arguments(task.item.platform, task.item.accountId);
     const cap = task.options.quality === 'best' ? '' : `[height<=${Number(task.options.quality)}]`;

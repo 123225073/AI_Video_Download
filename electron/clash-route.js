@@ -12,7 +12,7 @@ const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('h
 const generalKeys=['port','mixed-port','socks-port','redir-port','tproxy-port','mode','allow-lan','bind-address','ipv6','log-level','tun'];
 // Only the current local Windows Verge sidecar namespace is supported. Never
 // accept UNC server pipes, alternate device namespaces or arbitrary pipe names.
-const localVergePipe=value=>process.platform==='win32'&&typeof value==='string'&&/^\\\\\.\\pipe\\verge-mihomo-(?:sidecar-release-[A-Za-z0-9_-]+|production-[a-f0-9]{64})$/i.test(value);
+const localVergePipe=value=>process.platform==='win32'&&typeof value==='string'&&(value===String.raw`\\.\pipe\verge-mihomo`||/^\\\\\.\\pipe\\verge-mihomo-(?:sidecar-release-[A-Za-z0-9_-]+|production-[a-f0-9]{64})$/i.test(value));
 export function currentVergePipe(configured,names) {
   if(!localVergePipe(configured))return configured;
   const identity=/^verge-mihomo-(?:sidecar-release|production)-([a-f0-9]{64})$/i.exec(configured.split('\\').at(-1))?.[1];

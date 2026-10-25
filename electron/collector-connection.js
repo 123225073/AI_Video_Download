@@ -20,377 +20,13 @@ export function validateCollectorScriptSource(source){
   const bytes=Buffer.isBuffer(source)?source:Buffer.from(source,'utf8'),text=bytes.toString('utf8');
   if(text.replace(/^\uFEFF/,'').startsWith('%TSD-Header'))throw new Error('è§†é¢‘å·é€‚é…è„šæœ¬ä»ä¸º TSD åŠ å¯†å­—èŠ‚ï¼Œæœªéƒ¨ç½²ï¼›è¯·é€šè¿‡å·²æˆæƒçš„æ˜æ–‡è¯»å–æµç¨‹é‡æ–°æ„å»ºç»„ä»¶');
   if(!text.trim())throw new Error('è§†é¢‘å·é€‚é…è„šæœ¬ä¸ºç©ºï¼Œæœªéƒ¨ç½²');
-  try{new Script(text,{filename:'collector-content.js'});}catch{throw new Error('è§†é¢‘å·é€‚é…è„šæœ¬ä¸æ˜¯æœ‰æ•ˆ JavaScriptï¼Œæœªéƒ¨ç½²ï¼›è¯·æ£€æŸ¥æ„å»ºæ—¶å–å¾—çš„æ˜æ–‡ä»£ç ');}
-  return bytes;
-}
-export function collectorEnvironment(base=process.env) {
-  const env={...base};for(const key of Object.keys(env))if(/^(https?_proxy|all_proxy|no_proxy)$/i.test(key))delete env[key];
-  // The upstream is configured explicitly. Inherited HTTP_PROXY would route
-  // WeChat back into Clash's collector rule and create a TLS/proxy loop.
-  env.NO_PROXY='*';return env;
-}
-export function retireStaleComponentPid(directory,isRunning=pid=>{try{process.kill(pid,0);return true;}catch(error){if(error.code==='ESRCH')return false;throw error;}}) {
-  const file=path.join(directory,'wx_video_download.pid');if(!fs.existsSync(file))return false;
-  const pid=Number(fs.readFileSync(file,'utf8').trim());if(!Number.isSafeInteger(pid)||pid<=0)throw new Error('è§†é¢‘å·ç»„ä»¶è¿è¡Œè®°å½•æ— æ•ˆï¼Œè¯·æ£€æŸ¥è¿æ¥èµ„æ–™ç›®å½•');
-  if(isRunning(pid))return false;
-  // Upstream's Windows tasklist parser treats the "no tasks" message as a running process.
-  // Preserve the exact stale record; never terminate a process based on a PID file.
-  fs.renameSync(file,`${file}.stale-${randomUUID()}`);return true;
-}
-const delay = (ms, signal) => new Promise((resolve, reject) => { if (signal?.aborted) return reject(new Error('CANCELLED')); const abort = () => { clearTimeout(timer); reject(new Error('CANCELLED')); }; const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms); signal?.addEventListener('abort', abort, { once: true }); });
-function abortable(promise, signal) { if (!signal) return promise; if (signal.aborted) return Promise.reject(new Error('CANCELLED')); return new Promise((resolve, reject) => { const abort=()=>reject(new Error('CANCELLED')); signal.addEventListener('abort',abort,{once:true}); promise.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort)); }); }
-export function upstreamProxy(before, guardedProxy = false) {
-  if (guardedProxy) throw new Error('ç³»ç»Ÿä»£ç†å®ˆå«æ­£åœ¨æ¥ç®¡ç½‘ç»œï¼Œä½†æœªèƒ½ç¡®è®¤ä¸“ç”¨åˆ†æµé…ç½®ï¼›åŸç½‘ç»œä¿æŒä¸å˜ã€‚è¯·æ£€æŸ¥ä»£ç†è½¯ä»¶çš„æœ¬æœºæ§åˆ¶æ¥å£å’Œè§„åˆ™æ¨¡å¼ï¼Œæˆ–ä½¿ç”¨å·²é…ç½®çš„æ‰‹åŠ¨è¿æ¥ã€‚');
-  if (before.AutoConfigURL?.value) throw new Error('å½“å‰ä½¿ç”¨è‡ªåŠ¨ä»£ç†è„šæœ¬ï¼Œä¸èƒ½å®‰å…¨è‡ªåŠ¨åˆ‡æ¢ï¼›è¯·åœ¨è§†é¢‘å·è¿æ¥çš„é«˜çº§é€‰é¡¹ä¸­ä½¿ç”¨æ‰‹åŠ¨è¿æ¥');
-  if (!Number(before.ProxyEnable?.value)) return '';
-  const address = String(before.ProxyServer?.value || '').trim();
-  const invalid=()=>new Error('å½“å‰ä»£ç†åœ°å€æˆ–ç«¯å£æ— æ•ˆï¼Œä¸èƒ½å®‰å…¨è‡ªåŠ¨åˆ‡æ¢ï¼›åŸä»£ç†ä¿æŒä¸å˜');
-  const endpoint=value=>{
-    const match=/^(\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9.-]+):(\d{1,5})$/.exec(value);
-    if(!match||Number(match[2])<1||Number(match[2])>65535)throw invalid();
-    let url;try{url=new URL(`http://${value}`);}catch{throw invalid();}
-    if(Number(match[2])===2023&&['127.0.0.1','localhost','[::1]','[::ffff:7f00:1]'].includes(url.hostname))throw invalid();
-    return `http://${url.hostname}:${Number(match[2])}`;
-  };
-  if(!address.includes('='))return endpoint(address);
-  // The collector has one upstream for all proxied traffic. Only collapse an
-  // equivalent HTTP/HTTPS pair; choosing just HTTPS from a mixed configuration
-  // would silently change how other applications' HTTP traffic is routed.
-  const unsupported=()=>new Error('å½“å‰åˆ†åè®®ä»£ç†çš„ HTTP/HTTPS é…ç½®ä¸åŒæˆ–ä¸å®Œæ•´ï¼Œä¸èƒ½å®‰å…¨è‡ªåŠ¨è¿æ¥ï¼›åŸç½‘ç»œä¿æŒä¸å˜ï¼Œå¯ä½¿ç”¨å·²é…ç½®çš„æ‰‹åŠ¨è¿æ¥');
-  const proxies=new Map();
-  for(const entry of address.split(';').map(value=>value.trim()).filter(Boolean)){
-    const match=/^(http|https)\s*=\s*(.+)$/i.exec(entry);
-    if(!match||proxies.has(match[1].toLowerCase()))throw unsupported();
-    proxies.set(match[1].toLowerCase(),endpoint(match[2].trim()));
-  }
-  if(proxies.size!==2||proxies.get('http')!==proxies.get('https'))throw unsupported();
-  return proxies.get('https');
-}
-export class CollectorConnection {
-  constructor(store, bin, directory, changed, options = {}) {
-    this.store=store; this.bin=bin; this.directory=directory; this.changed=changed; this.fetch=options.request || fetch; this.system=options.system || this.runSystem.bind(this); this.guard=options.guard || this.startGuard.bind(this); this.consent=options.consent || (async()=>false); this.waitMs=options.waitMs ?? 120000; this.members=new Set(); this.state={phase:'idle',label:'æœªä½¿ç”¨æ—¶ä¿æŒåŸç½‘ç»œè®¾ç½®'}; this.started=null; this.ending=null; this.leaseFile=null; this.controller=null; this.closed=false; this.worker=null;
-    fs.mkdirSync(directory,{recursive:true});
-    this.routing=options.routing || new ClashRoute();this.openPage=options.openPage;this.windowHelper=options.windowHelper;
-  }
-  config() { return { enabled: true, automatic: true, baseUrl:'http://127.0.0.1:2022', ...this.store.get('collector-config','wechat') }; }
-  status() { const policy=this.store.get('collector-policy','automatic');return {...this.state, activeTasks:this.members.size, bundled:fs.existsSync(path.join(this.bin,'collector','wx_video_download.exe')), allowed:Boolean(policy?.allowed && (!this.certificate || policy.certificateFingerprint===this.certificate.fingerprint))}; }
-  update(phase,label,extra={}) { this.state={phase,label,...extra}; this.changed(); }
-  async api(route, body, timeout=15000, signal=null) {
-    if(signal?.aborted)throw new Error('CANCELLED');
-    const base=this.config().baseUrl; if (base !== 'http://127.0.0.1:2022') throw new Error('è‡ªåŠ¨è¿æ¥ä½¿ç”¨å†…ç½®æœ¬æœºæ¥å£ï¼›è‡ªå®šä¹‰æœåŠ¡è¯·å…³é—­è‡ªåŠ¨åˆ‡æ¢');
-    const response=await this.fetch(new URL(route,base),{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(timeout)]):AbortSignal.timeout(timeout)});
-    if(!response.ok) throw new Error(`å¾®ä¿¡è¿æ¥æ¥å£æš‚ä¸å¯ç”¨ï¼ˆHTTP ${response.status}ï¼‰`);
-    const result=await response.json(); if(Number(result.code)!==0) throw new Error('å¾®ä¿¡è¿æ¥ç»„ä»¶æœªå®Œæˆè¯·æ±‚ï¼Œè¯·é‡æ–°å‡†å¤‡è¿æ¥'); return result.data;
-  }
-  async online() { try{return (await this.api('/api/channels/status',null,2500)).available === true;}catch{return false;} }
-  async stopProxy() {
-    // proxy/config restart:true always starts the listener in v260907, even
-    // with enabled:false. Use its explicit stop command and await release.
-    await this.api('/api/proxy/config',{values:{'proxy.enabled':false,'proxy.system':false},restart:false});
-    await this.api('/api/service/stop',{name:'interceptor'});
-    for(let i=0;i<40;i++){
-      // This endpoint also queries the Windows certificate store, which can
-      // exceed 2.5 seconds immediately after removing temporary trust.
-      const status=await this.api('/api/proxy/status');
-      if(status?.service?.status==='stopped'&&status.service.listening===false)return;
-      await delay(250);
-    }
-    throw new Error('æ—§è§†é¢‘å·é‡‡é›†ä»£ç†å°šæœªé€€å‡ºï¼Œæœªé‡è½½ç»„ä»¶ï¼›è¯·å…³é—­ä¸‹è½½å™¨åé‡è¯•ï¼ŒåŸç½‘ç»œä¿ç•™');
-  }
-  async adapterReady(signal=null,timeout=8000,required=adapterCapabilities) {
-    required=requiredCapabilities(required);
-    try {
-      // A connected page may still run an adapter from before an app upgrade.
-      // The probe is handled locally by our extension, never by official search.
-      const keyword='__fengsha_content__:'+JSON.stringify({probe:true,nonce:randomUUID()});
-      const result=await abortable(this.api('/api/channels/contact/search?keyword='+encodeURIComponent(keyword),null,timeout,signal),signal);
-      const version=result?.data?.fengshaAdapterVersion,capabilities=result?.data?.capabilities;
-      const fingerprint=result?.data?.fengshaContentHash,hashMatches=!this.adapterFingerprint||fingerprint===this.adapterFingerprint;
-      const ready=result?.errCode===0&&version===4&&hashMatches&&required.every(key=>capabilities?.[key]===true);
-      this.adapterState={version,capabilities,fingerprint,hashMatches,canRefreshAdapter:result?.errCode===0&&result?.data?.canRefreshAdapter===true,ready};return ready;
-    }catch(error){if(signal?.aborted)throw new Error('CANCELLED');this.adapterState={ready:false};return false;}
-  }
-  adapterMessage(required=adapterCapabilities) {
-    if(this.adapterState?.version===4&&this.adapterState.hashMatches===false)return 'å¾®ä¿¡é¡µé¢ä»åœ¨ä½¿ç”¨æ—§çš„é‡‡é›†é€‚é…è„šæœ¬ï¼›è¯·åˆ·æ–°è§†é¢‘å·é¡µé¢ä»¥è½½å…¥æœ¬æ¬¡æ›´æ–°ï¼Œå·²æœ‰ç™»å½•ä¿ç•™';
-    if(this.adapterState?.version===4){
-      const missing=required.filter(key=>this.adapterState.capabilities?.[key]!==true).map(key=>capabilityLabels[key]);
-      return `å¾®ä¿¡é¡µé¢å·²è¿æ¥ï¼Œä½†${missing.join('ã€')||'é‡‡é›†'}æ¥å£å°šæœªåŠ è½½ï¼›è¯·æ›´æ–°é¡µé¢é€‚é…åé‡è¯•ï¼Œæ— éœ€åå¤ç™»å½•æˆ–å¼€å…³è§†é¢‘å·`;
-    }
-    return 'å¾®ä¿¡é¡µé¢å·²è¿æ¥ï¼Œä½†é‡‡é›†é€‚é…ç‰ˆæœ¬æœªå°±ç»ªï¼›è¯·åˆ·æ–°è§†é¢‘å·é¡µé¢ä»¥è½½å…¥æ›´æ–°ï¼Œå·²æœ‰å†…å®¹å’Œç™»å½•ä¿ç•™';
-  }
-  async bootstrapPage(signal,deadline){
-    // This helper is called only after apply + route activation and the final
-    // network snapshot check. Its native side revalidates the exact document
-    // immediately before invoking the owned toolbar; an acknowledgement is not
-    // a websocket/adapter readiness signal.
-    if(!this.windowHelper||!this.leaseFile||!this.status().allowed)return null;
-    const manual=(status,found=false,refreshRequested=false)=>({status,found,refreshRequested,needsPage:true,message:
-      status==='timeout'?(found?'å·²æ£€æµ‹åˆ°å¾®ä¿¡è§†é¢‘å·é¡µé¢ï¼Œä½†è‡ªåŠ¨åˆ·æ–°ç¡®è®¤è¶…æ—¶ï¼›è¯·åœ¨è¯¥é¡µé¢é€‰æ‹©â€œæ›´å¤š â†’ åˆ·æ–°â€ï¼Œå½“å‰è¿æ¥ä¼šç»§ç»­ç­‰å¾…ã€‚':'è§†é¢‘å·é¡µé¢æ£€æµ‹è¶…æ—¶ï¼Œæ— æ³•ç¡®è®¤å½“å‰é¡µé¢çŠ¶æ€ï¼›è¯·åœ¨å¾®ä¿¡è§†é¢‘å·é¡µé¢é€‰æ‹©â€œæ›´å¤š â†’ åˆ·æ–°â€ï¼Œå½“å‰è¿æ¥ä¼šç»§ç»­ç­‰å¾…ã€‚'):
-      status==='scan-limited'?'è§†é¢‘å·é¡µé¢æ£€æµ‹è¾¾åˆ°å®‰å…¨ä¸Šé™ï¼Œæ— æ³•ç¡®è®¤å½“å‰é¡µé¢çŠ¶æ€ï¼›è¯·åœ¨å¾®ä¿¡è§†é¢‘å·é¡µé¢é€‰æ‹©â€œæ›´å¤š â†’ åˆ·æ–°â€ï¼Œå½“å‰è¿æ¥ä¼šç»§ç»­ç­‰å¾…ã€‚':
-      status==='not-found'?'å°šæœªæ£€æµ‹åˆ°å¯éªŒè¯çš„è§†é¢‘å·é¡µé¢ï¼Œè¯·åœ¨ç”µè„‘å¾®ä¿¡ä¸­æ‰“å¼€è§†é¢‘å·ï¼›å½“å‰è¿æ¥ä¼šç»§ç»­ç­‰å¾…ã€‚':
-      found?'å·²æ£€æµ‹åˆ°å¾®ä¿¡è§†é¢‘å·é¡µé¢ï¼Œä½†å½“å‰å·¥å…·æ æš‚ä¸æ”¯æŒè‡ªåŠ¨åˆ·æ–°ï¼›è¯·åœ¨è¯¥é¡µé¢é€‰æ‹©â€œæ›´å¤š â†’ åˆ·æ–°â€ï¼Œè¿æ¥åä¼šç»§ç»­å½“å‰ä»»åŠ¡ã€‚':
-      'å½“å‰ Windows æš‚ä¸æ”¯æŒè‡ªåŠ¨ç¡®è®¤è§†é¢‘å·é¡µé¢çŠ¶æ€ï¼›è¯·åœ¨å¾®ä¿¡è§†é¢‘å·é¡µé¢é€‰æ‹©â€œæ›´å¤š â†’ åˆ·æ–°â€ï¼Œå½“å‰è¿æ¥ä¼šç»§ç»­ç­‰å¾…ã€‚'});
-    let found=false;signal.throwIfAborted();this.update('waiting','æ­£åœ¨æ£€æµ‹ç”µè„‘å¾®ä¿¡ä¸­å·²æ‰“å¼€çš„è§†é¢‘å·é¡µé¢',{needsPage:false,waitingUntil:deadline});
-    try{
-      signal.throwIfAborted();const state=await abortable(Promise.resolve().then(()=>{signal.throwIfAborted();return this.windowHelper.inspect(signal);}),signal);
-      signal.throwIfAborted();
-      if(state?.ok!==true||state.status!=='found'||state.matched!==1){const result=manual(state?.status||'unavailable');this.update('waiting',result.message,{needsPage:true,waitingUntil:deadline,pageDetection:result.status});return result;}
-      found=true;this.update('waiting','å·²æ£€æµ‹åˆ°å¾®ä¿¡è§†é¢‘å·é¡µé¢ï¼Œæ­£åœ¨æ¥å…¥å½“å‰ä»»åŠ¡è¿æ¥',{needsPage:false,waitingUntil:deadline,pageDetection:'found'});
-      signal.throwIfAborted();if(Date.now()>=deadline||!this.status().allowed){const result=manual('unavailable',true);this.update('waiting',result.message,{needsPage:true,waitingUntil:deadline,pageDetection:'found'});return result;}
-      const refreshed=await abortable(Promise.resolve().then(()=>{signal.throwIfAborted();return this.windowHelper.refresh(signal);}),signal);
-      signal.throwIfAborted();
-      const invoked=refreshed?.ok===true&&refreshed.status==='invoked'&&refreshed.refreshAttempted===true&&refreshed.refreshed===true;
-      const result=invoked?{status:'invoked',found:true,refreshRequested:true,needsPage:false,message:'å·²æ£€æµ‹åˆ°è§†é¢‘å·é¡µé¢å¹¶è¯·æ±‚åœ¨è¯¥é¡µåˆ·æ–°ï¼Œæ­£åœ¨ç­‰å¾…æ¥å…¥é‡‡é›†ç»„ä»¶å’Œå½“å‰ä»»åŠ¡æ‰€éœ€æ¥å£ã€‚'}:manual(refreshed?.status||'unavailable',true,refreshed?.refreshAttempted===true);
-      this.update('waiting',result.message,{needsPage:result.needsPage,waitingUntil:deadline,pageDetection:result.status});return result;
-    }catch(error){if(signal.aborted)throw Error('CANCELLED');const result=manual('unavailable',found);this.update('waiting',result.message,{needsPage:true,waitingUntil:deadline,pageDetection:result.status});return result;}
-  }
-  runSystem(action,stateFile=null,signal=null) {
-    const systemScript=path.join(this.bin,'collector','collector-system.ps1');
-    return new Promise((resolve,reject)=>{
-      const args=['-NoProfile','-NonInteractive','-File',systemScript,'-Action',action,'-OwnerProcess',String(process.pid)];if(stateFile)args.push('-StateFile',stateFile);
-      if(signal?.aborted)return reject(new Error('CANCELLED'));
-      const child=spawn('powershell.exe',args,{windowsHide:true,stdio:['ignore','pipe','pipe']});let output='',timedOut=false;
-      const terminate=()=>{const cleanup=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});cleanup.on('error',()=>child.kill());};
-      const timer=setTimeout(()=>{timedOut=true;terminate();},action==='apply'?180000:action==='restore'?120000:45000);signal?.addEventListener('abort',terminate,{once:true});child.stdout.on('data',b=>output+=b);child.stderr.resume();child.on('error',()=>{clearTimeout(timer);signal?.removeEventListener('abort',terminate);reject(new Error('Windowsè¿æ¥è¾…åŠ©ç¨‹åºæœªèƒ½å¯åŠ¨'));});
-      child.on('close',code=>{clearTimeout(timer);signal?.removeEventListener('abort',terminate);if(signal?.aborted)return reject(new Error('CANCELLED'));let result;try{result=JSON.parse(output.replace(/^\uFEFF/,''));}catch{}
-        if(code!==0){const stages={'certificate-check':'è¯ä¹¦æ£€æŸ¥','certificate-proxy-baseline':'è¿æ¥å‰ä»£ç†çŠ¶æ€æ ¸å¯¹','certificate-parse':'æœ¬æœºè¿æ¥è¯ä¹¦è¯»å–','certificate-identity':'æœ¬æœºè¿æ¥è¯ä¹¦åç§°å’Œæœ‰æ•ˆæœŸæ ¸å¯¹','certificate-fingerprint':'æœ¬æœºè¿æ¥è¯ä¹¦æŒ‡çº¹æ ¸å¯¹','certificate-store':'å½“å‰ç”¨æˆ·è¯ä¹¦åº“æ£€æŸ¥','certificate-add':'ä¸´æ—¶è¯ä¹¦ä¿¡ä»»','certificate-remove':'ä¸´æ—¶è¯ä¹¦ç§»é™¤','proxy-apply':'ä»£ç†åˆ‡æ¢','proxy-restore':'åŸä»£ç†æ¢å¤','route-restore':'Clash åˆ†æµæ¢å¤','restore-state':'æ¢å¤è®°å½•è¯»å–','restore-save':'æ¢å¤è®°å½•ä¿å­˜'};const stage=stages[result?.stage] || (action==='restore'?'è¿æ¥æ¢å¤':'è¿æ¥å‡†å¤‡');
-          const error=new Error(timedOut?`${stage}è¶…æ—¶ï¼›æœªç»§ç»­é‡‡é›†ï¼Œæ¢å¤è®°å½•ä¿ç•™åœ¨æœ¬æœº`:`${stage}å¤±è´¥${Number.isInteger(result?.errorCode)?`ï¼ˆWindows é”™è¯¯ ${result.errorCode}ï¼‰`:''}ï¼›æ¢å¤è®°å½•ä¿ç•™åœ¨æœ¬æœº`);
-          const diagnosticText=value=>typeof value==='string'?value.slice(0,256):null;
-          error.diagnostic={stage:diagnosticText(result?.stage),...(['lease-read','lease-size','lease-parse','lease-validate','route-restore','helper-exec','helper-output'].includes(result?.helperStage)?{helperStage:result.helperStage}:{}),...(['ProxyEnable','ProxyServer','ProxyOverride','AutoConfigURL'].includes(result?.proxyField)?{proxyField:result.proxyField}:{}),exceptionType:diagnosticText(result?.exceptionType),innerType:diagnosticText(result?.innerType),innerErrorCode:Number.isInteger(result?.innerErrorCode)?result.innerErrorCode:null,errorCode:Number.isInteger(result?.errorCode)?result.errorCode:null};
-          return reject(error);
-        }
-        if(!result)return reject(new Error('Windowsè¿æ¥æ£€æŸ¥è¿”å›æ— æ•ˆç»“æœ'));resolve(result);
-      });
-    });
-  }
-  async startGuard(file) {
-    const systemScript=path.join(this.bin,'collector','collector-system.ps1');
-    // Windows PowerShell exits silently with Node's DETACHED_PROCESS flag.
-    // A hidden Start-Process child survives the owner without requiring a console.
-    const args=`-NoProfile -NonInteractive -File "${systemScript}" -Action guard -StateFile "${file}"`;
-    const command=`Start-Process -FilePath 'powershell.exe' -ArgumentList '${args.replaceAll("'","''")}' -WindowStyle Hidden`;
-    const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(command,'utf16le').toString('base64')],{windowsHide:true,stdio:'ignore'});
-    let failed=false;child.on('error',()=>failed=true);
-    for(let i=0;i<40;i++){if(fs.existsSync(file+'.guard-ready'))return;if(failed || (child.exitCode!==null && child.exitCode!==0))break;await delay(250);}
-    throw new Error('ç½‘ç»œæ¢å¤å®ˆæŠ¤æœªèƒ½å¯åŠ¨ï¼Œæœ¬æ¬¡ä¸åˆ‡æ¢ç³»ç»Ÿä»£ç†');
-  }
-  recover() {
-    if(this.recovering)return this.recovering;
-    // Install the shared barrier before emitting state or starting I/O. The
-    // application can show its window immediately without racing a new lease.
-    this.recovering=Promise.resolve().then(async()=>{
-      for(const name of fs.readdirSync(this.directory).filter(n=>/^lease-[\w-]+\.json$/.test(n))) {
-        const file=path.join(this.directory,name); let saved;try{saved=JSON.parse(fs.readFileSync(file,'utf8'));}catch{saved=await this.system('state-status',file);}
-        if(saved.phase!=='restored')await this.system('restore',file);
-      }
-      this.update('idle','åŸç½‘ç»œè®¾ç½®å·²æ¢å¤');
-    }).catch(error=>{
-      this.update('error',`ä¸Šæ¬¡ç½‘ç»œæ¢å¤å°šæœªå®Œæˆï¼š${error.message}`);throw error;
-    }).finally(()=>{this.recovering=null;});
-    this.update('recovering','æ­£åœ¨æ¢å¤ä¸Šæ¬¡ä¸­æ–­çš„ç½‘ç»œè®¾ç½®ï¼Œæœ¬åœ°èµ„æ–™å¯æ­£å¸¸æŸ¥çœ‹');
-    return this.recovering;
-  }
-  async prepare() {
-    if(this.recovering)await this.recovering;
-    if(this.closed)throw new Error('åº”ç”¨æ­£åœ¨é€€å‡º');
-    if(this.state.phase==='error')throw new Error('ä¸Šæ¬¡ç½‘ç»œæ¢å¤å°šæœªå®Œæˆï¼Œè¯·å…ˆç‚¹å‡»æ¢å¤åŸç½‘ç»œ');
-    if(!this.preparing)this.preparing=this.prepareComponent().finally(()=>this.preparing=null);
-    return this.preparing;
-  }
-  async prepareComponent() {
-    this.update('preparing','æ­£åœ¨å‡†å¤‡å†…ç½®è§†é¢‘å·ç»„ä»¶');
-    // v260907 contentScript is read locally and inlined into the HTML. An
-    // external globalScript can fail after a route change and leave only the
-    // upstream's incompatible API2 handler running.
-    const contentScript=path.join(this.bin,'collector','collector-content.js');
-    // v260907 resolves an empty globalScript to the workdir itself. A reserved
-    // absent path disables external injection in its resolve_script_path(); do
-    // not create this file or let a foreign file become an injected script.
-    const noExternalScript=path.join(this.directory,'fengsha-inline-only.disabled');
-    if(fs.existsSync(noExternalScript))throw new Error('è§†é¢‘å·å†…è”é€‚é…ä¿ç•™è·¯å¾„è¢«å ç”¨ï¼Œæœªæ›¿æ¢ç°æœ‰æ–‡ä»¶');
-    let contentFile='fengsha-content.js';
-    if(fs.existsSync(contentScript)){
-      const source=validateCollectorScriptSource(fs.readFileSync(contentScript)),fingerprint=createHash('sha256').update(source).digest('hex').slice(0,12);
-      this.adapterFingerprint=fingerprint;contentFile=`fengsha-content-${fingerprint}.js`;
-      const deployed=path.join(this.directory,contentFile),injected=Buffer.concat([Buffer.from(`window.__fengshaContentHash=${JSON.stringify(fingerprint)};\n`),source]);
-      if(!fs.existsSync(deployed)||!fs.readFileSync(deployed).equals(injected)){fs.writeFileSync(deployed,injected);this.adapterUpdatePending=true;this.adapterReloadAttempted=false;}
-    }
-    const componentConfig=path.join(this.directory,'component.yaml');
-    if(fs.existsSync(contentScript)){
-      const current=fs.existsSync(componentConfig)?YAML.parse(fs.readFileSync(componentConfig,'utf8')):null;
-      if(current&&typeof current==='object'&&!Array.isArray(current)){
-        current.inject={...(current.inject||{}),globalScript:noExternalScript,contentScript:path.join(this.directory,contentFile)};
-        fs.writeFileSync(componentConfig,YAML.stringify(current));
-      }
-    }
-    let ready=false; try {await this.api('/api/channels/status',null,2000);ready=true;}catch{}
-    if(!ready) {
-      const executable=path.join(this.bin,'collector','wx_video_download.exe');
-      if(!fs.existsSync(executable) || createHash('sha256').update(fs.readFileSync(executable)).digest('hex')!==bundledHash) throw new Error('å†…ç½®å¾®ä¿¡ç»„ä»¶ç¼ºå¤±æˆ–æ ¡éªŒå¤±è´¥ï¼Œè¯·é‡æ–°å®‰è£…ç¨‹åº');
-      const config=path.join(this.directory,'component.yaml');
-      if(!fs.existsSync(config)) fs.writeFileSync(config,YAML.stringify({api:{hostname:'127.0.0.1',port:2022},inject:{globalScript:noExternalScript,contentScript:path.join(this.directory,contentFile)},proxy:{enabled:false,system:false,skipInstallRootCert:true,tun:false,tcpRelay:{enabled:false}}}));
-      retireStaleComponentPid(this.directory);
-      this.worker=spawn(executable,['server','--config',config,'--workdir',this.directory],{cwd:this.directory,env:collectorEnvironment(),windowsHide:true,stdio:'ignore'}); this.worker.on('error',()=>{});
-      for(let i=0;i<15;i++){await delay(500);try{await this.api('/api/channels/status',null,1000);ready=true;break;}catch{}}
-      if(!ready) throw new Error('è§†é¢‘å·ç»„ä»¶æœªèƒ½å¯åŠ¨ï¼Œå¯èƒ½è¢«å®‰å…¨è½¯ä»¶æ‹¦æˆªæˆ–æœ¬æœºç«¯å£è¢«å ç”¨');
-    }
-    if(fs.existsSync(contentScript)){
-      const configInfo=await this.api('/api/config');
-      if(path.resolve(String(configInfo.config_file||'')).toLowerCase()!==path.resolve(componentConfig).toLowerCase())throw new Error('å½“å‰æœ¬æœºé‡‡é›†æœåŠ¡ç”±å…¶ä»–ç¨‹åºå¯åŠ¨ï¼Œä¸èƒ½æ›¿æ¢å…¶è„šæœ¬ï¼›è¯·å…³é—­å…¶ä»–é‡‡é›†å·¥å…·åå†è¯•');
-      const wanted=path.join(this.directory,contentFile);
-      const field=configInfo.fields?.find(f=>f.key==='inject.contentScript');
-      const external=configInfo.fields?.find(f=>f.key==='inject.globalScript');
-      if(path.resolve(String(field?.effective_value||'')).toLowerCase()!==path.resolve(wanted).toLowerCase()||path.resolve(String(external?.effective_value||'')).toLowerCase()!==path.resolve(noExternalScript).toLowerCase()){
-        this.adapterUpdatePending=true;
-        this.adapterReloadAttempted=false;
-        await this.stopProxy();
-        const update=await this.api('/api/config',{values:{'inject.globalScript':noExternalScript,'inject.contentScript':wanted}});
-        let applied=false;for(let i=0;i<25;i++){await delay(400);try{const status=await this.api('/api/restart/status?restart_token='+encodeURIComponent(update.restart_token),null,1500);if(status.restart_completed&&status.config_applied){applied=true;break;}}catch{}}
-        if(!applied)throw new Error('é‡‡é›†æœç´¢æ‰©å±•é‡è½½å°šæœªå®Œæˆï¼Œè¯·ç¨åé‡æ–°å‡†å¤‡è¿æ¥');
-      }
-    }
-    let certificate=await this.api('/api/proxy/certificate/status');
-    if(certificate.is_legacy || !certificate.name?.startsWith('Fengsha-WeChat-') || new Date(certificate.detail?.not_after).getTime() < Date.now()+86400000 || new Date(certificate.detail?.not_after).getTime()>Date.now()+2*366*86400000) {
-      const proxy=await this.api('/api/proxy/status');
-      if(proxy.service?.listening || proxy.proxy?.listening) throw new Error('å·²æœ‰å…¶ä»–å¾®ä¿¡é‡‡é›†è¿æ¥æ­£åœ¨ä½¿ç”¨è¯¥ç«¯å£ï¼Œè¯·å…ˆå…³é—­å®ƒæˆ–é€‰æ‹©æ‰‹åŠ¨è¿æ¥');
-      await this.api('/api/proxy/certificate/generate',{name:`Fengsha-WeChat-${randomUUID().slice(0,8)}`,valid_years:2,install:false,restart:false}); certificate=await this.api('/api/proxy/certificate/status');
-    }
-    const response=await this.fetch(new URL('/api/proxy/certificate/pem',this.config().baseUrl),{redirect:'error',signal:AbortSignal.timeout(10000)}); if(!response.ok) throw new Error('æœ¬æœºä¸“ç”¨è¯ä¹¦æœªå‡†å¤‡å¥½');
-    const pem=await response.text(); if(!pem.includes('BEGIN CERTIFICATE') || pem.length>32768) throw new Error('æœ¬æœºè¯ä¹¦æ ¼å¼å¼‚å¸¸');
-    const file=path.join(this.directory,'local-certificate.pem');fs.writeFileSync(file,pem);
-    const parsed=new X509Certificate(pem);if(!parsed.ca || parsed.validToDate < new Date() || !parsed.subject.includes(certificate.name))throw new Error('æœ¬æœºè¯ä¹¦èº«ä»½å¼‚å¸¸ï¼Œè¯·æ£€æŸ¥è§†é¢‘å·è¿æ¥');
-    this.certificate={name:certificate.name,file,fingerprint:parsed.fingerprint256}; this.update('prepared','ç»„ä»¶å·²å‡†å¤‡ï¼›è¯†åˆ«å’Œä¸‹è½½æ—¶è‡ªåŠ¨è¿æ¥ï¼Œå¾®ä¿¡ç™»å½•ä»åœ¨å¾®ä¿¡å®Œæˆ'); return this.status();
-  }
-  async allow() {
-    await this.prepare(); const inspection=await this.system('inspect'); const plan=await this.routing.discover(inspection.proxy);const upstream=plan?'':upstreamProxy(inspection.proxy,inspection.guardedProxy);
-    if(!await this.consent({certificate:this.certificate.name,proxyBefore:inspection.proxy.ProxyServer.value || 'ç›´æ¥è¿æ¥',upstream})) return false;
-    this.store.put('collector-policy','automatic',{allowed:true,certificateFingerprint:this.certificate.fingerprint,confirmedAt:Date.now()});this.store.flush();this.changed();return true;
-  }
-  async begin(signal,required=adapterCapabilities) {
-    if(!this.certificate)await this.prepare(); if(signal.aborted) throw new Error('CANCELLED');
-    // A live websocket can survive restoration while /__assets requests no
-    // longer reach our component. Keep the task-scoped route for operations,
-    // even when the loaded adapter already matches; manual mode stays untouched.
-    const pageReady=await abortable(this.online(),signal)&&await this.adapterReady(signal,8000,required);
-    if(signal.aborted)throw new Error('CANCELLED');
-    const inspected=await this.system('inspect');const plan=await this.routing.discover(inspected.proxy);const upstream=plan?'':upstreamProxy(inspected.proxy,inspected.guardedProxy);
-    if(signal.aborted)throw new Error('CANCELLED');
-    const id=randomUUID(); this.leaseFile=path.join(this.directory,`lease-${id}.json`);
-    this.leaseMode=plan?'routed':'system';
-    fs.writeFileSync(this.leaseFile,JSON.stringify({schema:1,id,mode:plan?'routed':'system',routing:plan,owner:process.pid,ownerStarted:inspected.ownerStarted,before:inspected.proxy,proxyAddress:'127.0.0.1:2023',certificateName:this.certificate.name,certificateFile:this.certificate.file,certificateFingerprint:this.certificate.fingerprint,certificateThumbprint:'',certificateAdded:false,phase:'prepared'}));
-    await this.guard(this.leaseFile);
-    if(signal.aborted)throw new Error('CANCELLED');
-    await this.api('/api/proxy/config',{values:{'proxy.enabled':true,'proxy.system':false,'proxy.hostname':'127.0.0.1','proxy.port':2023,'proxy.skipInstallRootCert':true,'proxy.tun':false,'proxy.tcpRelay.enabled':false,'proxy.upstreamProxy':upstream},restart:true},30000);
-    if(signal.aborted) throw new Error('CANCELLED');
-    this.update('trusting','æ­£åœ¨å‡†å¤‡å¾®ä¿¡è¿æ¥ï¼›å¦‚ Windows æ˜¾ç¤ºè¯ä¹¦ç¡®è®¤ï¼Œè¯·æ ¸å¯¹ Fengsha-WeChat- åç§°åç¡®è®¤');
-    await this.system('apply',this.leaseFile,signal);
-    if(signal.aborted)throw new Error('CANCELLED');
-    if(plan)await this.routing.begin(plan,signal);
-    if(signal.aborted)throw new Error('CANCELLED');
-    const applied = await this.system('inspect');
-    if(plan){
-      // Routed mode never writes system proxy exceptions. Other applications
-      // refresh that list independently; retain it and validate our entrypoint.
-      const unchanged=['ProxyEnable','ProxyServer','AutoConfigURL'].every(key=>applied.proxy?.[key]?.present===inspected.proxy?.[key]?.present&&applied.proxy?.[key]?.value===inspected.proxy?.[key]?.value);
-      if(!unchanged)throw new Error('è¿æ¥å‡†å¤‡æœŸé—´ç³»ç»Ÿä»£ç†å‘ç”Ÿå˜åŒ–ï¼Œè§†é¢‘å·é‡‡é›†å·²åœæ­¢ï¼Œè¯·é‡è¯•');
-    }
-    else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('ç³»ç»Ÿä»£ç†åˆ‡æ¢æœªç”Ÿæ•ˆæˆ–å·²è¢«å…¶ä»–ç¨‹åºä¿®æ”¹ï¼Œå¾®ä¿¡é‡‡é›†å·²åœæ­¢ï¼›è¯·æ£€æŸ¥ä»£ç†è½¯ä»¶çš„ç³»ç»Ÿä»£ç†è®¾ç½®åå†è¯•');
-    const deadline=Date.now()+this.waitMs;
-    this.update('waiting',plan?'è§†é¢‘å·ä¸“ç”¨åˆ†æµå·²å¼€å¯ï¼ŒClash ä¿æŒè¿è¡Œï¼šè¯·æ‰“å¼€æˆ–é‡æ–°è¿›å…¥å¾®ä¿¡çš„è§†é¢‘å·é¡µé¢':'è¿æ¥å·²ä¸´æ—¶å¼€å¯ï¼šè¯·åœ¨å¾®ä¿¡ä¸­æ‰“å¼€æˆ–é‡æ–°è¿›å…¥è§†é¢‘å·é¡µé¢ï¼Œè¿æ¥åè‡ªåŠ¨ç»§ç»­',{needsPage:!pageReady,waitingUntil:deadline});
-    let pageBootstrap=!pageReady?await this.bootstrapPage(signal,deadline):null,pageOpened=false;
-    if(!pageReady&&this.openPage&&(!pageBootstrap||pageBootstrap.status==='not-found')){this.update('waiting','æ­£åœ¨è‡ªåŠ¨æ‰“å¼€ç”µè„‘å¾®ä¿¡çš„è§†é¢‘å·ï¼›è¿æ¥åç»§ç»­å½“å‰ä»»åŠ¡ã€‚è‹¥æœªè‡ªåŠ¨è¿›å…¥ï¼Œè¯·æŒ‰è¿æ¥æç¤ºæ‰“å¼€å¹¶åˆ·æ–°è§†é¢‘å·ã€‚',{needsPage:true,waitingUntil:deadline});try{signal.throwIfAborted();await this.openPage(signal);pageOpened=true;}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' è¯·åœ¨ç”µè„‘å¾®ä¿¡è¿›å…¥è§†é¢‘å·å¹¶åˆ·æ–°ï¼›æ— éœ€å…³é—­ç°æœ‰ä»£ç†ã€‚',{needsPage:true,waitingUntil:deadline});}}
-    // The registered URI may reveal a cached page that existed before this
-    // lease. Recheck once after opening, rather than waiting forever for an old
-    // page to attach. Already-online pages and unsupported inspections are not
-    // touched, and the same lease deadline/cancellation still bounds the work.
-    if(pageOpened&&pageBootstrap?.status==='not-found'&&Date.now()<deadline&&!await abortable(this.online(),signal)){
-      signal.throwIfAborted();this.update('waiting','å·²è¯·æ±‚æ‰“å¼€è§†é¢‘å·ï¼Œæ­£åœ¨ç­‰å¾…é¡µé¢å°±ç»ªåæ ¸å¯¹å½“å‰ä»»åŠ¡è¿æ¥',{needsPage:true,waitingUntil:deadline});
-      await delay(Math.max(1,Math.min(500,deadline-Date.now())),signal);signal.throwIfAborted();
-      if(Date.now()<deadline&&!await abortable(this.online(),signal))pageBootstrap=await this.bootstrapPage(signal,deadline);
-    }
-    let pageOnline=false,refreshRequested=pageBootstrap?.refreshRequested===true;
-    do {
-      if(signal.aborted)throw new Error('CANCELLED');
-      if(await abortable(this.online(),signal)){
-        pageOnline=true;
-        if(await this.adapterReady(signal,Math.max(1,Math.min(8000,deadline-Date.now())),required)){this.update('connected','å½“å‰ä»»åŠ¡æ‰€éœ€å¾®ä¿¡æ¥å£å·²å°±ç»ª Â· ä»»åŠ¡ç»“æŸåè‡ªåŠ¨æ¢å¤åŸç½‘ç»œ');return;}
-        if(signal.aborted)throw new Error('CANCELLED');
-        const staleRuntime=(this.adapterState?.version!==undefined&&this.adapterState.version!==4)||this.adapterState?.hashMatches===false;
-        if(plan&&this.leaseFile&&this.status().allowed&&!refreshRequested&&this.adapterState?.version===4&&this.adapterState.hashMatches===false&&this.adapterState.canRefreshAdapter===true&&/^[a-f0-9]{12}$/.test(this.adapterFingerprint||'')&&Date.now()<deadline){
-          // The owned adapter advertises this local control message. Send it only
-          // after route activation and validation; ordinary probes stay read-only.
-          refreshRequested=true;this.adapterReloadAttempted=true;this.adapterUpdatePending=false;
-          const keyword='__fengsha_content__:'+JSON.stringify({probe:true,reload:true,expectedHash:this.adapterFingerprint,nonce:randomUUID()});
-          this.update('waiting','æ­£åœ¨åˆ·æ–°è§†é¢‘å·é¡µé¢ä»¥è½½å…¥æ–°ç‰ˆé€‚é…ï¼›å·²æœ‰ç™»å½•ä¿ç•™',{needsPage:false});
-          try{
-            const acknowledgement=await abortable(this.api('/api/channels/contact/search?keyword='+encodeURIComponent(keyword),null,Math.max(1,Math.min(8000,deadline-Date.now())),signal),signal);
-            // false also means this window already scheduled the same target.
-            // Neither acknowledgement is readiness: a new matching probe is required.
-            if(acknowledgement?.errCode!==0||typeof acknowledgement?.data?.reloading!=='boolean')throw new Error('Invalid adapter refresh acknowledgement');
-          }catch(error){if(signal.aborted)throw new Error('CANCELLED');throw new Error('è§†é¢‘å·é€‚é…åˆ·æ–°è¯·æ±‚æœªå®Œæˆï¼›åŸç½‘ç»œå°†è‡ªåŠ¨æ¢å¤ï¼Œè¯·ç¨åé‡è¯•ï¼Œæ— éœ€åå¤ç™»å½•');}
-        }else if(!refreshRequested&&plan&&!this.adapterReloadAttempted&&(this.adapterUpdatePending||staleRuntime)&&Date.now()<deadline){
-          // Handle stale pages once per instance or changed deployment, only
-          // inside a validated routed lease. This flag is not refresh success.
-          this.adapterUpdatePending=false;
-          this.adapterReloadAttempted=true;
-          // v260907 exposes reload only through its internal WebSocket client,
-          // not an HTTP route. Never guess GET/POST endpoints or treat a failed
-          // refresh as ready. A refreshed page is verified by the next probe.
-          this.update('waiting','æ–°ç‰ˆé€‚é…éœ€è¦é¦–æ¬¡åˆ·æ–°ï¼šå†…ç½® v260907 æ²¡æœ‰å…¬å¼€è‡ªåŠ¨åˆ·æ–°æ¥å£ï¼›å½“å‰ä¸´æ—¶è¿æ¥ä¿æŒå¼€å¯ï¼Œè¯·åˆ·æ–°è§†é¢‘å·é¡µé¢ä»¥è½½å…¥æ›´æ–°ï¼Œå·²æœ‰ç™»å½•ä¿ç•™',{needsPage:true,waitingUntil:deadline});
-        }else if(refreshRequested)this.update('waiting',pageBootstrap?.message||'åˆ·æ–°è¯·æ±‚å·²å‘é€ï¼Œæ­£åœ¨ç­‰å¾…æ–°ç‰ˆé€‚é…å’Œå½“å‰ä»»åŠ¡æ‰€éœ€æ¥å£ï¼›å·²æœ‰ç™»å½•ä¿ç•™',{needsPage:pageBootstrap?.needsPage??false,waitingUntil:deadline});
-        else this.update('waiting',this.adapterMessage(required),{needsPage:true,waitingUntil:deadline});
-      }
-      await delay(Math.max(1,Math.min(1000,deadline-Date.now())),signal);
-    }while(Date.now()<deadline);
-    throw new Error(pageOnline?this.adapterMessage(required)+'ï¼›åŸç½‘ç»œå°†è‡ªåŠ¨æ¢å¤':pageBootstrap&&pageBootstrap.status!=='not-found'?pageBootstrap.message+'ï¼›å°šæœªæ¥å…¥é‡‡é›†ç»„ä»¶ï¼ŒåŸç½‘ç»œå°†è‡ªåŠ¨æ¢å¤':'å¾®ä¿¡è§†é¢‘å·é¡µé¢å°šæœªè¿æ¥ï¼ŒåŸç½‘ç»œå°†è‡ªåŠ¨æ¢å¤ï¼›è¯·æ‰“å¼€è§†é¢‘å·é¡µé¢åé‡è¯•');
-  }
-  async withConnection(signal,operation,required=adapterCapabilities) {
-    required=requiredCapabilities(required);
-    if(this.closed) throw new Error('åº”ç”¨æ­£åœ¨é€€å‡º');
-    if(signal?.aborted)throw new Error('CANCELLED');
-    if(this.recovering)await abortable(this.recovering,signal);
-    if(this.closed||signal?.aborted)throw new Error('CANCELLED');
-    if(this.state.phase==='error')throw new Error('ä¸Šæ¬¡ç½‘ç»œæ¢å¤å°šæœªå®Œæˆï¼Œè¯·å…ˆåœ¨è§†é¢‘å·è¿æ¥ä¸­æ¢å¤åŸç½‘ç»œ');
-    if(!this.config().automatic) return operation();
-    if(!this.config().enabled) throw new Error('è¯·å…ˆåœ¨è§†é¢‘å·è¿æ¥ä¸­å¯ç”¨ä½œè€…ä½œå“è¯»å–');
-    if(this.ending) await this.ending;
-    if(this.state.phase==='error') throw new Error('ä¸Šæ¬¡ç½‘ç»œæ¢å¤å°šæœªå®Œæˆï¼Œè¯·å…ˆåœ¨è§†é¢‘å·è¿æ¥ä¸­æ¢å¤åŸç½‘ç»œ');
-    if(!this.started)await this.prepare();
-    if(!this.status().allowed) {if(!this.approving)this.approving=this.allow().finally(()=>this.approving=null);if(!await abortable(this.approving,signal))throw new Error('å°šæœªç¡®è®¤å¾®ä¿¡è‡ªåŠ¨è¿æ¥ï¼Œè¯·åœ¨è§†é¢‘å·è¿æ¥ä¸­å®Œæˆé¦–æ¬¡ç¡®è®¤');}
-    // Preparation/confirmation can outlive a previous task's final restoration.
-    // Recheck after those awaits before joining or starting a lease.
-    if(this.ending)await this.ending;
-    if(this.closed || signal?.aborted)throw new Error('CANCELLED');
-    if(this.state.phase==='error')throw new Error('ä¸Šæ¬¡ç½‘ç»œæ¢å¤å°šæœªå®Œæˆï¼Œè¯·å…ˆåœ¨è§†é¢‘å·è¿æ¥ä¸­æ¢å¤åŸç½‘ç»œ');
-    const member=randomUUID();this.members.add(member);
-    try {
-      if(!this.started){this.controller=new AbortController();this.startedRequired=required;this.started=this.begin(this.controller.signal,required);}
-      await abortable(this.started,signal); if(signal?.aborted) throw new Error('CANCELLED');
-      // Each joining task checks any additional capability before it runs. Do
-      // not widen the first task's gate or cancel it when another task fails.
-      if(required.some(key=>!this.startedRequired.includes(key))){
-        if(!await this.adapterReady(signal||this.controller.signal,8000,required))throw new Error(this.adapterMessage(required));
-      }
-      if(signal?.aborted)throw new Error('CANCELLED');return await operation();
-    } finally {
-      this.members.delete(member);
-      if(!this.members.size) { this.ending=this.finish();try{await this.ending;}finally{this.ending=null;} }
-      this.changed();
-    }
-  }
-  async finish() {
-    this.controller?.abort();await this.started?.catch(()=>{});
-    try {
-      if(this.leaseFile){this.update('restoring','æ­£åœ¨æ¢å¤åŸä»£ç†ä¸ä¸´æ—¶è¯ä¹¦');await this.system('restore',this.leaseFile);await this.stopProxy();}
-      this.update('idle','å½“å‰ä»»åŠ¡å·²ç»“æŸï¼ŒåŸç½‘ç»œè®¾ç½®å·²æ¢å¤');
-    } catch(error){this.update('error','è‡ªåŠ¨æ¢å¤å°šæœªå®Œæˆï¼Œè¯·ç‚¹å‡»æ¢å¤åŸç½‘ç»œ');throw error;}
-    finally {this.started=null;this.startedRequired=null;this.controller=null;if(this.state.phase!=='error'){this.leaseFile=null;this.leaseMode=null;}}
-  }
-  async restore() { if(this.members.size) throw new Error('è¯·å…ˆåœæ­¢ä½œå“è¯»å–å’Œè§†é¢‘å·ä¸‹è½½ï¼Œå†æ¢å¤ç½‘ç»œ');await this.recover();if(this.leaseFile)await this.stopProxy();this.leaseFile=null;this.leaseMode=null;this.update('idle','åŸç½‘ç»œè®¾ç½®å·²æ¢å¤');return this.status(); }
-  async close(){
-    this.closed=true;this.controller?.abort();
-    await this.recovering;await this.ending;
-    if(this.state.phase==='error'&&!this.leaseFile)throw new Error(this.state.label);
-    await this.finish();this.worker?.kill();
-  }
-}
+  try{new Script(text,{filename:'collector-content.js'});}catch{throw new Error('è§†é¢‘å·é€‚é…è„šæœ¬ä¸æ˜¯æœ‰æ•ˆ JavaScriptï¼·Û^í¢G§²ÚîÆ­y×VæCò~[{.j8kX¾X‹[êîKúŠxnš)Xû~š^™Ú.ûÈÎKØnˆz®XªX‹~ikzîŠêN‹h^i{nûÉ¾Šû~YÊŠú^š^™Ú.˜hº(	Îi»NZI¢(i"X‹~ik(	ŞûÈÎ[Ù>X˜Ş‹ùîhê^KÉ®{º~{ºŞzØ[è^8"s¢~Šxnš)Xû~š^™Ú.j8kX¾‹h^i{nûÈÎizk9^zîŠêN[Ù>X˜Şš^™Ú.x«nhûÉ¾Šû~YÊ[êîKúŠxnš)Xû~š^™Ú.˜hº(	Îi»NZI¢(i"X‹~ik(	ŞûÈÎ[Ù>X˜Ş‹ùîhê^KÉ®{º~{ºŞzØ[è^8"r“ Ğ¢7FGW3ÓÓÒw66âÖÆ–Ö—FVBsò~Šxnš)Xû~š^™Ú.j8kX¾‹ëîX‹ZèXZKˆ®™™ûÈÎizk9^zîŠêN[Ù>X˜Şš^™Ú.x«nhûÉ¾Šû~YÊ[êîKúŠxnš)Xû~š^™Ú.˜hº(	Îi»NZI¢(i"X‹~ik(	ŞûÈÎ[Ù>X˜Ş‹ùîhê^KÉ®{º~{ºŞzØ[è^8"s Ğ¢7FGW3ÓÓÒvæ÷BÖf÷VæBsò~[	®iÊ®j8kX¾X‹Xúşš¨ÎŠøy¨NŠxnš)Xû~š^™Ú.ûÈÎŠû~YÊyK^ˆI[êîKúKŠŞh™>[ÈŠxnš)Xû~ûÉ¾[Ù>X˜Ş‹ùîhê^KÉ®{º~{ºŞzØ[è^8"s Ğ¢f÷VæCò~[{.j8kX¾X‹[êîKúŠxnš)Xû~š^™Ú.ûÈÎKØn[Ù>X˜Ş[z^X[~jşi¨.KˆŞiJşhÈˆz®XªX‹~ikûÉ¾Šû~YÊŠú^š^™Ú.˜hº(	Îi»NZI¢(i"X‹~ik(	ŞûÈÎ‹ùîhê^YîKÉ®{º~{ºŞ[Ù>X˜ŞK»¾Xª8"s Ğ¢~[Ù>X˜Òv–æF÷w2i¨.KˆŞiJşhÈˆz®XªzîŠêNŠxnš)Xû~š^™Ú.x«nhûÉ¾Šû~YÊ[êîKúŠxnš)Xû~š^™Ú.˜hº(	Îi»NZI¢(i"X‹~ik(	ŞûÈÎ[Ù>X˜Ş‹ùîhê^KÉ®{º~{ºŞzØ[è^8"wÒ“°Ğ¢ÆWBf÷VæCÖfÇ6S·6–væÂçF‡&÷t–d&÷'FVB‚“·F†—2çWFFR‚wv—F–ærrÂ~jÚ>YÊj8kX¾yK^ˆI[êîKúKŠŞ[{.h™>[Èy¨NŠxnš)Xû~š^™Ú"rÇ¶æVVG5vS¦fÇ6RÇv—F–æuVçF–Ã¦FVFÆ–æWÒ“°Ğ¢G'—°Ğ¢6–væÂçF‡&÷t–d&÷'FVB‚“¶6öç7B7FFSÖv—B&÷'F&ÆR…&öÖ—6Rç&W6öÇfR‚’çF†Vâ‚‚“Óç·6–væÂçF‡&÷t–d&÷'FVB‚“·&WGW&âF†—2çv–æF÷t†VÇW"æ–ç7V7B‡6–væÂ“·Ò’Ç6–væÂ“°Ğ¢6–væÂçF‡&÷t–d&÷'FVB‚“°Ğ¢–b‡7FFSòæö²Ó×G'VWÇÇ7FFRç7FGW2ÓÒvf÷VæBwÇÇ7FFRæÖF6†VBÓÓ—¶6öç7B&W7VÇCÖÖçVÂ‡7FFSòç7FGW7ÇÂwVæf–Æ&ÆRr“·F†—2çWFFR‚wv—F–ærrÇ&W7VÇBæÖW76vRÇ¶æVVG5vS§G'VRÇv—F–æuVçF–Ã¦FVFÆ–æRÇvTFWFV7F–öã§&W7VÇBç7FGW7Ò“·&WGW&â&W7VÇC·ĞĞ¢f÷VæC×G'VS·F†—2çWFFR‚wv—F–ærrÂ~[{.j8kX¾X‹[êîKúŠxnš)Xû~š^™Ú.ûÈÎjÚ>YÊhê^XZ^[Ù>X˜ŞK»¾Xª‹ùîhêRrÇ¶æVVG5vS¦fÇ6RÇv—F–æuVçF–Ã¦FVFÆ–æRÇvTFWFV7F–öã¢vf÷VæBwÒ“°Ğ¢6–væÂçF‡&÷t–d&÷'FVB‚“¶–b„FFRææ÷r‚“ãÖFVFÆ–æWÇÂF†—2ç7FGW2‚’æÆÆ÷vVB—¶6öç7B&W7VÇCÖÖçVÂ‚wVæf–Æ&ÆRrÇG'VR“·F†—2çWFFR‚wv—F–ærrÇ&W7VÇBæÖW76vRÇ¶æVVG5vS§G'VRÇv—F–æuVçF–Ã¦FVFÆ–æRÇvTFWFV7F–öã¢vf÷VæBwÒ“·&WGW&â&W7VÇC·ĞĞ¢6öç7B&Vg&W6†VCÖv—B&÷'F&ÆR…&öÖ—6Rç&W6öÇfR‚’çF†Vâ‚‚“Óç·6–væÂçF‡&÷t–d&÷'FVB‚“·&WGW&âF†—2çv–æF÷t†VÇW"ç&Vg&W6‚‡6–væÂ“·Ò’Ç6–væÂ“°Ğ¢6–væÂçF‡&÷t–d&÷'FVB‚“°Ğ¢6öç7B–çfö¶VC×&Vg&W6†VCòæö³ÓÓ×G'VRbg&Vg&W6†VBç7FGW3ÓÓÒv–çfö¶VBrbg&Vg&W6†VBç&Vg&W6„GFV×FVCÓÓ×G'VRbg&Vg&W6†VBç&Vg&W6†VCÓÓ×G'VS°Ğ¢6öç7B&W7VÇCÖ–çfö¶VC÷·7FGW3¢v–çfö¶VBrÆf÷VæC§G'VRÇ&Vg&W6…&WVW7FVC§G'VRÆæVVG5vS¦fÇ6RÆÖW76vS¢~[{.j8kX¾X‹Šxnš)Xû~š^™Ú.[›nŠû~k.YÊŠú^š^X‹~ikûÈÎjÚ>YÊzØ[è^hê^XZ^˜x~™¸n{¸NK»nY(Î[Ù>X˜ŞK»¾Xªh˜™Èhê^Xú>8"wÓ¦ÖçVÂ‡&Vg&W6†VCòç7FGW7ÇÂwVæf–Æ&ÆRrÇG'VRÇ&Vg&W6†VCòç&Vg&W6„GFV×FVCÓÓ×G'VR“°Ğ¢F†—2çWFFR‚wv—F–ærrÇ&W7VÇBæÖW76vRÇ¶æVVG5vS§&W7VÇBææVVG5vRÇv—F–æuVçF–Ã¦FVFÆ–æRÇvTFWFV7F–öã§&W7VÇBç7FGW7Ò“·&WGW&â&W7VÇC°Ğ¢Ö6F6‚†W'&÷"—¶–b‡6–væÂæ&÷'FVB—F‡&÷rW'&÷"‚t4ä4TÄÄTBr“¶6öç7B&W7VÇCÖÖçVÂ‚wVæf–Æ&ÆRrÆf÷VæB“·F†—2çWFFR‚wv—F–ærrÇ&W7VÇBæÖW76vRÇ¶æVVG5vS§G'VRÇv—F–æuVçF–Ã¦FVFÆ–æRÇvTFWFV7F–öã§&W7VÇBç7FGW7Ò“·&WGW&â&W7VÇC·ĞĞ¢ĞĞ¢'Vå7—7FVÒ†7F–öâÇ7FFTf–ÆSÖçVÆÂÇ6–væÃÖçVÆÂ’°Ğ¢6öç7B7—7FVÕ67&—C×F‚æ¦ö–â‡F†—2æ&–âÂv6öÆÆV7F÷"rÂv6öÆÆV7F÷"×7—7FVÒç3r“°Ğ¢&WGW&âæWr&öÖ—6R‚‡&W6öÇfRÇ&V¦V7B“Óç°Ğ¢6öç7B&w3Õ²rÔæõ&öf–ÆRrÂrÔæöä–çFW&7F—fRrÂrÔf–ÆRrÇ7—7FVÕ67&—BÂrÔ7F–öârÆ7F–öâÂrÔ÷væW%&ö6W72rÅ7G&–ær‡&ö6W72ç–B•Ó¶–b‡7FFTf–ÆR–&w2çW6‚‚rÕ7FFTf–ÆRrÇ7FFTf–ÆR“°Ğ¢–b‡6–væÃòæ&÷'FVB—&WGW&â&V¦V7B†æWrW'&÷"‚t4ä4TÄÄTBr’“°Ğ¢6öç7B6†–ÆC×7vâ‚w÷vW'6†VÆÂæW†RrÆ&w2Ç·v–æF÷w4†–FS§G'VRÇ7FF–ó¥²v–væ÷&RrÂw—RrÂw—Ru×Ò“¶ÆWB÷WGWCÒrrÇF–ÖVD÷WCÖfÇ6S°Ğ¢6öç7BFW&Ö–æFSÒ‚“Óç¶6öç7B6ÆVçW×7vâ‚wF6¶¶–ÆÂæW†RrÅ²rõ”BrÅ7G&–ær†6†–ÆBç–B’ÂrõBrÂrôbuÒÇ·v–æF÷w4†–FS§G'VRÇ7FF–ó¢v–væ÷&RwÒ“¶6ÆVçWæöâ‚vW'&÷"rÂ‚“Óæ6†–ÆBæ¶–ÆÂ‚’“·Ó°Ğ¢6öç7BF–ÖW#×6WEF–ÖV÷WB‚‚“Óç·F–ÖVD÷WC×G'VS·FW&Ö–æFR‚“·ÒÆ7F–öãÓÓÒvÇ’sóƒ¦7F–öãÓÓÒw&W7F÷&Rsó#£CS“·6–væÃòæFDWfVçDÆ—7FVæW"‚v&÷'BrÇFW&Ö–æFRÇ¶öæ6S§G'VWÒ“¶6†–ÆBç7FF÷WBæöâ‚vFFrÆ#Óæ÷WGWB³Ö"“¶6†–ÆBç7FFW'"ç&W7VÖR‚“¶6†–ÆBæöâ‚vW'&÷"rÂ‚“Óç¶6ÆV%F–ÖV÷WB‡F–ÖW"“·6–væÃòç&VÖ÷fTWfVçDÆ—7FVæW"‚v&÷'BrÇFW&Ö–æFR“·&V¦V7B†æWrW'&÷"‚uv–æF÷w>‹ùîhê^‹è^Xªzˆ¾[¨şiÊ®ˆ;ŞY
+şXª‚r’“·Ò“°Ğ¢6†–ÆBæöâ‚v6Æ÷6RrÆ6öFSÓç¶6ÆV%F–ÖV÷WB‡F–ÖW"“·6–væÃòç&VÖ÷fTWfVçDÆ—7FVæW"‚v&÷'BrÇFW&Ö–æFR“¶–b‡6–væÃòæ&÷'FVB—&WGW&â&V¦V7B†æWrW'&÷"‚t4ä4TÄÄTBr’“¶ÆWB&W7VÇC·G'—·&W7VÇCÔ¥4ôâç'6R†÷WGWBç&WÆ6R‚õåÇTdTdbòÂrr’“·Ö6F6‡·ĞĞ¢–b†6öFRÓÓ—¶6öç7B7FvW3×²v6W'F–f–6FRÖ6†V6²s¢~ŠøKšnj8iúRrÂv6W'F–f–6FR×&÷‡’Ö&6VÆ–æRs¢~‹ùîhê^X˜ŞKº>ynx«nhjZû’rÂv6W'F–f–6FR×'6Rs¢~iÊÎiË®‹ùîhê^ŠøKšnŠû¾XùbrÂv6W'F–f–6FRÖ–FVçF—G’s¢~iÊÎiË®‹ùîhê^ŠøKšnYŞz{Y(ÎiÈiXiÉşjZû’rÂv6W'F–f–6FRÖf–ævW'&–çBs¢~iÊÎiË®‹ùîhê^ŠøKšnhÈ~{«jZû’rÂv6W'F–f–6FR×7F÷&Rs¢~[Ù>X˜ŞyJh‹~ŠøKšn[©>j8iúRrÂv6W'F–f–6FRÖFBs¢~K‹Ni{nŠøKšnKúK»²rÂv6W'F–f–6FR×&VÖ÷fRs¢~K‹Ni{nŠøKšnz{¾™šBrÂw&÷‡’ÖÇ’s¢~Kº>ynXˆ~hÚ"rÂw&÷‡’×&W7F÷&Rs¢~XéşKº>ynh.ZHÒrÂw&÷WFR×&W7F÷&Rs¢t6Æ6‚XˆnkXh.ZHÒrÂw&W7F÷&R×7FFRs¢~h.ZHŞŠë[Ù^Šû¾XùbrÂw&W7F÷&R×6fRs¢~h.ZHŞŠë[Ù^KùŞZÙ‚wÓ¶6öç7B7FvS×7FvW5·&W7VÇCòç7FvUÒÇÂ†7F–öãÓÓÒw&W7F÷&Rsò~‹ùîhê^h.ZHÒs¢~‹ùîhê^XxnZHrr“°Ğ¢6öç7BW'&÷#ÖæWrW'&÷"‡F–ÖVD÷WCöG·7FvWŞ‹h^i{nûÉ¾iÊ®{º~{ºŞ˜x~™¸nûÈÎh.ZHŞŠë[Ù^KùŞyYYÊiÊÎiË¦¦G·7FvWŞZK‹JRG´çVÖ&W"æ—4–çFVvW"‡&W7VÇCòæW'&÷$6öFR“öûÈ…v–æF÷w2™IŠúòG·&W7VÇBæW'&÷$6öFWŞûÈ–¢rwŞûÉ¾h.ZHŞŠë[Ù^KùŞyYYÊiÊÎiË¦“°Ğ¢6öç7BF–væ÷7F–5FW‡C×fÇVSÓçG—VöbfÇVSÓÓÒw7G&–ærs÷fÇVRç6Æ–6RƒÃ#Sb“¦çVÆÃ°Ğ¢W'&÷"æF–væ÷7F–3×·7FvS¦F–væ÷7F–5FW‡B‡&W7VÇCòç7FvR’Ââââ…²vÆV6R×&VBrÂvÆV6R×6—¦RrÂvÆV6R×'6RrÂvÆV6R×fÆ–FFRrÂw&÷WFR×&W7F÷&RrÂv†VÇW"ÖW†V2rÂv†VÇW"Ö÷WGWBuÒæ–æ6ÇVFW2‡&W7VÇCòæ†VÇW%7FvR“÷¶†VÇW%7FvS§&W7VÇBæ†VÇW%7FvWÓ§·Ò’Ââââ…²u&÷‡”Væ&ÆRrÂu&÷‡•6W'fW"rÂu&÷‡”÷fW'&–FRrÂtWFô6öæf–uU$ÂuÒæ–æ6ÇVFW2‡&W7VÇCòç&÷‡”f–VÆB“÷·&÷‡”f–VÆC§&W7VÇBç&÷‡”f–VÆGÓ§·Ò’ÆW†6WF–öåG—S¦F–væ÷7F–5FW‡B‡&W7VÇCòæW†6WF–öåG—R’Æ–ææW%G—S¦F–væ÷7F–5FW‡B‡&W7VÇCòæ–ææW%G—R’Æ–ææW$W'&÷$6öFS¤çVÖ&W"æ—4–çFVvW"‡&W7VÇCòæ–ææW$W'&÷$6öFR“÷&W7VÇBæ–ææW$W'&÷$6öFS¦çVÆÂÆW'&÷$6öFS¤çVÖ&W"æ—4–çFVvW"‡&W7VÇCòæW'&÷$6öFR“÷&W7VÇBæW'&÷$6öFS¦çVÆÇÓ°Ğ¢&WGW&â&V¦V7B†W'&÷"“°Ğ¢ĞĞ¢–b‚&W7VÇB—&WGW&â&V¦V7B†æWrW'&÷"‚uv–æF÷w>‹ùîhê^j8iú^‹ùNY¹îiziX{¹>iéÂr’“·&W6öÇfR‡&W7VÇB“°Ğ¢Ò“°Ğ¢Ò“°Ğ¢ĞĞ¢7–æ27F'DwV&B†f–ÆR’°Ğ¢6öç7B7—7FVÕ67&—C×F‚æ¦ö–â‡F†—2æ&–âÂv6öÆÆV7F÷"rÂv6öÆÆV7F÷"×7—7FVÒç3r“°Ğ¢òòv–æF÷w2÷vW%6†VÆÂW†—G26–ÆVçFÇ’v—F‚æöFRw2DUD4„TEõ$ô4U52fÆràĞ¢òò†–FFVâ7F'BÕ&ö6W726†–ÆB7W'f—fW2F†R÷væW"v—F†÷WB&WV—&–ær6öç6öÆRàĞ¢6öç7B&w3ÖÔæõ&öf–ÆRÔæöä–çFW&7F—fRÔf–ÆR"G·7—7FVÕ67&—GÒ"Ô7F–öâwV&BÕ7FFTf–ÆR"G¶f–ÆWÒ&°Ğ¢6öç7B6öÖÖæCÖ7F'BÕ&ö6W72Ôf–ÆUF‚w÷vW'6†VÆÂæW†RrÔ&wVÖVçDÆ—7BrG¶&w2ç&WÆ6TÆÂ‚"r"Â"rr"—ÒrÕv–æF÷u7G–ÆR†–FFVæ°Ğ¢6öç7B6†–ÆC×7vâ‚w÷vW'6†VÆÂæW†RrÅ²rÔæõ&öf–ÆRrÂrÔæöä–çFW&7F—fRrÂrÔVæ6öFVD6öÖÖæBrÄ'VffW"æg&öÒ†6öÖÖæBÂwWFcfÆRr’çFõ7G&–ær‚v&6ScBr•ÒÇ·v–æF÷w4†–FS§G'VRÇ7FF–ó¢v–væ÷&RwÒ“°Ğ¢ÆWBf–ÆVCÖfÇ6S¶6†–ÆBæöâ‚vW'&÷"rÂ‚“Óæf–ÆVC×G'VR“°Ğ¢f÷"†ÆWB“Ó¶“ÃC¶’²²—¶–b†g2æW†—7G57–æ2†f–ÆR²ræwV&B×&VG’r’—&WGW&ã¶–b†f–ÆVBÇÂ†6†–ÆBæW†—D6öFRÓÖçVÆÂbb6†–ÆBæW†—D6öFRÓÓ’–'&V³¶v—BFVÆ’ƒ#S“·ĞĞ¢F‡&÷ræWrW'&÷"‚~{Ù{¹Îh.ZHŞZèhªNiÊ®ˆ;ŞY
+şXªûÈÎiÊÎjÊKˆŞXˆ~hÚ.{;¾{¹şKº>ybr“°Ğ¢ĞĞ¢&V6÷fW"‚’°Ğ¢–b‡F†—2ç&V6÷fW&–ær—&WGW&âF†—2ç&V6÷fW&–æs°Ğ¢òò–ç7FÆÂF†R6†&VB&'&–W"&Vf÷&RVÖ—GF–ær7FFR÷"7F'F–ær’ôòâF†PĞ¢òòÆ–6F–öâ6â6†÷r—G2v–æF÷r–ÖÖVF–FVÇ’v—F†÷WB&6–æræWrÆV6RàĞ¢F†—2ç&V6÷fW&–æsÕ&öÖ—6Rç&W6öÇfR‚’çF†Vâ†7–æ2‚“Óç°Ğ¢f÷"†6öç7BæÖRöbg2ç&VFF—%7–æ2‡F†—2æF—&V7F÷'’’æf–ÇFW"†ãÓâõæÆV6RÕµÇrÕÒµÂæ§6öâBòçFW7B†â’’’°Ğ¢6öç7Bf–ÆS×F‚æ¦ö–â‡F†—2æF—&V7F÷'’ÆæÖR“²ÆWB6fVC·G'—·6fVCÔ¥4ôâç'6R†g2ç&VDf–ÆU7–æ2†f–ÆRÂwWFc‚r’“·Ö6F6‡·6fVCÖv—BF†—2ç7—7FVÒ‚w7FFR×7FGW2rÆf–ÆR“·ĞĞ¢–b‡6fVBç†6RÓÒw&W7F÷&VBr–v—BF†—2ç7—7FVÒ‚w&W7F÷&RrÆf–ÆR“°Ğ¢ĞĞ¢F†—2çWFFR‚v–FÆRrÂ~Xéş{Ù{¹ÎŠëî{Úî[{.h.ZHÒr“°Ğ¢Ò’æ6F6‚†W'&÷#Óç°Ğ¢F†—2çWFFR‚vW'&÷"rÆKˆ®jÊ{Ù{¹Îh.ZHŞ[	®iÊ®ZèÎh‰ûÉ¢G¶W'&÷"æÖW76vWÖ“·F‡&÷rW'&÷#°Ğ¢Ò’æf–æÆÇ’‚‚“Óç·F†—2ç&V6÷fW&–æsÖçVÆÃ·Ò“°Ğ¢F†—2çWFFR‚w&V6÷fW&–ærrÂ~jÚ>YÊh.ZHŞKˆ®jÊKŠŞijŞy¨N{Ù{¹ÎŠëî{ÚîûÈÎiÊÎYË‹XNiiXúşjÚ>[‹iú^yÈ²r“°Ğ¢&WGW&âF†—2ç&V6÷fW&–æs°Ğ¢ĞĞ¢7–æ2&W&R‚’°Ğ¢–b‡F†—2ç&V6÷fW&–ær–v—BF†—2ç&V6÷fW&–æs°Ğ¢–b‡F†—2æ6Æ÷6VB—F‡&÷ræWrW'&÷"‚~[©NyJjÚ>YÊ˜X{¢r“°Ğ¢–b‡F†—2ç7FFRç†6SÓÓÒvW'&÷"r—F‡&÷ræWrW'&÷"‚~Kˆ®jÊ{Ù{¹Îh.ZHŞ[	®iÊ®ZèÎh‰ûÈÎŠû~XXx+X{¾h.ZHŞXéş{Ù{¹Âr“°Ğ¢–b‚F†—2ç&W&–ær—F†—2ç&W&–æs×F†—2ç&W&T6ö×öæVçB‚’æf–æÆÇ’‚‚“ÓçF†—2ç&W&–æsÖçVÆÂ“°Ğ¢&WGW&âF†—2ç&W&–æs°Ğ¢ĞĞ¢7–æ2&W&T6ö×öæVçB‚’°Ğ¢F†—2çWFFR‚w&W&–ærrÂ~jÚ>YÊXxnZH~Xh^{ÚîŠxnš)Xû~{¸NK»br“°Ğ¢òòc#c“r6öçFVçE67&—B—2&VBÆö6ÆÇ’æB–æÆ–æVB–çFòF†R…DÔÂâàĞ¢òòW‡FW&æÂvÆö&Å67&—B6âf–ÂgFW"&÷WFR6†ævRæBÆVfRöæÇ’F†PĞ¢òòW7G&VÒw2–æ6ö×F–&ÆR“"†æFÆW"'Vææ–æràĞ¢6öç7B6öçFVçE67&—C×F‚æ¦ö–â‡F†—2æ&–âÂv6öÆÆV7F÷"rÂv6öÆÆV7F÷"Ö6öçFVçBæ§2r“°Ğ¢òòc#c“r&W6öÇfW2âV×G’vÆö&Å67&—BFòF†Rv÷&¶F—"—G6VÆbâ&W6W'fV@Ğ¢òò'6VçBF‚F—6&ÆW2W‡FW&æÂ–æ¦V7F–öâ–â—G2&W6öÇfU÷67&—E÷F‚‚“²FğĞ¢òòæ÷B7&VFRF†—2f–ÆR÷"ÆWBf÷&V–vâf–ÆR&V6öÖRâ–æ¦V7FVB67&—BàĞ¢6öç7BæôW‡FW&æÅ67&—C×F‚æ¦ö–â‡F†—2æF—&V7F÷'’ÂvfVæw6†Ö–æÆ–æRÖöæÇ’æF—6&ÆVBr“°Ğ¢–b†g2æW†—7G57–æ2†æôW‡FW&æÅ67&—B’—F‡&÷ræWrW'&÷"‚~Šxnš)Xû~Xh^ˆN˜.˜XŞKùŞyY‹zş[èNŠ*¾XÚyJûÈÎiÊ®i»şhÚ.xëiÈih~K»br“°Ğ¢ÆWB6öçFVçDf–ÆSÒvfVæw6†Ö6öçFVçBæ§2s°Ğ¢–b†g2æW†—7G57–æ2†6öçFVçE67&—B’—°Ğ¢6öç7B6÷W&6S×fÆ–FFT6öÆÆV7F÷%67&—E6÷W&6R†g2ç&VDf–ÆU7–æ2†6öçFVçE67&—B’’Æf–ævW'&–çCÖ7&VFT†6‚‚w6†#Sbr’çWFFR‡6÷W&6R’æF–vW7B‚v†W‚r’ç6Æ–6RƒÃ"“°Ğ¢F†—2æFFW$f–ævW'&–çCÖf–ævW'&–çC¶6öçFVçDf–ÆSÖfVæw6†Ö6öçFVçBÒG¶f–ævW'&–çGÒæ§6°Ğ¢6öç7BFWÆ÷–VC×F‚æ¦ö–â‡F†—2æF—&V7F÷'’Æ6öçFVçDf–ÆR’Æ–æ¦V7FVCÔ'VffW"æ6öæ6B…´'VffW"æg&öÒ†v–æF÷råõöfVæw6†6öçFVçD†6ƒÒG´¥4ôâç7G&–æv–g’†f–ævW'&–çB—ÓµÆæ’Ç6÷W&6UÒ“°Ğ¢–b‚g2æW†—7G57–æ2†FWÆ÷–VB—ÇÂg2ç&VDf–ÆU7–æ2†FWÆ÷–VB’æWVÇ2†–æ¦V7FVB’—¶g2çw&—FTf–ÆU7–æ2†FWÆ÷–VBÆ–æ¦V7FVB“·F†—2æFFW%WFFUVæF–æs×G'VS·F†—2æFFW%&VÆöDGFV×FVCÖfÇ6S·ĞĞ¢ĞĞ¢6öç7B6ö×öæVçD6öæf–s×F‚æ¦ö–â‡F†—2æF—&V7F÷'’Âv6ö×öæVçBç–ÖÂr“°Ğ¢–b†g2æW†—7G57–æ2†6öçFVçE67&—B’—°Ğ¢6öç7B7W'&VçCÖg2æW†—7G57–æ2†6ö×öæVçD6öæf–r“õ”ÔÂç'6R†g2ç&VDf–ÆU7–æ2†6ö×öæVçD6öæf–rÂwWFc‚r’“¦çVÆÃ°Ğ¢–b†7W'&VçBbgG—Vöb7W'&VçCÓÓÒvö&¦V7Brbb'&’æ—4'&’†7W'&VçB’—°Ğ¢7W'&VçBæ–æ¦V7C×²âââ†7W'&VçBæ–æ¦V7GÇÇ·Ò’ÆvÆö&Å67&—C¦æôW‡FW&æÅ67&—BÆ6öçFVçE67&—C§F‚æ¦ö–â‡F†—2æF—&V7F÷'’Æ6öçFVçDf–ÆR—Ó°Ğ¢g2çw&—FTf–ÆU7–æ2†6ö×öæVçD6öæf–rÅ”ÔÂç7G&–æv–g’†7W'&VçB’“°Ğ¢ĞĞ¢ĞĞ¢ÆWB&VG“ÖfÇ6S²G'’¶v—BF†—2æ’‚rö’ö6†ææVÇ2÷7FGW2rÆçVÆÂÃ#“·&VG“×G'VS·Ö6F6‡·ĞĞ¢–b‚&VG’’°Ğ¢6öç7BW†V7WF&ÆS×F‚æ¦ö–â‡F†—2æ&–âÂv6öÆÆV7F÷"rÂww…÷f–FVõöF÷væÆöBæW†Rr“°Ğ¢–b‚g2æW†—7G57–æ2†W†V7WF&ÆR’ÇÂ7&VFT†6‚‚w6†#Sbr’çWFFR†g2ç&VDf–ÆU7–æ2†W†V7WF&ÆR’’æF–vW7B‚v†W‚r’ÓÖ'VæFÆVD†6‚’F‡&÷ræWrW'&÷"‚~Xh^{Úî[êîKú{¸NK»n{Ë®ZKh‰nj
+š¨ÎZK‹J^ûÈÎŠû~˜xŞikZèŠ8^zˆ¾[¨òr“°Ğ¢6öç7B6öæf–s×F‚æ¦ö–â‡F†—2æF—&V7F÷'’Âv6ö×öæVçBç–ÖÂr“°Ğ¢–b‚g2æW†—7G57–æ2†6öæf–r’’g2çw&—FTf–ÆU7–æ2†6öæf–rÅ”ÔÂç7G&–æv–g’‡¶“§¶†÷7FæÖS¢s#rãããrÇ÷'C£##'ÒÆ–æ¦V7C§¶vÆö&Å67&—C¦æôW‡FW&æÅ67&—BÆ6öçFVçE67&—C§F‚æ¦ö–â‡F†—2æF—&V7F÷'’Æ6öçFVçDf–ÆR—ÒÇ&÷‡“§¶Væ&ÆVC¦fÇ6RÇ7—7FVÓ¦fÇ6RÇ6¶—–ç7FÆÅ&ö÷D6W'C§G'VRÇGVã¦fÇ6RÇF7&VÆ“§¶Væ&ÆVC¦fÇ6W××Ò’“°Ğ¢&WF—&U7FÆT6ö×öæVçE–B‡F†—2æF—&V7F÷'’“°Ğ¢F†—2çv÷&¶W#×7vâ†W†V7WF&ÆRÅ²w6W'fW"rÂrÒÖ6öæf–rrÆ6öæf–rÂrÒ×v÷&¶F—"rÇF†—2æF—&V7F÷'•ÒÇ¶7vC§F†—2æF—&V7F÷'’ÆVçc¦6öÆÆV7F÷$Vçf—&öæÖVçB‚’Çv–æF÷w4†–FS§G'VRÇ7FF–ó¢v–væ÷&RwÒ“²F†—2çv÷&¶W"æöâ‚vW'&÷"rÂ‚“Óç·Ò“°Ğ¢f÷"†ÆWB“Ó¶“ÃS¶’²²—¶v—BFVÆ’ƒS“·G'—¶v—BF†—2æ’‚rö’ö6†ææVÇ2÷7FGW2rÆçVÆÂÃ“·&VG“×G'VS¶'&V³·Ö6F6‡·×ĞĞ¢–b‚&VG’’F‡&÷ræWrW'&÷"‚~Šxnš)Xû~{¸NK»niÊ®ˆ;ŞY
+şXªûÈÎXúşˆ;ŞŠ*¾ZèXZ‹ÚşK»nhºnhŠ®h‰niÊÎiË®zºşXú>Š*¾XÚyJ‚r“°Ğ¢ĞĞ¢–b†g2æW†—7G57–æ2†6öçFVçE67&—B’—°Ğ¢6öç7B6öæf–t–æfóÖv—BF†—2æ’‚rö’ö6öæf–rr“°Ğ¢–b‡F‚ç&W6öÇfR…7G&–ær†6öæf–t–æfòæ6öæf–uöf–ÆWÇÂrr’’çFôÆ÷vW$66R‚’Ó×F‚ç&W6öÇfR†6ö×öæVçD6öæf–r’çFôÆ÷vW$66R‚’—F‡&÷ræWrW'&÷"‚~[Ù>X˜ŞiÊÎiË®˜x~™¸niÈŞXªyKX[nK¹nzˆ¾[¨şY
+şXªûÈÎKˆŞˆ;Şi»şhÚ.X[nˆI®iÊÎûÉ¾Šû~X[>™zŞX[nK¹n˜x~™¸n[z^X[~YîXhŞŠùRr“°Ğ¢6öç7BvçFVC×F‚æ¦ö–â‡F†—2æF—&V7F÷'’Æ6öçFVçDf–ÆR“°Ğ¢6öç7Bf–VÆCÖ6öæf–t–æfòæf–VÆG3òæf–æB†cÓæbæ¶W“ÓÓÒv–æ¦V7Bæ6öçFVçE67&—Br“°Ğ¢6öç7BW‡FW&æÃÖ6öæf–t–æfòæf–VÆG3òæf–æB†cÓæbæ¶W“ÓÓÒv–æ¦V7BævÆö&Å67&—Br“°Ğ¢–b‡F‚ç&W6öÇfR…7G&–ær†f–VÆCòæVffV7F—fU÷fÇVWÇÂrr’’çFôÆ÷vW$66R‚’Ó×F‚ç&W6öÇfR‡vçFVB’çFôÆ÷vW$66R‚—ÇÇF‚ç&W6öÇfR…7G&–ær†W‡FW&æÃòæVffV7F—fU÷fÇVWÇÂrr’’çFôÆ÷vW$66R‚’Ó×F‚ç&W6öÇfR†æôW‡FW&æÅ67&—B’çFôÆ÷vW$66R‚’—°Ğ¢F†—2æFFW%WFFUVæF–æs×G'VS°Ğ¢F†—2æFFW%&VÆöDGFV×FVCÖfÇ6S°Ğ¢v—BF†—2ç7F÷&÷‡’‚“°Ğ¢6öç7BWFFSÖv—BF†—2æ’‚rö’ö6öæf–rrÇ·fÇVW3§²v–æ¦V7BævÆö&Å67&—Bs¦æôW‡FW&æÅ67&—BÂv–æ¦V7Bæ6öçFVçE67&—Bs§vçFVG×Ò“°Ğ¢ÆWBÆ–VCÖfÇ6S¶f÷"†ÆWB“Ó¶“Ã#S¶’²²—¶v—BFVÆ’ƒC“·G'—¶6öç7B7FGW3Öv—BF†—2æ’‚rö’÷&W7F'B÷7FGW3÷&W7F'E÷Fö¶VãÒr¶Væ6öFUU$”6ö×öæVçB‡WFFRç&W7F'E÷Fö¶Vâ’ÆçVÆÂÃS“¶–b‡7FGW2ç&W7F'Eö6ö×ÆWFVBbg7FGW2æ6öæf–uöÆ–VB—¶Æ–VC×G'VS¶'&V³·×Ö6F6‡·×ĞĞ¢–b‚Æ–VB—F‡&÷ræWrW'&÷"‚~˜x~™¸ni	Î{J.hš[^˜xŞ‹ÛŞ[	®iÊ®ZèÎh‰ûÈÎŠû~zˆŞYî˜xŞikXxnZH~‹ùîhêRr“°Ğ¢ĞĞ¢ĞĞ¢ÆWB6W'F–f–6FSÖv—BF†—2æ’‚rö’÷&÷‡’ö6W'F–f–6FR÷7FGW2r“°Ğ¢–b†6W'F–f–6FRæ—5öÆVv7’ÇÂ6W'F–f–6FRææÖSòç7F'G5v—F‚‚tfVæw6†ÕvT6†BÒr’ÇÂæWrFFR†6W'F–f–6FRæFWF–Ãòææ÷EögFW"’ævWEF–ÖR‚’ÂFFRææ÷r‚’³ƒcCÇÂæWrFFR†6W'F–f–6FRæFWF–Ãòææ÷EögFW"’ævWEF–ÖR‚“äFFRææ÷r‚’³"£3cb£ƒcC’°Ğ¢6öç7B&÷‡“Öv—BF†—2æ’‚rö’÷&÷‡’÷7FGW2r“°Ğ¢–b‡&÷‡’ç6W'f–6SòæÆ—7FVæ–ærÇÂ&÷‡’ç&÷‡“òæÆ—7FVæ–ær’F‡&÷ræWrW'&÷"‚~[{.iÈX[nK¹n[êîKú˜x~™¸n‹ùîhê^jÚ>YÊKÛşyJŠú^zºşXú>ûÈÎŠû~XXX[>™zŞZè>h‰n˜hºh˜¾Xª‹ùîhêRr“°Ğ¢v—BF†—2æ’‚rö’÷&÷‡’ö6W'F–f–6FRövVæW&FRrÇ¶æÖS¦fVæw6†ÕvT6†BÒG·&æFöÕUT”B‚’ç6Æ–6RƒÃ‚—ÖÇfÆ–E÷–V'3£"Æ–ç7FÆÃ¦fÇ6RÇ&W7F'C¦fÇ6WÒ“²6W'F–f–6FSÖv—BF†—2æ’‚rö’÷&÷‡’ö6W'F–f–6FR÷7FGW2r“°Ğ¢ĞĞ¢6öç7B&W7öç6SÖv—BF†—2æfWF6‚†æWrU$Â‚rö’÷&÷‡’ö6W'F–f–6FR÷VÒrÇF†—2æ6öæf–r‚’æ&6UW&Â’Ç·&VF—&V7C¢vW'&÷"rÇ6–væÃ¤&÷'E6–væÂçF–ÖV÷WBƒ—Ò“²–b‚&W7öç6Ræö²’F‡&÷ræWrW'&÷"‚~iÊÎiË®K‰>yJŠøKšniÊ®XxnZH~Z[Òr“°Ğ¢6öç7BVÓÖv—B&W7öç6RçFW‡B‚“²–b‚VÒæ–æ6ÇVFW2‚t$Tt”â4U%D”d”4DRr’ÇÂVÒæÆVæwFƒã3#sc‚’F‡&÷ræWrW'&÷"‚~iÊÎiË®ŠøKšnjÎ[Èş[È.[‹‚r“°Ğ¢6öç7Bf–ÆS×F‚æ¦ö–â‡F†—2æF—&V7F÷'’ÂvÆö6ÂÖ6W'F–f–6FRçVÒr“¶g2çw&—FTf–ÆU7–æ2†f–ÆRÇVÒ“°Ğ¢6öç7B'6VCÖæWrƒS”6W'F–f–6FR‡VÒ“¶–b‚'6VBæ6ÇÂ'6VBçfÆ–EFôFFRÂæWrFFR‚’ÇÂ'6VBç7V&¦V7Bæ–æ6ÇVFW2†6W'F–f–6FRææÖR’—F‡&÷ræWrW'&÷"‚~iÊÎiË®ŠøKšn‹ª¾K»Ş[È.[‹ûÈÎŠû~j8iú^Šxnš)Xû~‹ùîhêRr“°Ğ¢F†—2æ6W'F–f–6FS×¶æÖS¦6W'F–f–6FRææÖRÆf–ÆRÆf–ævW'&–çC§'6VBæf–ævW'&–çC#SgÓ²F†—2çWFFR‚w&W&VBrÂ~{¸NK»n[{.XxnZH~ûÉ¾ŠønXŠ¾Y(ÎKˆ¾‹ÛŞi{nˆz®Xª‹ùîhê^ûÈÎ[êîKúy›¾[Ù^K¸ŞYÊ[êîKúZèÎh‰r“²&WGW&âF†—2ç7FGW2‚“°Ğ¢ĞĞ¢7–æ2ÆÆ÷r‚’°Ğ¢v—BF†—2ç&W&R‚“²6öç7B–ç7V7F–öãÖv—BF†—2ç7—7FVÒ‚v–ç7V7Br“²6öç7BÆãÖv—BF†—2ç&÷WF–æræF—66÷fW"†–ç7V7F–öâç&÷‡’“¶6öç7BW7G&VÓ×Æãòrs§W7G&VÕ&÷‡’†–ç7V7F–öâç&÷‡’Æ–ç7V7F–öâæwV&FVE&÷‡’“°Ğ¢–b‚v—BF†—2æ6öç6VçB‡¶6W'F–f–6FS§F†—2æ6W'F–f–6FRææÖRÇ&÷‡”&Vf÷&S¦–ç7V7F–öâç&÷‡’å&÷‡•6W'fW"çfÇVRÇÂ~y»Nhê^‹ùîhêRrÇW7G&V×Ò’’&WGW&âfÇ6S°Ğ¢F†—2ç7F÷&RçWB‚v6öÆÆV7F÷"×öÆ–7’rÂvWFöÖF–2rÇ¶ÆÆ÷vVC§G'VRÆ6W'F–f–6FTf–ævW'&–çC§F†—2æ6W'F–f–6FRæf–ævW'&–çBÆ6öæf—&ÖVDC¤FFRææ÷r‚—Ò“·F†—2ç7F÷&RæfÇW6‚‚“·F†—2æ6†ævVB‚“·&WGW&âG'VS°Ğ¢ĞĞ¢7–æ2&Vv–â‡6–væÂÇ&WV—&VCÖFFW$6&–Æ—F–W2’°Ğ¢–b‚F†—2æ6W'F–f–6FR–v—BF†—2ç&W&R‚“²–b‡6–væÂæ&÷'FVB’F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢òòÆ—fRvV'6ö6¶WB6â7W'f—fR&W7F÷&F–öâv†–ÆRõõö76WG2&WVW7G2æğĞ¢òòÆöævW"&V6‚÷W"6ö×öæVçBâ¶VWF†RF6²×66÷VB&÷WFRf÷"÷W&F–öç2ÀĞ¢òòWfVâv†VâF†RÆöFVBFFW"Ç&VG’ÖF6†W3²ÖçVÂÖöFR7F—2VçF÷V6†VBàĞ¢6öç7BvU&VG“Öv—B&÷'F&ÆR‡F†—2æöæÆ–æR‚’Ç6–væÂ’bfv—BF†—2æFFW%&VG’‡6–væÂÃƒÇ&WV—&VB“°Ğ¢–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢6öç7B–ç7V7FVCÖv—BF†—2ç7—7FVÒ‚v–ç7V7Br“¶6öç7BÆãÖv—BF†—2ç&÷WF–æræF—66÷fW"†–ç7V7FVBç&÷‡’“¶6öç7BW7G&VÓ×Æãòrs§W7G&VÕ&÷‡’†–ç7V7FVBç&÷‡’Æ–ç7V7FVBæwV&FVE&÷‡’“°Ğ¢–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢6öç7B–C×&æFöÕUT”B‚“²F†—2æÆV6Tf–ÆS×F‚æ¦ö–â‡F†—2æF—&V7F÷'’ÆÆV6RÒG¶–GÒæ§6öæ“°Ğ¢F†—2æÆV6TÖöFS×Æãòw&÷WFVBs¢w7—7FVÒs°Ğ¢g2çw&—FTf–ÆU7–æ2‡F†—2æÆV6Tf–ÆRÄ¥4ôâç7G&–æv–g’‡·66†VÖ£Æ–BÆÖöFS§Æãòw&÷WFVBs¢w7—7FVÒrÇ&÷WF–æs§ÆâÆ÷væW#§&ö6W72ç–BÆ÷væW%7F'FVC¦–ç7V7FVBæ÷væW%7F'FVBÆ&Vf÷&S¦–ç7V7FVBç&÷‡’Ç&÷‡”FG&W73¢s#rããã£##2rÆ6W'F–f–6FTæÖS§F†—2æ6W'F–f–6FRææÖRÆ6W'F–f–6FTf–ÆS§F†—2æ6W'F–f–6FRæf–ÆRÆ6W'F–f–6FTf–ævW'&–çC§F†—2æ6W'F–f–6FRæf–ævW'&–çBÆ6W'F–f–6FUF‡VÖ'&–çC¢rrÆ6W'F–f–6FTFFVC¦fÇ6RÇ†6S¢w&W&VBwÒ’“°Ğ¢v—BF†—2æwV&B‡F†—2æÆV6Tf–ÆR“°Ğ¢–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢v—BF†—2æ’‚rö’÷&÷‡’ö6öæf–rrÇ·fÇVW3§²w&÷‡’æVæ&ÆVBs§G'VRÂw&÷‡’ç7—7FVÒs¦fÇ6RÂw&÷‡’æ†÷7FæÖRs¢s#rãããrÂw&÷‡’ç÷'Bs£##2Âw&÷‡’ç6¶—–ç7FÆÅ&ö÷D6W'Bs§G'VRÂw&÷‡’çGVâs¦fÇ6RÂw&÷‡’çF7&VÆ’æVæ&ÆVBs¦fÇ6RÂw&÷‡’çW7G&VÕ&÷‡’s§W7G&V×ÒÇ&W7F'C§G'VWÒÃ3“°Ğ¢–b‡6–væÂæ&÷'FVB’F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢F†—2çWFFR‚wG'W7F–ærrÂ~jÚ>YÊXxnZH~[êîKú‹ùîhê^ûÉ¾Zh"v–æF÷w2i‹îzK®ŠøKšnzîŠêNûÈÎŠû~jZû’fVæw6†ÕvT6†BÒYŞz{YîzîŠêBr“°Ğ¢v—BF†—2ç7—7FVÒ‚vÇ’rÇF†—2æÆV6Tf–ÆRÇ6–væÂ“°Ğ¢–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢–b‡Æâ–v—BF†—2ç&÷WF–æræ&Vv–â‡ÆâÇ6–væÂ“°Ğ¢–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢6öç7BÆ–VBÒv—BF†—2ç7—7FVÒ‚v–ç7V7Br“°Ğ¢–b‡Æâ—°Ğ¢òò&÷WFVBÖöFRæWfW"w&—FW27—7FVÒ&÷‡’W†6WF–öç2â÷F†W"Æ–6F–öç0Ğ¢òò&Vg&W6‚F†BÆ—7B–æFWVæFVçFÇ“²&WF–â—BæBfÆ–FFR÷W"VçG'—ö–çBàĞ¢6öç7BVæ6†ævVCÕ²u&÷‡”Væ&ÆRrÂu&÷‡•6W'fW"rÂtWFô6öæf–uU$ÂuÒæWfW'’†¶W“ÓæÆ–VBç&÷‡“òå¶¶W•Óòç&W6VçCÓÓÖ–ç7V7FVBç&÷‡“òå¶¶W•Óòç&W6VçBbfÆ–VBç&÷‡“òå¶¶W•ÓòçfÇVSÓÓÖ–ç7V7FVBç&÷‡“òå¶¶W•ÓòçfÇVR“°Ğ¢–b‚Væ6†ævVB—F‡&÷ræWrW'&÷"‚~‹ùîhê^XxnZH~iÉş™{N{;¾{¹şKº>ynXùyIşXùXÉnûÈÎŠxnš)Xû~˜x~™¸n[{.XÎjÚ.ûÈÎŠû~˜xŞŠùRr“°Ğ¢ĞĞ¢VÇ6R–b‚çVÖ&W"†Æ–VBç&÷‡“òå&÷‡”Væ&ÆSòçfÇVR’ÇÂÆ–VBç&÷‡“òå&÷‡•6W'fW#òçfÇVRÓÒs#rããã£##2rÇÂÆ–VBç&÷‡“òäWFô6öæf–uU$ÃòçfÇVR’F‡&÷ræWrW'&÷"‚~{;¾{¹şKº>ynXˆ~hÚ.iÊ®yIşiXh‰n[{.Š*¾X[nK¹nzˆ¾[¨şKúîiKûÈÎ[êîKú˜x~™¸n[{.XÎjÚ.ûÉ¾Šû~j8iú^Kº>yn‹ÚşK»ny¨N{;¾{¹şKº>ynŠëî{ÚîYîXhŞŠùRr“°Ğ¢6öç7BFVFÆ–æSÔFFRææ÷r‚’·F†—2çv—D×3°Ğ¢F†—2çWFFR‚wv—F–ærrÇÆãò~Šxnš)Xû~K‰>yJXˆnkX[{.[ÈY
+şûÈÄ6Æ6‚KùŞhÈ‹ùŠÎûÉ®Šû~h™>[Èh‰n˜xŞik‹ù¾XZ^[êîKúy¨NŠxnš)Xû~š^™Ú"s¢~‹ùîhê^[{.K‹Ni{n[ÈY
+şûÉ®Šû~YÊ[êîKúKŠŞh™>[Èh‰n˜xŞik‹ù¾XZ^Šxnš)Xû~š^™Ú.ûÈÎ‹ùîhê^Yîˆz®Xª{º~{ºÒrÇ¶æVVG5vS¢vU&VG’Çv—F–æuVçF–Ã¦FVFÆ–æWÒ“°Ğ¢ÆWBvT&ö÷G7G&ÒvU&VG“öv—BF†—2æ&ö÷G7G&vR‡6–væÂÆFVFÆ–æR“¦çVÆÂÇvT÷VæVCÖfÇ6S°Ğ¢òòÖöFW&âvT6†B6âW‡÷6RfW&–f–VBvRv—F†÷WBâ–çfö¶&ÆRFööÆ&"àĞ¢òò—G2f—†VB&Vv—7FW&VBVçG'—ö–çB6â&VÆöB÷&RÖVçFW"F†BvRgFW"F†PĞ¢òò&÷WFR—27F—fRââõ26¶æ÷vÆVFvVÖVçB—2æWfW"G&VFVB2&VF–æW72àĞ¢6öç7B6å&VVçFW#×vT&ö÷G7G&òæf÷VæCÓÓ×G'VRbbvT&ö÷G7G&ç&Vg&W6…&WVW7FVBbe²wVç7W÷'FVB×FööÆ&"rÂwVç7W÷'FVBÖÖVçRrÂwVç7W÷'FVBÖ–çfö¶RuÒæ–æ6ÇVFW2‡vT&ö÷G7G&ç7FGW2“°Ğ¢–b‚vU&VG’bgF†—2æ÷VåvRbb‚vT&ö÷G7G&ÇÇvT&ö÷G7G&ç7FGW3ÓÓÒvæ÷BÖf÷VæBwÇÆ6å&VVçFW"’—°Ğ¢F†—2çWFFR‚wv—F–ærrÆ6å&VVçFW#ò~jÚ>YÊ˜	®‹ø~[êîKúXZ^Xú>˜xŞikhê^XZ^Šxnš)Xû~ûÈÎ‹ùîhê^h‰X©şYîˆz®Xª{º~{ºŞ[Ù>X˜ŞK»¾Xªs¢~jÚ>YÊˆz®Xªh™>[ÈyK^ˆI[êîKúy¨NŠxnš)Xû~ûÈÎ‹ùîhê^h‰X©şYîˆz®Xª{º~{ºŞ[Ù>X˜ŞK»¾XªrÇ¶æVVG5vS¦fÇ6RÇv—F–æuVçF–Ã¦FVFÆ–æWÒ“°Ğ¢G'—·6–væÂçF‡&÷t–d&÷'FVB‚“¶v—BF†—2æ÷VåvR‡6–væÂ“·vT÷VæVC×G'VS·Ö6F6‚†R—¶–b‡6–væÂæ&÷'FVB—F‡&÷rS·F†—2çWFFR‚wv—F–ærrÆRæÖW76vR²rŠû~YÊyK^ˆI[êîKú‹ù¾XZ^Šxnš)Xû~[›nX‹~ikûÉ¾iz™ÈX[>™zŞxëiÈKº>yn8"rÇ¶æVVG5vS§G'VRÇv—F–æuVçF–Ã¦FVFÆ–æWÒ“·ĞĞ¢ĞĞ¢òòF†R&Vv—7FW&VBU$’Ö’&WfVÂ66†VBvRF†BW†—7FVB&Vf÷&RF†—0Ğ¢òòÆV6Râ&V6†V6²öæ6RgFW"÷Væ–ærÂ&F†W"F†âv—F–ærf÷&WfW"f÷"âöÆ@Ğ¢òòvRFòGF6‚âÇ&VG’ÖöæÆ–æRvW2æBVç7W÷'FVB–ç7V7F–öç2&Ræ÷@Ğ¢òòF÷V6†VBÂæBF†R6ÖRÆV6RFVFÆ–æRö6æ6VÆÆF–öâ7F–ÆÂ&÷VæG2F†Rv÷&²àĞ¢–b‡vT÷VæVBbgvT&ö÷G7G&òç7FGW3ÓÓÒvæ÷BÖf÷VæBrbdFFRææ÷r‚“ÆFVFÆ–æRbbv—B&÷'F&ÆR‡F†—2æöæÆ–æR‚’Ç6–væÂ’—°Ğ¢6–væÂçF‡&÷t–d&÷'FVB‚“·F†—2çWFFR‚wv—F–ærrÂ~[{.Šû~k.h™>[ÈŠxnš)Xû~ûÈÎjÚ>YÊzØ[è^š^™Ú.[{º®YîjZû[Ù>X˜ŞK»¾Xª‹ùîhêRrÇ¶æVVG5vS§G'VRÇv—F–æuVçF–Ã¦FVFÆ–æWÒ“°Ğ¢v—BFVÆ’„ÖF‚æÖ‚ƒÄÖF‚æÖ–âƒSÆFVFÆ–æRÔFFRææ÷r‚’’’Ç6–væÂ“·6–væÂçF‡&÷t–d&÷'FVB‚“°Ğ¢–b„FFRææ÷r‚“ÆFVFÆ–æRbbv—B&÷'F&ÆR‡F†—2æöæÆ–æR‚’Ç6–væÂ’—vT&ö÷G7G&Öv—BF†—2æ&ö÷G7G&vR‡6–væÂÆFVFÆ–æR“°Ğ¢ĞĞ¢ÆWBvTöæÆ–æSÖfÇ6RÇ&Vg&W6…&WVW7FVC×vT&ö÷G7G&òç&Vg&W6…&WVW7FVCÓÓ×G'VRÆæW‡EvT6†V6³ÔFFRææ÷r‚’³°Ğ¢Fò°Ğ¢–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢–b†v—B&÷'F&ÆR‡F†—2æöæÆ–æR‚’Ç6–væÂ’—°Ğ¢vTöæÆ–æS×G'VS°Ğ¢–b†v—BF†—2æFFW%&VG’‡6–væÂÄÖF‚æÖ‚ƒÄÖF‚æÖ–âƒƒÆFVFÆ–æRÔFFRææ÷r‚’’’Ç&WV—&VB’—·F†—2çWFFR‚v6öææV7FVBrÂ~[Ù>X˜ŞK»¾Xªh˜™È[êîKúhê^Xú>[{.[{º¢+rK»¾Xª{¹>iÙşYîˆz®Xªh.ZHŞXéş{Ù{¹Âr“·&WGW&ã·ĞĞ¢–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢6öç7B7FÆU'VçF–ÖSÒ‡F†—2æFFW%7FFSòçfW'6–öâÓ×VæFVf–æVBbgF†—2æFFW%7FFRçfW'6–öâÓÓB—ÇÇF†—2æFFW%7FFSòæ†6„ÖF6†W3ÓÓÖfÇ6S°Ğ¢–b‡ÆâbgF†—2æÆV6Tf–ÆRbgF†—2ç7FGW2‚’æÆÆ÷vVBbb&Vg&W6…&WVW7FVBbgF†—2æFFW%7FFSòçfW'6–öãÓÓÓBbgF†—2æFFW%7FFRæ†6„ÖF6†W3ÓÓÖfÇ6RbgF†—2æFFW%7FFRæ6å&Vg&W6„FFW#ÓÓ×G'VRbbõå¶ÖcÓ•×³'ÒBòçFW7B‡F†—2æFFW$f–ævW'&–çGÇÂrr’bdFFRææ÷r‚“ÆFVFÆ–æR—°Ğ¢òòF†R÷væVBFFW"GfW'F—6W2F†—2Æö6Â6öçG&öÂÖW76vRâ6VæB—BöæÇĞ¢òògFW"&÷WFR7F—fF–öâæBfÆ–FF–öã²÷&F–æ'’&ö&W27F’&VBÖöæÇ’àĞ¢&Vg&W6…&WVW7FVC×G'VS·F†—2æFFW%&VÆöDGFV×FVC×G'VS·F†—2æFFW%WFFUVæF–æsÖfÇ6S°Ğ¢6öç7B¶W—v÷&CÒuõöfVæw6†ö6öçFVçEõó¢r´¥4ôâç7G&–æv–g’‡·&ö&S§G'VRÇ&VÆöC§G'VRÆW‡V7FVD†6ƒ§F†—2æFFW$f–ævW'&–çBÆæöæ6S§&æFöÕUT”B‚—Ò“°Ğ¢F†—2çWFFR‚wv—F–ærrÂ~jÚ>YÊX‹~ikŠxnš)Xû~š^™Ú.Kº^‹ÛŞXZ^ikx˜˜.˜XŞûÉ¾[{.iÈy›¾[Ù^KùŞyY’rÇ¶æVVG5vS¦fÇ6WÒ“°Ğ¢G'—°Ğ¢6öç7B6¶æ÷vÆVFvVÖVçCÖv—B&÷'F&ÆR‡F†—2æ’‚rö’ö6†ææVÇ2ö6öçF7B÷6V&6ƒö¶W—v÷&CÒr¶Væ6öFUU$”6ö×öæVçB†¶W—v÷&B’ÆçVÆÂÄÖF‚æÖ‚ƒÄÖF‚æÖ–âƒƒÆFVFÆ–æRÔFFRææ÷r‚’’’Ç6–væÂ’Ç6–væÂ“°Ğ¢òòfÇ6RÇ6òÖVç2F†—2v–æF÷rÇ&VG’66†VGVÆVBF†R6ÖRF&vWBàĞ¢òòæV—F†W"6¶æ÷vÆVFvVÖVçB—2&VF–æW73¢æWrÖF6†–ær&ö&R—2&WV—&VBàĞ¢–b†6¶æ÷vÆVFvVÖVçCòæW'$6öFRÓÓÇÇG—Vöb6¶æ÷vÆVFvVÖVçCòæFFòç&VÆöF–ærÓÒv&ööÆVâr—F‡&÷ræWrW'&÷"‚t–çfÆ–BFFW"&Vg&W6‚6¶æ÷vÆVFvVÖVçBr“°Ğ¢Ö6F6‚†W'&÷"—¶–b‡6–væÂæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“·F‡&÷ræWrW'&÷"‚~Šxnš)Xû~˜.˜XŞX‹~ikŠû~k.iÊ®ZèÎh‰ûÉ¾Xéş{Ù{¹Î[nˆz®Xªh.ZHŞûÈÎŠû~zˆŞYî˜xŞŠù^ûÈÎiz™ÈXøŞZHŞy›¾[ÙRr“·ĞĞ¢ÖVÇ6R–b‚&Vg&W6…&WVW7FVBbgÆâbbF†—2æFFW%&VÆöDGFV×FVBbb‡F†—2æFFW%WFFUVæF–æwÇÇ7FÆU'VçF–ÖR’bdFFRææ÷r‚“ÆFVFÆ–æR—°Ğ¢òò†æFÆR7FÆRvW2öæ6RW"–ç7Fæ6R÷"6†ævVBFWÆ÷–ÖVçBÂöæÇĞ¢òò–ç6–FRfÆ–FFVB&÷WFVBÆV6RâF†—2fÆr—2æ÷B&Vg&W6‚7V66W72àĞ¢F†—2æFFW%WFFUVæF–æsÖfÇ6S°Ğ¢F†—2æFFW%&VÆöDGFV×FVC×G'VS°Ğ¢òòc#c“rW‡÷6W2&VÆöBöæÇ’F‡&÷Vv‚—G2–çFW&æÂvV%6ö6¶WB6Æ–VçBÀĞ¢òòæ÷Bâ…EE&÷WFRâæWfW"wVW72tUBõõ5BVæGö–çG2÷"G&VBf–ÆV@Ğ¢òò&Vg&W6‚2&VG’â&Vg&W6†VBvR—2fW&–f–VB'’F†RæW‡B&ö&RàĞ¢F†—2çWFFR‚wv—F–ærrÂ~ikx˜˜.˜XŞ™ÈŠhšinjÊX‹~ikûÉ®Xh^{Úâc#c“rk*iÈXZÎ[Èˆz®XªX‹~ikhê^Xú>ûÉ¾[Ù>X˜ŞK‹Ni{n‹ùîhê^KùŞhÈ[ÈY
+şûÈÎŠû~X‹~ikŠxnš)Xû~š^™Ú.Kº^‹ÛŞXZ^i»NikûÈÎ[{.iÈy›¾[Ù^KùŞyY’rÇ¶æVVG5vS§G'VRÇv—F–æuVçF–Ã¦FVFÆ–æWÒ“°Ğ¢ÖVÇ6R–b‡&Vg&W6…&WVW7FVB—F†—2çWFFR‚wv—F–ærrÇvT&ö÷G7G&òæÖW76vWÇÂ~X‹~ikŠû~k.[{.Xù˜ûÈÎjÚ>YÊzØ[è^ikx˜˜.˜XŞY(Î[Ù>X˜ŞK»¾Xªh˜™Èhê^Xú>ûÉ¾[{.iÈy›¾[Ù^KùŞyY’rÇ¶æVVG5vS§vT&ö÷G7G&òææVVG5vSóöfÇ6RÇv—F–æuVçF–Ã¦FVFÆ–æWÒ“°Ğ¢VÇ6RF†—2çWFFR‚wv—F–ærrÇF†—2æFFW$ÖW76vR‡&WV—&VB’Ç¶æVVG5vS§G'VRÇv—F–æuVçF–Ã¦FVFÆ–æWÒ“°Ğ¢ÖVÇ6R–b‚&Vg&W6…&WVW7FVBbgvT&ö÷G7G&òç7FGW3ÓÓÒvæ÷BÖf÷VæBrbdFFRææ÷r‚“ãÖæW‡EvT6†V6²bdFFRææ÷r‚“ÆFVFÆ–æR—°Ğ¢òò6öÆBvT6†BvR6âV"vVÆÂgFW"F†R–æ—F–ÂS×26†V6²àĞ¢òòöæÇ’&WG'’'6Væ6S²âVç7W÷'FVBöÖ&–wV÷W2vR—2æWfW"&Vg&W6†VB&WVFVFÇ’àĞ¢vT&ö÷G7G&Öv—BF†—2æ&ö÷G7G&vR‡6–væÂÆFVFÆ–æR“·&Vg&W6…&WVW7FVC×vT&ö÷G7G&òç&Vg&W6…&WVW7FVCÓÓ×G'VS¶æW‡EvT6†V6³ÔFFRææ÷r‚’³#°Ğ¢ĞĞ¢v—BFVÆ’„ÖF‚æÖ‚ƒÄÖF‚æÖ–âƒÆFVFÆ–æRÔFFRææ÷r‚’’’Ç6–væÂ“°Ğ¢×v†–ÆR„FFRææ÷r‚“ÆFVFÆ–æR“°Ğ¢F‡&÷ræWrW'&÷"‡vTöæÆ–æS÷F†—2æFFW$ÖW76vR‡&WV—&VB’²~ûÉ¾Xéş{Ù{¹Î[nˆz®Xªh.ZHÒs§vT&ö÷G7G&bgvT&ö÷G7G&ç7FGW2ÓÒvæ÷BÖf÷VæBs÷vT&ö÷G7G&æÖW76vR²~ûÉ¾[	®iÊ®hê^XZ^˜x~™¸n{¸NK»nûÈÎXéş{Ù{¹Î[nˆz®Xªh.ZHÒs¢~[êîKúŠxnš)Xû~š^™Ú.[	®iÊ®‹ùîhê^ûÈÎXéş{Ù{¹Î[nˆz®Xªh.ZHŞûÉ¾Šû~h™>[ÈŠxnš)Xû~š^™Ú.Yî˜xŞŠùRr“°Ğ¢ĞĞ¢7–æ2v—F„6öææV7F–öâ‡6–væÂÆ÷W&F–öâÇ&WV—&VCÖFFW$6&–Æ—F–W2’°Ğ¢&WV—&VC×&WV—&VD6&–Æ—F–W2‡&WV—&VB“°Ğ¢–b‡F†—2æ6Æ÷6VB’F‡&÷ræWrW'&÷"‚~[©NyJjÚ>YÊ˜X{¢r“°Ğ¢–b‡6–væÃòæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢–b‡F†—2ç&V6÷fW&–ær–v—B&÷'F&ÆR‡F†—2ç&V6÷fW&–ærÇ6–væÂ“°Ğ¢–b‡F†—2æ6Æ÷6VGÇÇ6–væÃòæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢–b‡F†—2ç7FFRç†6SÓÓÒvW'&÷"r—F‡&÷ræWrW'&÷"‚~Kˆ®jÊ{Ù{¹Îh.ZHŞ[	®iÊ®ZèÎh‰ûÈÎŠû~XXYÊŠxnš)Xû~‹ùîhê^KŠŞh.ZHŞXéş{Ù{¹Âr“°Ğ¢–b‚F†—2æ6öæf–r‚’æWFöÖF–2’&WGW&â÷W&F–öâ‚“°Ğ¢–b‚F†—2æ6öæf–r‚’æVæ&ÆVB’F‡&÷ræWrW'&÷"‚~Šû~XXYÊŠxnš)Xû~‹ùîhê^KŠŞY
+şyJKÙÎˆ^KÙÎY8Šû¾Xùbr“°Ğ¢–b‡F†—2æVæF–ær’v—BF†—2æVæF–æs°Ğ¢–b‡F†—2ç7FFRç†6SÓÓÒvW'&÷"r’F‡&÷ræWrW'&÷"‚~Kˆ®jÊ{Ù{¹Îh.ZHŞ[	®iÊ®ZèÎh‰ûÈÎŠû~XXYÊŠxnš)Xû~‹ùîhê^KŠŞh.ZHŞXéş{Ù{¹Âr“°Ğ¢–b‚F†—2ç7F'FVB–v—BF†—2ç&W&R‚“°Ğ¢–b‚F†—2ç7FGW2‚’æÆÆ÷vVB’¶–b‚F†—2æ&÷f–ær—F†—2æ&÷f–æs×F†—2æÆÆ÷r‚’æf–æÆÇ’‚‚“ÓçF†—2æ&÷f–æsÖçVÆÂ“¶–b‚v—B&÷'F&ÆR‡F†—2æ&÷f–ærÇ6–væÂ’—F‡&÷ræWrW'&÷"‚~[	®iÊ®zîŠêN[êîKúˆz®Xª‹ùîhê^ûÈÎŠû~YÊŠxnš)Xû~‹ùîhê^KŠŞZèÎh‰šinjÊzîŠêBr“·ĞĞ¢òò&W&F–öâö6öæf—&ÖF–öâ6â÷WFÆ—fR&Wf–÷W2F6²w2f–æÂ&W7F÷&F–öâàĞ¢òò&V6†V6²gFW"F†÷6Rv—G2&Vf÷&R¦ö–æ–ær÷"7F'F–ærÆV6RàĞ¢–b‡F†—2æVæF–ær–v—BF†—2æVæF–æs°Ğ¢–b‡F†—2æ6Æ÷6VBÇÂ6–væÃòæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢–b‡F†—2ç7FFRç†6SÓÓÒvW'&÷"r—F‡&÷ræWrW'&÷"‚~Kˆ®jÊ{Ù{¹Îh.ZHŞ[	®iÊ®ZèÎh‰ûÈÎŠû~XXYÊŠxnš)Xû~‹ùîhê^KŠŞh.ZHŞXéş{Ù{¹Âr“°Ğ¢6öç7BÖVÖ&W#×&æFöÕUT”B‚“·F†—2æÖVÖ&W'2æFB†ÖVÖ&W"“°Ğ¢G'’°Ğ¢–b‚F†—2ç7F'FVB—·F†—2æ6öçG&öÆÆW#ÖæWr&÷'D6öçG&öÆÆW"‚“·F†—2ç7F'FVE&WV—&VC×&WV—&VC·F†—2ç7F'FVC×F†—2æ&Vv–â‡F†—2æ6öçG&öÆÆW"ç6–væÂÇ&WV—&VB“·ĞĞ¢v—B&÷'F&ÆR‡F†—2ç7F'FVBÇ6–væÂ“²–b‡6–væÃòæ&÷'FVB’F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“°Ğ¢òòV6‚¦ö–æ–ærF6²6†V6·2ç’FF—F–öæÂ6&–Æ—G’&Vf÷&R—B'Vç2âFğĞ¢òòæ÷Bv–FVâF†Rf—'7BF6²w2vFR÷"6æ6VÂ—Bv†Vâæ÷F†W"F6²f–Ç2àĞ¢–b‡&WV—&VBç6öÖR†¶W“ÓâF†—2ç7F'FVE&WV—&VBæ–æ6ÇVFW2†¶W’’’—°Ğ¢–b‚v—BF†—2æFFW%&VG’‡6–væÇÇÇF†—2æ6öçG&öÆÆW"ç6–væÂÃƒÇ&WV—&VB’—F‡&÷ræWrW'&÷"‡F†—2æFFW$ÖW76vR‡&WV—&VB’“°Ğ¢ĞĞ¢–b‡6–væÃòæ&÷'FVB—F‡&÷ræWrW'&÷"‚t4ä4TÄÄTBr“·&WGW&âv—B÷W&F–öâ‚“°Ğ¢Òf–æÆÇ’°Ğ¢F†—2æÖVÖ&W'2æFVÆWFR†ÖVÖ&W"“°Ğ¢–b‚F†—2æÖVÖ&W'2ç6—¦R’²F†—2æVæF–æs×F†—2æf–æ—6‚‚“·G'—¶v—BF†—2æVæF–æs·Öf–æÆÇ—·F†—2æVæF–æsÖçVÆÃ·ÒĞĞ¢F†—2æ6†ævVB‚“°Ğ¢ĞĞ¢ĞĞ¢7–æ2f–æ—6‚‚’°Ğ¢F†—2æ6öçG&öÆÆW#òæ&÷'B‚“¶v—BF†—2ç7F'FVCòæ6F6‚‚‚“Óç·Ò“°Ğ¢G'’°Ğ¢–b‡F†—2æÆV6Tf–ÆR—·F†—2çWFFR‚w&W7F÷&–ærrÂ~jÚ>YÊh.ZHŞXéşKº>ynKˆîK‹Ni{nŠøKšbr“¶v—BF†—2ç7—7FVÒ‚w&W7F÷&RrÇF†—2æÆV6Tf–ÆR“¶v—BF†—2ç7F÷&÷‡’‚“·ĞĞ¢F†—2çWFFR‚v–FÆRrÂ~[Ù>X˜ŞK»¾Xª[{.{¹>iÙşûÈÎXéş{Ù{¹ÎŠëî{Úî[{.h.ZHÒr“°Ğ¢Ò6F6‚†W'&÷"—·F†—2çWFFR‚vW'&÷"rÂ~ˆz®Xªh.ZHŞ[	®iÊ®ZèÎh‰ûÈÎŠû~x+X{¾h.ZHŞXéş{Ù{¹Âr“·F‡&÷rW'&÷#·ĞĞ¢f–æÆÇ’·F†—2ç7F'FVCÖçVÆÃ·F†—2ç7F'FVE&WV—&VCÖçVÆÃ·F†—2æ6öçG&öÆÆW#ÖçVÆÃ¶–b‡F†—2ç7FFRç†6RÓÒvW'&÷"r—·F†—2æÆV6Tf–ÆSÖçVÆÃ·F†—2æÆV6TÖöFSÖçVÆÃ·×ĞĞ¢ĞĞ¢7–æ2&W7F÷&R‚’²–b‡F†—2æÖVÖ&W'2ç6—¦R’F‡&÷ræWrW'&÷"‚~Šû~XXXÎjÚ.KÙÎY8Šû¾XùnY(ÎŠxnš)Xû~Kˆ¾‹ÛŞûÈÎXhŞh.ZHŞ{Ù{¹Âr“¶v—BF†—2ç&V6÷fW"‚“¶–b‡F†—2æÆV6Tf–ÆR–v—BF†—2ç7F÷&÷‡’‚“·F†—2æÆV6Tf–ÆSÖçVÆÃ·F†—2æÆV6TÖöFSÖçVÆÃ·F†—2çWFFR‚v–FÆRrÂ~Xéş{Ù{¹ÎŠëî{Úî[{.h.ZHÒr“·&WGW&âF†—2ç7FGW2‚“²ĞĞ¢7–æ26Æ÷6R‚—°Ğ¢F†—2æ6Æ÷6VC×G'VS·F†—2æ6öçG&öÆÆW#òæ&÷'B‚“°Ğ¢v—BF†—2ç&V6÷fW&–æs¶v—BF†—2æVæF–æs°Ğ¢–b‡F†—2ç7FFRç†6SÓÓÒvW'&÷"rbbF†—2æÆV6Tf–ÆR—F‡&÷ræWrW'&÷"‡F†—2ç7FFRæÆ&VÂ“°Ğ¢v—BF†—2æf–æ—6‚‚“·F†—2çv÷&¶W#òæ¶–ÆÂ‚“°Ğ¢ĞĞ§ĞĞ 

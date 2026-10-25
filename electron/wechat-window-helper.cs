@@ -26,7 +26,7 @@ public static class FengshaWeChatWindow {
   static volatile bool RefreshAttempted=false;
   static int NodesVisited=0;
   static bool UnsupportedDocumentOwner=false;
-  static bool DocumentQueryAttempted=false;
+  static bool DocumentQueryFailed=false;
   sealed class ProcessMetadata { public uint Id;public uint Parent;public string Path;public DateTime Created; }
   [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] struct ProcessEntry {public uint Size;public uint Usage;public uint Id;public UIntPtr Heap;public uint Module;public uint Threads;public uint Parent;public int Priority;public uint Flags;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)]public string Exe;}
   [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags,uint process);
@@ -104,9 +104,15 @@ public static class FengshaWeChatWindow {
   }
   static bool Owned(IntPtr window,uint process) {
     if(!IsWindow(window))return false;uint id;GetWindowThreadProcessId(window,out id);
-    if(id!=process)return false;
+    if(id!=process)return DocumentOwner(process,(int)id);
     try { using(var p=Process.GetProcessById((int)id))return WeChatProcess(p.ProcessName); }catch{return false;}
   }
+  static ProcessMetadata WindowRoot(ProcessMetadata owner,IEnumerable<ProcessMetadata> roots,Func<uint,ProcessMetadata> lookup,Func<string,bool> signed) {
+    if(owner==null)return null;
+    foreach(var root in roots)if(BrowserChain(root,owner,lookup,signed))return root;
+    return null;
+  }
+  static string MissingDocumentStatus(int count,bool queryFailed) {return queryFailed?"unsupported-document-query":count>0?"unsupported-document-url":"not-found";}
   static bool DocumentURL(AutomationElement document,out string path) {
     path=null;
     if(document.Current.ControlType!=ControlType.Document||document.Current.Name!="视频号"||document.Current.AutomationId!="RootWebArea")return false;
@@ -122,11 +128,14 @@ public static class FengshaWeChatWindow {
   }
   static List<Candidate> Candidates(out int documentCount) {
     var found=new List<Candidate>();int observed=0;
-    Stage="process-filter";var allowedProcesses=new HashSet<uint>();
-    foreach(var name in new[]{"Weixin","WeChat"})foreach(var process in Process.GetProcessesByName(name))using(process){try{allowedProcesses.Add((uint)process.Id);}catch(InvalidOperationException){}}
+    Stage="process-filter";var allowedProcesses=new HashSet<uint>();var roots=new List<ProcessMetadata>();
+    foreach(var name in new[]{"Weixin","WeChat","WeChatAppEx"})foreach(var item in Process.GetProcessesByName(name))using(item){try{allowedProcesses.Add((uint)item.Id);if(WeChatProcess(name)){var metadata=Metadata((uint)item.Id);if(RegisteredRoot(metadata))roots.Add(metadata);}}catch(InvalidOperationException){}}
     EnumWindows((window,parameter)=>{
       Stage="window-filter";uint process;GetWindowThreadProcessId(window,out process);if(!allowedProcesses.Contains(process)||GetWindowTextLength(window)!=2)return true;
       var caption=new StringBuilder(4);GetWindowText(window,caption,caption.Capacity);if(caption.ToString()!="微信")return true;
+      // Modern WeChat hosts browser windows in its signed WMPF child process.
+      // Establish ancestry before requesting any UI from that window.
+      var ownerRoot=WindowRoot(Metadata(process),roots,Metadata,TencentSigned);if(ownerRoot==null)return true;process=ownerRoot.Id;
       if(!Owned(window,process))return true;
       try {
         Stage="window-properties";
@@ -135,11 +144,11 @@ public static class FengshaWeChatWindow {
         // Request only the exact public Channels document from the provider.
         // No structural walk, control-list enumeration, other names, text or
         // inaccessible/private UI descendants are returned to this client.
-        Stage="document-query";DocumentQueryAttempted=true;
+        Stage="document-query";
         var documentCondition=new AndCondition(new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Document),new PropertyCondition(AutomationElement.NameProperty,"视频号"),new PropertyCondition(AutomationElement.AutomationIdProperty,"RootWebArea"));
         var documents=root.FindAll(TreeScope.Descendants,documentCondition);NodesVisited+=documents.Count;
         foreach(AutomationElement doc in documents){string path;observed++;if(!DocumentOwner(process,doc.Current.ProcessId)){UnsupportedDocumentOwner=true;continue;}if(DocumentURL(doc,out path))found.Add(new Candidate {Window=window,Process=process,Root=root,Document=doc,Path=path});}
-      }catch(ElementNotAvailableException){}catch(InvalidOperationException){}
+      }catch(ElementNotAvailableException){DocumentQueryFailed=true;}catch(InvalidOperationException){DocumentQueryFailed=true;}
       return true;
     },IntPtr.Zero);documentCount=observed;return found;
   }
@@ -213,7 +222,7 @@ public static class FengshaWeChatWindow {
   static object Run(string action) {
     int documentCount;var candidates=Candidates(out documentCount);var report=new Dictionary<string,object>{{"ok",true},{"action",action},{"matched",candidates.Count},{"candidateDocuments",documentCount},{"nodesVisited",NodesVisited},{"refreshAttempted",false},{"refreshed",false}};
     if(UnsupportedDocumentOwner){report["status"]="unsupported-document-owner";return report;}
-    if(candidates.Count!=1){report["status"]=candidates.Count==0?(documentCount>0?"unsupported-document-url":DocumentQueryAttempted?"unsupported-document-query":"not-found"):"ambiguous";return report;}
+    if(candidates.Count!=1){report["status"]=candidates.Count==0?MissingDocumentStatus(documentCount,DocumentQueryFailed):"ambiguous";return report;}
     var target=candidates[0];report["url"]=target.Path;report["processId"]=target.Process;
     if(!Revalidate(target)){report["status"]="changed";return report;}
     var toolbar=More(target);var more=toolbar.Button;object invocation;bool canOpen=more!=null&&more.TryGetCurrentPattern(InvokePattern.Pattern,out invocation);report["toolbarAvailable"]=canOpen;report["toolbarAncestors"]=toolbar.Ancestors;report["toolbarCandidates"]=toolbar.Toolbars;report["moreCandidates"]=toolbar.Buttons;report["toolbarOwnerRejected"]=toolbar.OwnerRejected;
@@ -244,7 +253,12 @@ public static class FengshaWeChatWindow {
     passed&=!BrowserChain(root,new ProcessMetadata{Id=3,Parent=999,Path=PluginPath(),Created=child.Created},lookup,path=>true);
     passed&=!BrowserChain(root,new ProcessMetadata{Id=3,Parent=1,Path=PluginPath(),Created=new DateTime(2025,1,1)},lookup,path=>true);
     passed&=!BrowserChain(root,new ProcessMetadata{Id=2,Parent=2,Path=PluginPath(),Created=plugin.Created},id=>plugin,path=>true);
-    return new {ok=passed,action="self-test",status=passed?"passed":"failed",uiAccessed=false,threadModel=Thread.CurrentThread.GetApartmentState().ToString(),ownershipChecks=6};
+    passed&=WindowRoot(root,new[]{root},lookup,path=>true)==root;
+    passed&=WindowRoot(child,new[]{root},lookup,path=>true)==root;
+    passed&=WindowRoot(child,new[]{root},lookup,path=>false)==null;
+    passed&=WindowRoot(new ProcessMetadata{Id=3,Parent=1,Path=@"C:\Other\WeChatAppEx.exe",Created=child.Created},new[]{root},lookup,path=>true)==null;
+    passed&=MissingDocumentStatus(0,false)=="not-found"&&MissingDocumentStatus(0,true)=="unsupported-document-query"&&MissingDocumentStatus(1,false)=="unsupported-document-url";
+    return new {ok=passed,action="self-test",status=passed?"passed":"failed",uiAccessed=false,threadModel=Thread.CurrentThread.GetApartmentState().ToString(),ownershipChecks=6,standaloneWindowChecks=4,documentQueryChecks=3};
   }
   [MTAThread] public static int Main(string[] args) {
     object result=null;

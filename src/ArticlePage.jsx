@@ -1,0 +1,40 @@
+import React,{useState,useEffect} from 'react';
+import {FileText,FolderOpen,Search,Link,Users,BookOpen,X} from 'lucide-react';
+import './article.css';
+
+const labels={identified:'待保存',saved:'已保存',partial:'正文已保存 · 图片不完整',failed:'采集失败',reading:'正在读取',queued:'等待采集',interrupted:'上次已中断',cancelled:'已停止',pending:'待继续'};
+const tabs=[['links',Link,'链接采集'],['author',Users,'作者批量'],['search',Search,'关键词搜索'],['library',BookOpen,'文章库']];
+export default function ArticlePage({state,perform,safe}){
+  const [mode,setMode]=useState('links'),[platform,setPlatform]=useState('公众号'),[inputs,setInputs]=useState({}),[limit,setLimit]=useState(30),[selected,setSelected]=useState([]),[preview,setPreview]=useState(null),[query,setQuery]=useState('');
+  const center=state.articles||{},busy=center.busy,record=center.discovery?.request.mode===mode&&(mode==='links'||center.discovery.request.platform===platform)?center.discovery:null,items=record?.items||[],key=mode+platform,input=inputs[key]||'';
+  const selectedIds=selected.filter(id=>items.some(i=>i.id===id));
+  const setInput=value=>setInputs(s=>({...s,[key]:value}));
+  useEffect(()=>setSelected([]),[mode,platform]);
+  const run=async()=>{setSelected([]);try{const result=await perform('articlesStart',{mode,platform,input,limit:Number(limit)});const ids=(result.discovery?.items||[]).slice(0,100).map(i=>i.id);setSelected(ids);}catch{}};
+  const choose=id=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+  const library=(center.library||[]).filter(a=>`${a.title} ${a.author} ${a.platform}`.toLowerCase().includes(query.toLowerCase()));
+  const open=async id=>{try{setPreview(await perform('articlesGet',id));}catch{}};
+  if(center.unavailable)return <section className="article-center"><h1>文章中心</h1><div className="article-panel"><p className="article-error">{center.unavailable}</p><p>文章中心暂不可用，原有视频功能可继续使用。请保留文章资料目录以便检查。</p></div></section>;
+  return <section className="article-center">
+    <header className="article-header"><div><h1>文章中心</h1><p>公众号文章与小红书图文 · 独立采集任务与本地文章库</p></div><button className="button" onClick={()=>safe('articlesFolder')}><FolderOpen size={17}/>打开文章目录</button></header>
+    <nav className="article-tabs" aria-label="文章功能">{tabs.map(([id,Icon,label])=><button key={id} className={mode===id?'active':''} onClick={()=>setMode(id)}><Icon size={18}/>{label}{id==='library'?` (${center.library?.length||0})`:''}</button>)}</nav>
+    {mode!=='library'&&<div className="article-panel">
+      <div className="article-controls"><label>文章平台<select aria-label="文章平台" value={platform} onChange={e=>setPlatform(e.target.value)} disabled={busy}><option>公众号</option><option>小红书</option></select></label>{mode!=='links'&&<label>每次读取上限<input aria-label="文章读取上限" type="number" min="1" max="100" value={limit} onChange={e=>setLimit(e.target.value)} disabled={busy}/></label>}</div>
+      <p className="article-hint">{mode==='links'?'粘贴单篇或多篇分享链接，支持混合两个平台。先识别标题、封面、作者和日期，再选择保存正文和图片。':mode==='search'?(platform==='公众号'?'搜索搜狗微信收录的公开文章；结果受索引范围影响。':'搜索小红书官方页面，只选择图文笔记，登录或验证在官方窗口完成。'):platform==='公众号'?'输入公众号准确名称，筛选搜索索引中的同名作者；或粘贴单篇文章自动识别作者、公开列表／合集链接。此入口不承诺完整历史。':'粘贴小红书博主主页链接，读取已发布的图文笔记；不会采集收藏、点赞或视频列表。'}</p>
+      <textarea aria-label="文章采集输入" value={input} onChange={e=>setInput(e.target.value)} placeholder={mode==='links'?'https://mp.weixin.qq.com/s/…\nhttps://www.xiaohongshu.com/explore/…':mode==='search'?'输入文章关键词':platform==='公众号'?'公众号准确名称，或公开列表／合集链接':'https://www.xiaohongshu.com/user/profile/…'} disabled={busy} rows={mode==='links'?4:2}/>
+      <div className="article-actions"><button className="button primary" disabled={busy||!input.trim()} onClick={run}>{mode==='links'?'识别文章链接':mode==='author'?'读取作者文章':'搜索文章'}</button></div>
+    </div>}
+    {busy&&<div className="article-notice" role="status"><span>{record?.message||'文章任务正在进行…'}</span><button className="button" onClick={()=>safe('articlesCancel')}>停止文章任务</button></div>}
+    {mode!=='library'&&record&&<section className="article-panel">
+      <div className="article-section-title"><h2>本次文章清单 <small>({items.length})</small></h2><span>{record.request.platform} · {tabs.find(t=>t[0]===record.request.mode)?.[2]}</span></div>
+      <p className="article-hint" role="status">{record.message}</p>
+      <div className="article-actions"><button className="button" disabled={busy||!items.length} onClick={()=>setSelected(selected.length?[]:items.slice(0,100).map(i=>i.id))}>{selected.length?'取消选择':'选择前 100 篇'}</button><button className="button primary" disabled={busy||!selectedIds.length} onClick={()=>safe('articlesCollect',selectedIds)}>保存所选 ({selectedIds.length})</button>{record.request.mode!=='links'&&<button className="button" disabled={busy||record.complete||record.limitReached} onClick={()=>safe('articlesMore')}>继续读取列表</button>}<button className="button" onClick={()=>safe('articlesShow')}>打开采集窗口</button></div>
+      {!items.length&&<p className="article-empty">当前还没有可选择的文章。若提示登录或验证，请在采集窗口完成后继续读取。</p>}
+      <div className="article-results">{items.map(item=><article className="article-row" key={item.id}><input type="checkbox" aria-label={`选择文章 ${item.title}`} checked={selected.includes(item.id)} onChange={()=>choose(item.id)} disabled={busy}/><ArticleCover url={item.thumbnail}/><div><strong>{item.title}</strong><p>{item.platform} · {item.author||'未公开作者'} · {item.publishedAt||'未公开日期'}</p>{item.error&&<p className="article-error">{item.error}</p>}</div><button className="button" disabled={busy} onClick={()=>safe('articlesCollect',[item.id])}>{item.status==='failed'||item.status==='partial'?'重试保存':'保存文章'}</button><span className={`article-status ${item.status||''}`}>{labels[item.status]||'待采集'}</span>{item.savedId&&<button className="button" onClick={()=>open(item.savedId)}>查看</button>}</article>)}</div>
+    </section>}
+    {mode==='library'&&<section className="article-panel"><div className="article-section-title"><h2>本地文章库</h2><input aria-label="搜索本地文章" placeholder="按标题、作者或平台筛选" value={query} onChange={e=>setQuery(e.target.value)}/></div><p className="article-hint">正文、图片及来源保存到独立文章目录。每篇包含 Markdown、HTML、TXT 和 JSON；内嵌音视频保留原文访问，不作为文章附件下载。</p>{!library.length&&<div className="article-empty"><BookOpen size={36}/><p>还没有匹配的文章。先识别文章信息，在清单中选择后保存。</p></div>}<div className="article-results">{library.map(item=><article className="article-row" key={item.id}><FileText size={25}/><div><strong>{item.title}</strong><p>{item.platform} · {item.author||'未公开作者'} · {item.publishedAt||'未公开日期'}</p><p>图片 {item.savedImages}/{item.imageCount} · {labels[item.status]}</p></div><button className="button" onClick={()=>open(item.id)}>查看正文</button><button className="button" onClick={()=>safe('articlesFolder',item.id)}>文件夹</button></article>)}</div></section>}
+    {preview&&<div className="modal-backdrop" onClick={()=>setPreview(null)}><section className="modal article-preview" role="dialog" aria-label="文章正文" onClick={e=>e.stopPropagation()}><div className="modal-head"><h2>{preview.title}</h2><button className="icon-button" aria-label="关闭文章" onClick={()=>setPreview(null)}><X/></button></div><p>{preview.author||'未公开作者'} · {preview.publishedAt||'未公开日期'}</p><p className="article-source">{preview.url}</p><div className="article-actions"><button className="button" onClick={()=>safe('articlesOpen',preview.id)}>打开离线图文</button><button className="button" onClick={()=>safe('articlesFolder',preview.id)}>打开导出文件夹</button></div><div className="article-body">{preview.blocks.map((b,i)=>b.type==='image'?<p className="article-image-label" key={i}>[图片 · 可在离线图文中查看]</p>:<p key={i}>{b.text}</p>)}</div></section></div>}
+  </section>;
+}
+
+function ArticleCover({url}){const [failed,setFailed]=useState('');return <div className="article-cover">{url&&failed!==url?<img src={url} alt="文章封面" referrerPolicy="no-referrer" loading="lazy" onError={()=>setFailed(url)}/>:<span>{url?'封面暂不可用':'暂无封面'}</span>}</div>;}

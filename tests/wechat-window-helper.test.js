@@ -23,3 +23,8 @@ test('原生Document发现仅使用provider端三项精确条件，不遍历结�
  const source=fs.readFileSync('electron/wechat-window-helper.cs','utf8');const section=source.slice(source.indexOf('static List<Candidate> Candidates('),source.indexOf('static bool Revalidate('));
  assert.match(section,/ControlTypeProperty,ControlType\.Document/);assert.match(section,/NameProperty,"视频号"/);assert.match(section,/AutomationIdProperty,"RootWebArea"/);assert.match(section,/root\.FindAll\(TreeScope\.Descendants,documentCondition\)/);assert.doesNotMatch(section,/Walk\(root|Condition\.TrueCondition|TextPattern|GetText|TextContent|\.Value.*CommandLine/);assert.match(section,/DocumentOwner\(process,doc\.Current\.ProcessId\)/);assert.match(section,/DocumentURL\(doc,out path\)/);
 });
+
+test('原生助手验证独立微信网页进程归属，并区分空查询与查询失败',{skip:process.platform!=='win32'},()=>{
+ const result=JSON.parse(execFileSync(path.resolve('bin/collector/wechat-window-helper.exe'),['self-test'],{windowsHide:true,encoding:'utf8',timeout:5000}));
+ assert.equal(result.ok,true);assert.equal(result.standaloneWindowChecks,4);assert.equal(result.documentQueryChecks,3);
+});

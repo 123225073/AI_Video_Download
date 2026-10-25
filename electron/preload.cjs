@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const invoke = (name) => (...args) => ipcRenderer.invoke(`fengsha:${name}`, ...args);
 contextBridge.exposeInMainWorld('fengsha', {
+  articlesOpen:invoke('articles-open'),
+  articlesStart:invoke('articles-start'),articlesMore:invoke('articles-more'),articlesCollect:invoke('articles-collect'),articlesCancel:invoke('articles-cancel'),articlesShow:invoke('articles-show'),articlesGet:invoke('articles-get'),articlesFolder:invoke('articles-folder'),
   videoStart:invoke('video-start'),videoList:invoke('video-list'),videoGet:invoke('video-get'),videoOpenDraft:invoke('video-open-draft'),videoAction:invoke('video-action'),videoChoose:invoke('video-choose'),
   snapshot: invoke('snapshot'), parse: invoke('parse'), enqueue: invoke('enqueue'),
   externalBrowserMode:invoke('external-browser-mode'),
