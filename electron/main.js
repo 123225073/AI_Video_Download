@@ -104,6 +104,8 @@ else {
   try{articleStore=await Store.open(path.join(app.getPath('userData'),'文章中心'),{});const articleBrowser=!testMode?new ExternalBrowser({managed:new ManagedBrowser({directory:path.join(app.getPath('userData'),'browser')}),mode:'managed'}):undefined;articles=new Articles({store:articleStore,reader:new ArticleReader(accounts,{externalBrowser:articleBrowser}),directory:path.join(app.getPath('userData'),'文章中心','文章'),changed});}
   catch(e){articleError='文章资料库未能打开：'+e.message;try{articleStore?.close();}catch{}articleStore=null;}
   handle('articles-start',request=>articleCenter().start(request));
+  handle('articles-identify-author',request=>articleCenter().identifyAuthor(request));
+  handle('articles-authorize',()=>{if(articleCenter().active)throw Error('请等待文章任务结束后连接');return articleCenter().reader.authorize();});
   handle('articles-more',()=>articleCenter().more());
   handle('articles-collect',ids=>articleCenter().collect(ids));
   handle('articles-cancel',()=>articleCenter().cancel());

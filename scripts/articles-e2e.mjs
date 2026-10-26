@@ -20,11 +20,14 @@ try{
     for(const name of ['persist:fengsha-articles','fengsha-content-小红书','fengsha-creator-guest-小红书'])session.fromPartition(name).protocol.handle('https',request=>{
       const u=new URL(request.url);if(u.pathname==='/fixture.gif'||u.pathname==='/fixture.webp')return new Response(Buffer.from(u.pathname.endsWith('gif')?gif:webp,'base64'));
       if(u.hostname==='mmbiz.qpic.cn'||u.hostname==='sns-webpic.xhscdn.com')return new Response(png,{headers:{'content-type':'image/png'}});
+      if(u.hostname==='mp.weixin.qq.com'&&u.pathname==='/')return new Response('',{status:302,headers:{location:'https://mp.weixin.qq.com/cgi-bin/home?token=123456'}});
+      if(u.pathname==='/cgi-bin/searchbiz')return new Response(JSON.stringify({base_resp:{ret:0},list:[{nickname:'测试公众号',fakeid:'fixturebiz'}]}),{headers:{'content-type':'application/json'}});
+      if(u.pathname==='/cgi-bin/appmsgpublish')return new Response(JSON.stringify({base_resp:{ret:0},app_msg_cnt:1,app_msg_list:[{title:'公众号样本',link:'https://mp.weixin.qq.com/s/fixture-one'}]}),{headers:{'content-type':'application/json'}});
       let body;
       if(u.hostname==='weixin.sogou.com')body='<ul class="news-list"><li><h3><a href="https://mp.weixin.qq.com/s/fixture-one">公众号样本</a></h3><span class="all-time-y2">测试公众号</span><span class="s2">2026-10-24</span></li><li><h3><a href="https://mp.weixin.qq.com/s/fixture-two">另一篇文章</a></h3><span class="all-time-y2">其他公众号</span></li></ul>';
       else if(u.pathname==='/s/unavailable')body='<h1>文章已删除</h1>';
       else if(u.pathname==='/mp/appmsgalbum')body='<li data-link="http://mp.weixin.qq.com/s/fixture-one" data-title="合集文章">1.  合集文章 2026年10月24日</li><p>没有更多了</p>';
-      else if(u.hostname==='mp.weixin.qq.com')body='<h1 id="activity-name">公众号样本 &lt;安全&gt;</h1><span id="js_name">测试公众号</span><span id="publish_time">2026-10-24</span><div id="js_content"><p>第一段 <b>保留文字</b></p><img data-src="https://mmbiz.qpic.cn/fixture.png"><p>第二段 &lt;script&gt;不执行&lt;/script&gt;</p><script>window.articleFixture=1</script></div>';
+      else if(u.hostname==='mp.weixin.qq.com')body='<script>window.biz="fixturebiz";window.mid="1";window.idx="1";</script><h1 id="activity-name">公众号样本 &lt;安全&gt;</h1><span id="js_name">测试公众号</span><span id="publish_time">2026-10-24</span><div id="js_content"><p>第一段 <b>保留文字</b></p><img data-src="https://mmbiz.qpic.cn/fixture.png"><p>第二段 &lt;script&gt;不执行&lt;/script&gt;</p><script>window.articleFixture=1</script></div>';
       else if(u.pathname.includes('search_result'))body=`<div class="feeds-container">${card(imageId)}${card(videoId)}<p class="no-more">没有更多了</p></div>`;
       else if(u.pathname.includes('/user/profile/'))body=`<div class="user-page"><span class="user-name">图文作者</span><div class="feeds-container">${card(imageId)}${card(videoId)}<p>没有更多了</p></div></div>`;
       else body='<div class="note-container"><h1 id="detail-title">图文笔记</h1><div id="detail-desc">完整图文正文。</div><div class="swiper-slide"><img src="https://sns-webpic.xhscdn.com/fixture.png"></div></div>';

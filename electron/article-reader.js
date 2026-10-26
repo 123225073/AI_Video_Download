@@ -3,7 +3,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {ContentBrowser} from './content-browser.js';
 import {CreatorBrowser} from './creator-browser.js';
 import {navigateOfficialPage} from './browser-navigation.js';
-import {articleURL,articleIdentity,imageURL} from './article-data.js';
+import {articleURL,articleIdentity,imageURL,wechatAuthor,wechatAccountPage,wechatAccountRetry} from './article-data.js';
 
 const needsAction=message=>Object.assign(Error(message),{needsAction:true});
 export function articleNavigation(value){try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&['mp.weixin.qq.com','weixin.sogou.com','www.xiaohongshu.com','xiaohongshu.com','xhslink.com','www.xhslink.com'].includes(u.hostname);}catch{return false;}}
@@ -12,7 +12,8 @@ export function renderedArticle(metadataOnly=false){
   const root=document.querySelector('#js_content'),title=document.querySelector('#activity-name')?.textContent?.trim();
   if(!root||!title){const text=(document.body?.innerText||'').slice(0,600),permanent=/已删除|无法查看|内容不存在|违规/.test(text);return {permanent,error:/已迁移/.test(text)?'公众号已迁移，请在原文窗口点击“访问文章”，然后重试。':permanent?'文章已删除或无法查看。':/验证码|验证|环境异常|访问过于频繁/.test(text)?'请在原文窗口完成验证后重试。':'未取得文章正文，请检查原文窗口的登录或页面加载。'};}
   const metadata={title,author:document.querySelector('#js_name')?.textContent?.trim()||'',publishedAt:document.querySelector('#publish_time')?.textContent?.trim()||null,url:location.href,thumbnail:document.querySelector('meta[property="og:image"]')?.content||root.querySelector('img[data-src],img[src]')?.getAttribute('data-src')||root.querySelector('img[src]')?.src||''};
-  if(metadataOnly)return {...metadata,sourceIdentity:{biz:typeof window.biz==='string'?window.biz:'',mid:String(window.mid||window.appmsgid||''),idx:String(window.idx||'')}};
+  const account={avatar:window.hd_head_img||window.round_head_img||'',username:window.user_name||'',description:window.profile_signature_new||window.profile_signature||''};
+  if(metadataOnly)return {...metadata,account,sourceIdentity:{biz:typeof window.biz==='string'?window.biz:'',mid:String(window.mid||window.appmsgid||''),idx:String(window.idx||'')}};
   const blocks=[];let buffer='';const flush=()=>{const text=buffer.replace(/\u00a0/g,' ').trim();if(text)blocks.push({type:'text',text});buffer='';};
   function walk(node){
     if(node.nodeType===3){buffer+=node.textContent;return;}if(node.nodeType!==1)return;
@@ -58,7 +59,7 @@ export class ArticleReader {
     if(externalBrowser){const original=accounts;accounts=Object.create(original);accounts.externalBrowser=externalBrowser;accounts.usesExternal=platform=>platform==='小红书';accounts.active=platform=>original.active(platform);accounts.markVerified=()=>{};accounts.markExpired=()=>{};this.ownedBrowser=externalBrowser;}
     this.accounts=accounts;this.detail=new ContentBrowser(accounts);this.detail.hidden=true;this.search=new ContentBrowser(accounts);this.search.hidden=true;this.profile=new CreatorBrowser(accounts,null);this.window=null;this.actionWindow=null;this.partition='persist:fengsha-articles';
   }
-  close(){this.detail.close();this.search.close();this.profile.close();for(const w of [this.window,this.decoder])if(w&&!w.isDestroyed())w.destroy();this.window=null;this.decoder=null;this.actionWindow=null;this.pendingArticle=null;}
+  close({keepPortal=false}={}){this.detail.close();this.search.close();this.profile.close();for(const w of [this.window,this.decoder,...keepPortal?[]:[this.portalWindow]])if(w&&!w.isDestroyed())w.destroy();if(!keepPortal)this.portalWindow=null;this.window=null;this.decoder=null;this.actionWindow=null;this.pendingArticle=null;}
   show(){const w=this.actionWindow||this.window||this.detail.window||this.search.window||this.profile.window;if(w&&!w.isDestroyed()){w.show();w.focus();}}
   async shutdown(){this.close();await this.ownedBrowser?.close();}
   async open(url,signal){
@@ -89,11 +90,59 @@ export class ArticleReader {
       if(!article.error){const parsed=articleURL(article.url),requested=new URL(url);if(parsed.platform!=='公众号'||requested.searchParams.has('__biz')&&requested.searchParams.has('mid')&&articleIdentity(article).id!==articleURL(url).id)throw Error('原文页面身份不匹配');this.pendingArticle=null;return {...article,url:parsed.url};}
       if(/迁移|删除|验证|无法查看/.test(article.error))break;await delay(400,undefined,{signal});
     }
-    if(article?.permanent){this.pendingArticle=null;throw Error(article.error);}this.pendingDocumentURL=w.webContents.getURL();this.show();throw needsAction(article?.error||'未取得文章正文，请检查原文窗口');
+    if(article?.permanent){this.pendingArticle=null;throw Error(article.error);}this.pendingDocumentURL=w.webContents.getURL();throw needsAction(article?.error||'未取得文章正文，请检查原文窗口');
+  }
+  async portal(signal){
+    if(!this.portalWindow||this.portalWindow.isDestroyed()){
+      const s=session.fromPartition(this.partition);s.setPermissionRequestHandler((_w,_p,done)=>done(false));s.setPermissionCheckHandler(()=>false);
+      const w=this.portalWindow=new BrowserWindow({show:false,width:1050,height:780,title:'连接微信公众平台',autoHideMenuBar:true,webPreferences:{session:s,sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
+      w.setMenu(null);w.webContents.setWindowOpenHandler(()=>({action:'deny'}));
+      const allowed=value=>articleNavigation(value)&&new URL(value).hostname==='mp.weixin.qq.com';
+      for(const event of ['will-navigate','will-redirect'])w.webContents.on(event,(e,url)=>{if(!allowed(url))e.preventDefault();});
+      w.webContents.on('did-navigate',(_e,url)=>{if(allowed(url)&&/^\d+$/.test(new URL(url).searchParams.get('token')||''))w.hide();});
+      await navigateOfficialPage(w,'https://mp.weixin.qq.com/',{signal,allowed,timeoutMs:25000,early:true});
+    }
+    signal.throwIfAborted();return this.portalWindow;
+  }
+  async authorize(){const w=await this.portal(new AbortController().signal);w.show();w.focus();}
+  async accountRequest(endpoint,params,signal,progress){
+    if(endpoint==='/cgi-bin/appmsgpublish'&&this.lastAccountRateAt&&Date.now()-this.lastAccountRateAt<60000)throw Error(`微信仍在限制此请求；本机冷却剩余 ${Math.ceil((60000-(Date.now()-this.lastAccountRateAt))/1000)} 秒，尚未重新向微信发送请求。`);
+    const w=await this.portal(signal),token=new URL(w.webContents.getURL()).searchParams.get('token');
+    if(!/^\d+$/.test(token||''))throw Object.assign(needsAction('微信账号文章列表需要公众平台登录；请点击“连接微信公众平台”扫码一次，之后点“更新获取”。普通微信登录不等于公众平台授权。'),{wechatLogin:true});
+    const url=new URL(endpoint,'https://mp.weixin.qq.com');if(!['/cgi-bin/searchbiz','/cgi-bin/appmsgpublish'].includes(url.pathname))throw Error('账号列表接口无效');
+    url.search=new URLSearchParams({...params,token,lang:'zh_CN',f:'json',ajax:'1'}).toString();
+    let response;const data=await wechatAccountRetry(async()=>{
+    try{response=await w.webContents.executeJavaScript(`fetch(${JSON.stringify(url.href)},{credentials:'same-origin',redirect:'error',headers:{'X-Requested-With':'XMLHttpRequest'},signal:AbortSignal.timeout(15000)}).then(async r=>{let data=null;try{data=JSON.parse(await r.text());}catch{}return {status:r.status,data};})`);}catch{signal.throwIfAborted();throw Error('微信账号列表请求未完成，请检查网络后重试。');}
+    signal.throwIfAborted();
+    if([301,302,401,403].includes(response.status)||!response.data||[200003,200004].includes(response.data.base_resp?.ret)){w.hide();this.portalWindow=null;w.destroy();throw Object.assign(needsAction('微信公众平台登录已失效，请重新连接后点击“更新获取”。'),{wechatLogin:true});}
+    if(response.status!==200)throw Error(`微信账号列表服务返回 ${response.status}，请稍后重试。`);
+    return response.data;},{signal,progress});if(data.base_resp?.ret===200013)this.lastAccountRateAt=Date.now();return data;
+  }
+  async identifyAuthor(request,signal){
+    if(/^https?:/.test(request.input))return wechatAuthor(await this.read(request.input,signal,{metadataOnly:true}),request.input);
+    const data=await this.accountRequest('/cgi-bin/searchbiz',{action:'search_biz',query:request.input,begin:0,count:5},signal);
+    if([200003,200004].includes(data.base_resp?.ret))throw Object.assign(needsAction('微信公众平台登录已失效，请重新连接。'),{wechatLogin:true});
+    if(data.base_resp?.ret!==0||!Array.isArray(data.list))throw Error('微信未返回有效公众号搜索结果，请稍后重试');
+    const found=data.list.filter(a=>a.nickname===request.input);if(found.length!==1)throw Error('未能唯一确认公众号，请粘贴该账号的一篇文章链接识别身份');
+    const a=found[0];return wechatAuthor({author:a.nickname,sourceIdentity:{biz:a.fakeid},account:{avatar:a.round_head_img,username:a.alias,description:a.signature}},request.input);
+  }
+  async accountArticles(request,previous,signal){
+    const author=request.authorContext||await this.identifyAuthor(request,signal),limit=Math.min(request.limit,500-(previous?.items.length||0)),pending=previous?.overflow||[],items=pending.slice(0,limit),seen=new Set([...(previous?.items||[]),...items].map(i=>articleURL(i.url).id));let overflow=pending.slice(limit),offset=previous?.offset||0,page={complete:!!previous?.endReached,total:previous?.total,totalUnit:previous?.totalUnit},failure;
+    while(items.length<limit&&!page.complete){
+      const count=Math.min(5,limit-items.length);let data;
+      try{data=await this.accountRequest('/cgi-bin/appmsgpublish',{sub:'list',search_field:'null',begin:offset,count,query:'',fakeid:author.biz,type:'101_1',free_publish_type:1,sub_action:'list_ex'},signal,request.progress);const next=wechatAccountPage(data,author,offset,count);if(next.items.length&&next.items.every(i=>seen.has(i.id)))throw Error('微信返回了重复的文章分页，已保留读取位置，请稍后重试。');page=next;}catch(e){signal.throwIfAborted();if(!items.length)throw e;failure=e;break;}
+      offset=page.offset;const room=limit-items.length;items.push(...page.items.slice(0,room));overflow.push(...page.items.slice(room));
+      for(const item of page.items)seen.add(item.id);
+      request.received?.({...page,items,offset,overflow,endReached:page.complete});
+      if(page.complete||!page.units||overflow.length)break;
+      if(items.length<limit)await delay(1200,undefined,{signal});
+    }
+    return {...page,items,offset,overflow,endReached:page.complete,complete:page.complete&&!overflow.length,authorContext:author,source:'wechat-account',...(failure?{complete:false,needsAction:true,action:failure.wechatLogin?'wechat-login':'retry'}:{}),message:`已从微信账号“${author.name}”的文章列表获取 ${items.length} 篇${page?.total!==null&&page?.total!==undefined?`（账号列表共 ${page.total} ${page.totalUnit==='publish'?'条发布记录':'篇文章'}）`:''}。${failure?failure.message:page?.complete&&!overflow.length?'已读到列表末尾。':'可继续读取后续文章。'}请选择后保存正文和图片。`};
   }
   async discover(request,previous,signal){
     const {platform,mode,input,limit}=request;
-    if(mode==='author'&&/^https?:/.test(input)&&!/^\/mp\//.test(new URL(input).pathname)&&!/^\/user\/profile\//.test(new URL(input).pathname)){
+    if(platform==='公众号'&&mode==='author'&&(!/^https?:/.test(input)||!/^\/mp\//.test(new URL(input).pathname)))return this.accountArticles(request,previous,signal);
+    if(platform==='小红书'&&mode==='author'&&/^https?:/.test(input)&&!/^\/user\/profile\//.test(new URL(input).pathname)){
       let context=previous?.authorContext;
       if(!context){
         const article=await this.read(input,signal);signal.throwIfAborted();
@@ -130,7 +179,6 @@ export class ArticleReader {
       for(const item of page.items)try{const parsed=articleURL(item.url,{result:true});if(official&&seen.has(parsed.id)||mode==='author'&&!official&&item.author!==input)continue;items.set(item.url,item);}catch{}
       if(page.needsAction||page.complete||items.size>=limit||!official)break;await w.webContents.executeJavaScript('window.scrollTo(0,document.documentElement.scrollHeight)');await delay(700,undefined,{signal});
     }
-    if(page.needsAction)this.show();
     const found=[...items.values()];return {...page,endReached:!!page.complete,complete:page.complete&&items.size<=limit,items:found.slice(0,limit),overflow:official?[]:found.slice(limit),message:page.needsAction?page.message:!official&&mode==='author'?`按公众号名称“${input}”精确筛选搜索索引，不代表完整历史。${items.size?'':page.next?'本页无匹配，可继续下一页。':'索引未收录其他匹配文章。'}`:page.message};
   }
   async image(value,signal){

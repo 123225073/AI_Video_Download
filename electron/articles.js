@@ -15,11 +15,15 @@ export class Articles {
   publish(){if(this.record)this.store.put('article-meta','discovery',this.record);this.changed();}
   async run(fn){
     if(this.active)throw Error('文章采集正在进行，请等待或先停止');const controller=this.active=new AbortController();
-    this.pending=(async()=>{try{await fn(controller.signal);}catch(e){if(this.record){this.record.status=controller.signal.aborted?'interrupted':'failed';this.record.message=controller.signal.aborted?'已停止，已有文章保留。':e.message;}}finally{this.active=null;this.publish();}})();
+    this.pending=(async()=>{try{await fn(controller.signal);}catch(e){if(this.record){this.record.status=controller.signal.aborted?'interrupted':e.needsAction?'needs-action':'failed';this.record.action=e.wechatLogin?'wechat-login':e.needsAction?'verification':null;this.record.message=controller.signal.aborted?'已停止，已有文章保留。':e.message;}}finally{this.active=null;this.publish();}})();
     this.publish();await this.pending;return this.view();
   }
-  start(raw){const request=articleRequest(raw);return this.run(async signal=>{
-    this.reader.close();this.record={id:randomUUID(),request,status:'reading',items:[],message:'正在读取文章列表…',next:null};this.publish();
+  identifyAuthor(raw){const request=articleRequest({...raw,mode:'author',platform:'公众号'});return this.run(async signal=>{
+    this.reader.close({keepPortal:true});this.record={id:randomUUID(),request,status:'reading',items:[],message:'正在识别公众号身份…'};this.publish();
+    const author=await this.reader.identifyAuthor(request,signal);signal.throwIfAborted();this.record.authorContext=author;this.record.status='identified';this.record.message='已识别公众号，点击“更新获取”读取该账号的文章清单。';
+  });}
+  start(raw){const request=articleRequest(raw),previous=this.record,authorContext=previous?.request.platform===request.platform&&previous.request.input===request.input?previous.authorContext:null;return this.run(async signal=>{
+    this.reader.close({keepPortal:true});this.record={id:randomUUID(),request,authorContext,status:'reading',items:[],message:'正在读取文章列表…',next:null};this.publish();
     if(request.mode==='links'){
       this.record.items=articleLinks(request.input);this.publish();
       for(const item of this.record.items){signal.throwIfAborted();item.status='reading';this.record.message='正在识别文章信息…';this.publish();
@@ -33,10 +37,17 @@ export class Articles {
   });}
   more(){if(!this.record||this.record.request.mode==='links')throw Error('当前没有可继续读取的列表');return this.run(signal=>this.discover(signal,false));}
   async discover(signal,initial){
-    this.record.status='reading';this.publish();const page=await this.reader.discover(this.record.request,initial?null:this.record,signal);signal.throwIfAborted();
+    this.record.status='reading';this.record.action=null;this.publish();
+    const request=this.record.request,isAccount=request.mode==='author'&&request.platform==='公众号'&&!/^https?:\/\/mp\.weixin\.qq\.com\/mp\//.test(request.input);
+    if(isAccount&&!this.record.authorContext&&this.reader.identifyAuthor){const author=await this.reader.identifyAuthor(request,signal);signal.throwIfAborted();this.record.authorContext=author;this.publish();}
+    const previousIds=new Set(this.record.items.map(i=>i.id));
+    const received=page=>{signal.throwIfAborted();const found=new Map(this.record.items.map(i=>[i.id,i]));for(const item of page.items){const parsed=articleURL(item.url,{result:true});if(!found.has(parsed.id))found.set(parsed.id,{...item,...parsed,title:item.title||parsed.title});}this.record.items=[...found.values()].slice(0,500);Object.assign(this.record,{offset:page.offset,overflow:page.overflow||[],total:page.total,totalUnit:page.totalUnit,source:'wechat-account',endReached:!!page.endReached,complete:false});this.record.message=`已取得 ${this.record.items.length} 篇文章信息，正在继续读取…`;this.publish();};
+    const page=await this.reader.discover({...request,authorContext:this.record.authorContext,received,progress:message=>{if(!signal.aborted){this.record.message=message;this.publish();}}},initial?null:this.record,signal);signal.throwIfAborted();
     if(page.authorContext)this.record.authorContext=page.authorContext;
+    this.record.action=page.action||null;
+    if(!initial&&page.source==='wechat-account'&&page.items?.length&&page.items.every(i=>previousIds.has(articleURL(i.url).id)))throw Error('微信返回了重复的文章分页，已保留原清单和读取位置，请稍后重试。');
     const found=new Map(this.record.items.map(i=>[i.id,i]));for(const item of page.items||[]){const parsed=articleURL(item.url,{result:true});if(!found.has(parsed.id))found.set(parsed.id,{...item,...parsed,title:item.title||parsed.title});}
-    this.record.items=[...found.values()].slice(0,500);this.record.next=page.next??null;this.record.overflow=page.overflow||[];this.record.endReached=!!page.endReached;this.record.status=page.needsAction?'needs-action':'ready';this.record.message=page.message||'已读取列表，请选择文章保存。';this.record.complete=!!page.complete;this.record.limitReached=found.size>=500;if(this.record.limitReached)this.record.message+=' 本次清单已达 500 条上限，请先保存所需文章。';this.publish();
+    this.record.items=[...found.values()].slice(0,500);this.record.offset=page.offset??this.record.offset;this.record.source=page.source||this.record.source;this.record.total=page.total??this.record.total;this.record.totalUnit=page.totalUnit||this.record.totalUnit;this.record.next=page.next??null;this.record.overflow=page.overflow||[];this.record.endReached=!!page.endReached;this.record.status=page.needsAction?'needs-action':'ready';this.record.message=page.message||'已读取列表，请选择文章保存。';this.record.complete=!!page.complete;this.record.limitReached=found.size>=500;if(this.record.limitReached)this.record.message+=' 本次清单已达 500 条上限，请先保存所需文章。';this.publish();
   }
   collect(ids){
     if(!Array.isArray(ids)||!ids.length||ids.length>100||!this.record)throw Error('请选择 1–100 篇文章');

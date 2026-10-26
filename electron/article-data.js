@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {setTimeout as delay} from 'node:timers/promises';
 
 const hash=value=>createHash('sha256').update(value).digest('hex').slice(0,24);
 export function articleURL(value,{list=false,result=false}={}){
@@ -26,6 +27,46 @@ export function articleIdentity(article){
   const source=articleURL(article.url),s=article.sourceIdentity;
   if(source.platform==='公众号'&&s&&/^[A-Za-z\d+/=]{1,200}$/.test(s.biz)&&/^\d{1,30}$/.test(s.mid)&&/^\d{1,4}$/.test(s.idx))source.id=articleURL(`https://mp.weixin.qq.com/s?${new URLSearchParams({__biz:s.biz,mid:s.mid,idx:s.idx})}`).id;
   return source;
+}
+export function wechatAuthor(article,input){
+  const name=String(article.author||'').trim(),biz=article.sourceIdentity?.biz;
+  if(!name)throw Error('原文未公开公众号名称，请检查文章链接');
+  if(typeof biz!=='string'||! /^[A-Za-z\d+/=]{1,200}$/.test(biz))throw Error('原文未提供有效公众号账号标识，无法安全获取该账号的文章');
+  let avatar='';try{avatar=imageURL(article.account?.avatar);}catch{}
+  return {sourceInput:input,name,biz,avatar,username:String(article.account?.username||'').slice(0,100),description:String(article.account?.description||'').slice(0,300)};
+}
+export function wechatAccountPage(data,author,offset,count){
+  const code=data?.base_resp?.ret;
+  if([200003,200004].includes(code))throw Object.assign(Error('微信公众平台登录已失效，请连接后再点“更新获取”。'),{needsAction:true,wechatLogin:true});
+  if(code===200013)throw Object.assign(Error('微信拒绝了外部公众号文章列表请求（200013 / freq control），冷却后仍可能受账号或平台限制；未取得的清单没有标记为成功。'),{rateLimited:true});
+  if(code!==0)throw Error(`微信未返回有效的账号文章列表${Number.isInteger(code)?`（${code}）`:''}，未标记为获取成功。`);
+  let raw=data.app_msg_list,total=data.app_msg_cnt,units=raw?.length,totalUnit='article';
+  if(data.publish_page!==undefined){
+    let page;try{page=typeof data.publish_page==='string'?JSON.parse(data.publish_page):data.publish_page;}catch{throw Error('微信发布列表数据损坏，未推进读取位置');}
+    if(!page||!Array.isArray(page.publish_list))throw Error('微信发布列表格式无效，未推进读取位置');
+    raw=[];units=page.publish_list.length;total=page.total_count;totalUnit='publish';
+    for(const entry of page.publish_list){let info;try{info=typeof entry.publish_info==='string'?JSON.parse(entry.publish_info):entry.publish_info;}catch{throw Error('微信单条发布记录损坏，未跳过或推进读取位置');}if(!Array.isArray(info?.appmsgex))throw Error('微信发布记录缺少文章明细，未推进读取位置');raw.push(...info.appmsgex);}
+  }
+  if(!Array.isArray(raw))throw Error('微信未返回有效的账号文章明细，未标记为获取成功。');
+  total=Number.isInteger(total)&&total>=0?total:null;const items=new Map();
+  if(!units&&total!==null&&offset<total)throw Error('微信返回空列表，但尚有未读取文章，请稍后重试。');
+  for(const value of raw)try{
+    const item=articleURL(value.link),u=new URL(item.url);if(item.platform!=='公众号'||u.searchParams.has('__biz')&&u.searchParams.get('__biz')!==author.biz)continue;
+    let thumbnail='';try{thumbnail=imageURL(value.cover);}catch{}
+    const time=Number(value.create_time||value.update_time);
+    items.set(item.id,{...item,title:String(value.title||'待获取标题'),author:author.name,thumbnail,publishedAt:Number.isFinite(time)&&time>0?new Date(time*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):null});
+  }catch{}
+  if(raw.length&&!items.size)throw Error('微信返回的文章链接未通过账号身份或链接校验，未标记为获取成功。');
+  const next=offset+units;
+  return {items:[...items.values()],offset:next,total,totalUnit,units,complete:total!==null?next>=total:units<count};
+}
+export async function wechatAccountRetry(request,{signal,progress=()=>{},wait=(ms,signal)=>delay(ms,undefined,{signal})}={}){
+  for(let attempt=0;;attempt++){
+    signal?.throwIfAborted();const data=await request();signal?.throwIfAborted();
+    if(data?.base_resp?.ret!==200013||attempt===2)return data;
+    const seconds=(attempt+1)*20;progress(`微信返回 200013，正在冷却 ${seconds} 秒后重试当前页（${attempt+1}/2）；请勿重复点击。`);
+    await wait(seconds*1000,signal);signal?.throwIfAborted();
+  }
 }
 export function articleRequest(raw={}){
   const {mode='links',platform='公众号'}=raw,input=String(raw.input||'').trim(),limit=Number(raw.limit??30);
