@@ -1,3 +1,4 @@
+import {wechatRateLimitError} from './wechat-account-access.js';
 import {createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 
@@ -38,7 +39,7 @@ export function wechatAuthor(article,input){
 export function wechatAccountPage(data,author,offset,count){
   const code=data?.base_resp?.ret;
   if([200003,200004].includes(code))throw Object.assign(Error('微信公众平台登录已失效，请连接后再点“更新获取”。'),{needsAction:true,wechatLogin:true});
-  if(code===200013)throw Object.assign(Error('微信拒绝了外部公众号文章列表请求（200013 / freq control），冷却后仍可能受账号或平台限制；未取得的清单没有标记为成功。'),{rateLimited:true});
+  if(Number(code)===200013)throw wechatRateLimitError();
   if(code!==0)throw Error(`微信未返回有效的账号文章列表${Number.isInteger(code)?`（${code}）`:''}，未标记为获取成功。`);
   let raw=data.app_msg_list,total=data.app_msg_cnt,units=raw?.length,totalUnit='article';
   if(data.publish_page!==undefined){
@@ -60,13 +61,8 @@ export function wechatAccountPage(data,author,offset,count){
   const next=offset+units;
   return {items:[...items.values()],offset:next,total,totalUnit,units,complete:total!==null?next>=total:units<count};
 }
-export async function wechatAccountRetry(request,{signal,progress=()=>{},wait=(ms,signal)=>delay(ms,undefined,{signal})}={}){
-  for(let attempt=0;;attempt++){
-    signal?.throwIfAborted();const data=await request();signal?.throwIfAborted();
-    if(data?.base_resp?.ret!==200013||attempt===2)return data;
-    const seconds=(attempt+1)*20;progress(`微信返回 200013，正在冷却 ${seconds} 秒后重试当前页（${attempt+1}/2）；请勿重复点击。`);
-    await wait(seconds*1000,signal);signal?.throwIfAborted();
-  }
+export async function wechatAccountRetry(request,{signal}={}){
+  signal?.throwIfAborted();const data=await request();signal?.throwIfAborted();return data;
 }
 export function articleRequest(raw={}){
   const {mode='links',platform='公众号'}=raw,input=String(raw.input||'').trim(),limit=Number(raw.limit??30);

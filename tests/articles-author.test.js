@@ -32,10 +32,9 @@ test('current publish-page format counts publish records, retains all multi-arti
  const p=wechatAccountPage(data,author(),0,2);assert.equal(p.items.length,3);assert.equal(p.offset,2);assert.equal(p.total,4);assert.equal(p.totalUnit,'publish');assert.equal(p.complete,false);
  for(const publish_page of ['{broken',JSON.stringify({publish_list:[{publish_info:'{broken'}]}),JSON.stringify({publish_list:[{publish_info:'{}'}]})])assert.throws(()=>wechatAccountPage({...data,publish_page},author(),0,2),/位置/);
 });
-test('rate limits retry the same request after 20/40 seconds, with a strict three-attempt bound',async()=>{
- const waits=[],messages=[];let calls=0;const response=await wechatAccountRetry(async()=>{calls++;return calls<3?{base_resp:{ret:200013}}:{base_resp:{ret:0}};},{progress:m=>messages.push(m),wait:async ms=>waits.push(ms)});assert.equal(response.base_resp.ret,0);assert.equal(calls,3);assert.deepEqual(waits,[20000,40000]);assert.equal(messages.length,2);
- calls=0;const final=await wechatAccountRetry(async()=>{calls++;return {base_resp:{ret:200013}};},{wait:async()=>{}});assert.equal(calls,3);assert.equal(final.base_resp.ret,200013);
- const c=new AbortController();calls=0;await assert.rejects(wechatAccountRetry(async()=>{calls++;return {base_resp:{ret:200013}};},{signal:c.signal,wait:async()=>c.abort()}));assert.equal(calls,1);
+test('rate limits return immediately without extra requests, and cancellation still stops the result',async()=>{
+ const waits=[],messages=[];let calls=0;const response=await wechatAccountRetry(async()=>{calls++;return {base_resp:{ret:200013}};},{progress:m=>messages.push(m),wait:async ms=>waits.push(ms)});assert.equal(response.base_resp.ret,200013);assert.equal(calls,1);assert.deepEqual(waits,[]);assert.deepEqual(messages,[]);
+ const c=new AbortController();calls=0;await assert.rejects(wechatAccountRetry(async()=>{calls++;c.abort();return {base_resp:{ret:0}};},{signal:c.signal}));assert.equal(calls,1);
 });
 function fixture(reader){
  const records=new Map(),directory=fs.mkdtempSync(path.join(os.tmpdir(),'fengsha-author-'));

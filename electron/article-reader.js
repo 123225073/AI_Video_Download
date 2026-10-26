@@ -1,3 +1,4 @@
+import {WechatAccountAccess} from './wechat-account-access.js';
 import {BrowserWindow,session,nativeImage} from 'electron';
 import {setTimeout as delay} from 'node:timers/promises';
 import {ContentBrowser} from './content-browser.js';
@@ -55,7 +56,8 @@ export function renderedArticleList(kind){
 }
 
 export class ArticleReader {
-  constructor(accounts,{externalBrowser}={}){
+  constructor(accounts,{externalBrowser,store}={}){
+    this.accountAccess=new WechatAccountAccess(store);
     if(externalBrowser){const original=accounts;accounts=Object.create(original);accounts.externalBrowser=externalBrowser;accounts.usesExternal=platform=>platform==='小红书';accounts.active=platform=>original.active(platform);accounts.markVerified=()=>{};accounts.markExpired=()=>{};this.ownedBrowser=externalBrowser;}
     this.accounts=accounts;this.detail=new ContentBrowser(accounts);this.detail.hidden=true;this.search=new ContentBrowser(accounts);this.search.hidden=true;this.profile=new CreatorBrowser(accounts,null);this.window=null;this.actionWindow=null;this.partition='persist:fengsha-articles';
   }
@@ -106,17 +108,18 @@ export class ArticleReader {
   }
   async authorize(){const w=await this.portal(new AbortController().signal);w.show();w.focus();}
   async accountRequest(endpoint,params,signal,progress){
-    if(endpoint==='/cgi-bin/appmsgpublish'&&this.lastAccountRateAt&&Date.now()-this.lastAccountRateAt<60000)throw Error(`微信仍在限制此请求；本机冷却剩余 ${Math.ceil((60000-(Date.now()-this.lastAccountRateAt))/1000)} 秒，尚未重新向微信发送请求。`);
+    this.accountAccess.check();
     const w=await this.portal(signal),token=new URL(w.webContents.getURL()).searchParams.get('token');
     if(!/^\d+$/.test(token||''))throw Object.assign(needsAction('微信账号文章列表需要公众平台登录；请点击“连接微信公众平台”扫码一次，之后点“更新获取”。普通微信登录不等于公众平台授权。'),{wechatLogin:true});
     const url=new URL(endpoint,'https://mp.weixin.qq.com');if(!['/cgi-bin/searchbiz','/cgi-bin/appmsgpublish'].includes(url.pathname))throw Error('账号列表接口无效');
     url.search=new URLSearchParams({...params,token,lang:'zh_CN',f:'json',ajax:'1'}).toString();
     let response;const data=await wechatAccountRetry(async()=>{
-    try{response=await w.webContents.executeJavaScript(`fetch(${JSON.stringify(url.href)},{credentials:'same-origin',redirect:'error',headers:{'X-Requested-With':'XMLHttpRequest'},signal:AbortSignal.timeout(15000)}).then(async r=>{let data=null;try{data=JSON.parse(await r.text());}catch{}return {status:r.status,data};})`);}catch{signal.throwIfAborted();throw Error('微信账号列表请求未完成，请检查网络后重试。');}
+    try{response=await w.webContents.executeJavaScript(`fetch(${JSON.stringify(url.href)},{credentials:'same-origin',redirect:'error',headers:{'X-Requested-With':'XMLHttpRequest'},signal:AbortSignal.timeout(15000)}).then(async r=>{let data=null;try{data=JSON.parse(await r.text());}catch{}return {status:r.status,retryAfter:r.headers.get('retry-after'),data};})`);}catch{signal.throwIfAborted();throw Error('微信账号列表请求未完成，请检查网络后重试。');}
     signal.throwIfAborted();
+    if(response.status===429||Number(response.data?.base_resp?.ret)===200013)throw this.accountAccess.block(response.status===429?'HTTP 429':'200013',response.retryAfter);
     if([301,302,401,403].includes(response.status)||!response.data||[200003,200004].includes(response.data.base_resp?.ret)){w.hide();this.portalWindow=null;w.destroy();throw Object.assign(needsAction('微信公众平台登录已失效，请重新连接后点击“更新获取”。'),{wechatLogin:true});}
     if(response.status!==200)throw Error(`微信账号列表服务返回 ${response.status}，请稍后重试。`);
-    return response.data;},{signal,progress});if(data.base_resp?.ret===200013)this.lastAccountRateAt=Date.now();return data;
+    return response.data;},{signal,progress});this.accountAccess.clear();return data;
   }
   async identifyAuthor(request,signal){
     if(/^https?:/.test(request.input))return wechatAuthor(await this.read(request.input,signal,{metadataOnly:true}),request.input);
@@ -137,7 +140,7 @@ export class ArticleReader {
       if(page.complete||!page.units||overflow.length)break;
       if(items.length<limit)await delay(1200,undefined,{signal});
     }
-    return {...page,items,offset,overflow,endReached:page.complete,complete:page.complete&&!overflow.length,authorContext:author,source:'wechat-account',...(failure?{complete:false,needsAction:true,action:failure.wechatLogin?'wechat-login':'retry'}:{}),message:`已从微信账号“${author.name}”的文章列表获取 ${items.length} 篇${page?.total!==null&&page?.total!==undefined?`（账号列表共 ${page.total} ${page.totalUnit==='publish'?'条发布记录':'篇文章'}）`:''}。${failure?failure.message:page?.complete&&!overflow.length?'已读到列表末尾。':'可继续读取后续文章。'}请选择后保存正文和图片。`};
+    return {...page,items,offset,overflow,endReached:page.complete,complete:page.complete&&!overflow.length,authorContext:author,source:'wechat-account',...(failure?{complete:false,needsAction:true,action:failure.wechatLogin?'wechat-login':failure.rateLimited?'wechat-rate-limit':'retry',restriction:failure.restriction||null}:{}),message:`已从微信账号“${author.name}”的文章列表获取 ${items.length} 篇${page?.total!==null&&page?.total!==undefined?`（账号列表共 ${page.total} ${page.totalUnit==='publish'?'条发布记录':'篇文章'}）`:''}。${failure?failure.message:page?.complete&&!overflow.length?'已读到列表末尾。':'可继续读取后续文章。'}请选择后保存正文和图片。`};
   }
   async discover(request,previous,signal){
     const {platform,mode,input,limit}=request;
