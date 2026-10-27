@@ -18,8 +18,9 @@ public static class FengshaWeChatArticles {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint processId);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
-  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
   [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window,int command);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
+  static void BackgroundRestore(IntPtr window){ShowWindow(window,4);SetWindowPos(window,new IntPtr(1),0,0,0,0,0x213);}
   [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
   [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window,uint flags);
@@ -114,7 +115,7 @@ public static class FengshaWeChatArticles {
     EnumWindows((h,x)=>{uint pid;GetWindowThreadProcessId(h,out pid);if(!IsWindowVisible(h)||!permitted.Contains(pid))return true;var caption=new StringBuilder(20);GetWindowText(h,caption,caption.Capacity);if(caption.ToString()!="微信")return true;var owner=Metadata(pid);if(owner==null||!SamePath(owner.Path,PluginPath()))return true;ProcessMetadata root=null;foreach(var r in Roots)if(BrowserChain(r,owner,Metadata,TencentSigned)){root=r;break;}if(root==null)return true;
       BrowserWindows.Add(h);try{var w=AutomationElement.FromHandle(h);foreach(AutomationElement d in w.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Document))){try{if(DocumentOwner(root.Id,d.Current.ProcessId))found.Add(new Profile{Window=h,Root=root.Id,Document=d});}catch(Exception e){if(!Transient(e))throw;}}}catch(Exception e){if(!Transient(e))throw;}return true;},IntPtr.Zero);return found;
   }
-  static Profile Current(){Profile match=null;foreach(var p in Documents())if(Target(p.Document)){if(match!=null)throw new Exception("Multiple target account profiles are open");match=p;}if(match==null&&!RestoreAttempted&&BrowserWindows.Count==1&&IsIconic(BrowserWindows[0])){RestoreAttempted=true;ShowWindow(BrowserWindows[0],9);SetForegroundWindow(BrowserWindows[0]);Thread.Sleep(250);return Current();}return match;}
+  static Profile Current(){Profile match=null;foreach(var p in Documents())if(Target(p.Document)){if(match!=null)throw new Exception("Multiple target account profiles are open");match=p;}if(match!=null){if(IsIconic(match.Window)){BackgroundRestore(match.Window);Thread.Sleep(250);}else SetWindowPos(match.Window,new IntPtr(1),0,0,0,0,0x213);}if(match==null&&!RestoreAttempted&&BrowserWindows.Count==1&&IsIconic(BrowserWindows[0])){RestoreAttempted=true;BackgroundRestore(BrowserWindows[0]);Thread.Sleep(250);return Current();}return match;}
 
   static void Invoke(AutomationElement e){object p;if(!e.TryGetCurrentPattern(InvokePattern.Pattern,out p))throw new Exception("Control does not support InvokePattern");((InvokePattern)p).Invoke();}
   static AutomationElement ArticleTabClose(Profile article){
@@ -132,7 +133,7 @@ public static class FengshaWeChatArticles {
   }
 
   static void Emit(object message){Console.WriteLine(new JavaScriptSerializer().Serialize(message));Console.Out.Flush();}
-  [MTAThread] public static void Main(string[] args){Console.OutputEncoding=new UTF8Encoding(false);if(args.Length==1&&args[0]=="--version"){Emit(new Dictionary<string,object>{{"ok",true},{"component","wechat-article-helper"},{"version",2},{"threadModel",Thread.CurrentThread.GetApartmentState().ToString()}});return;}var report=new Dictionary<string,object>{{"ok",false}};
+  [MTAThread] public static void Main(string[] args){Console.OutputEncoding=new UTF8Encoding(false);if(args.Length==1&&args[0]=="--version"){Emit(new Dictionary<string,object>{{"ok",true},{"component","wechat-article-helper"},{"version",3},{"threadModel",Thread.CurrentThread.GetApartmentState().ToString()}});return;}var report=new Dictionary<string,object>{{"ok",false}};
     try{
       if(args.Length!=2||Array.IndexOf(new[]{"inspect","open-card","read-article","return-article","author-profile","scroll"},args[0])<0)throw new Exception("Invalid action");
       var request=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(Encoding.UTF8.GetString(Convert.FromBase64String(args[1])));
@@ -144,7 +145,7 @@ public static class FengshaWeChatArticles {
       if(args[0]=="open-card"){
         if(profile==null)throw new Exception("Open the selected official account profile in desktop WeChat first");
         List<string> texts;var cards=Cards(profile,out texts);string key=Convert.ToString(request["cardKey"]);var card=cards.Find(c=>c.Key==key);if(card==null)throw new Exception("The selected article card changed");
-        if(IsIconic(profile.Window))ShowWindow(profile.Window,9);SetForegroundWindow(profile.Window);object scroll;
+        if(IsIconic(profile.Window))BackgroundRestore(profile.Window);object scroll;
         if(card.Element.TryGetCurrentPattern(ScrollItemPattern.Pattern,out scroll))((ScrollItemPattern)scroll).ScrollIntoView();
         Invoke(card.Element);report["invoked"]=true;report["ok"]=true;
       }else if(args[0]=="read-article"||args[0]=="return-article"){
@@ -156,7 +157,7 @@ public static class FengshaWeChatArticles {
         }else if(profile!=null){report["alreadyReturned"]=true;report["ok"]=true;}
         else{
           if(selected==null)throw new Exception("The opened article changed before return");
-          if(IsIconic(selected.Window))ShowWindow(selected.Window,9);SetForegroundWindow(selected.Window);
+          if(IsIconic(selected.Window))BackgroundRestore(selected.Window);
           var close=ArticleTabClose(selected);if(close==null)throw new Exception("The article tab close control is not ready");
           Invoke(close);report["invoked"]=true;report["ok"]=true;
         }
@@ -168,7 +169,12 @@ public static class FengshaWeChatArticles {
         }
       }else if(args[0]=="scroll"){
         if(profile==null)throw new Exception("The account profile changed before scrolling");object scroll;
-        if(profile.Document.TryGetCurrentPattern(ScrollPattern.Pattern,out scroll)&&((ScrollPattern)scroll).Current.VerticallyScrollable){((ScrollPattern)scroll).Scroll(ScrollAmount.NoAmount,ScrollAmount.LargeIncrement);report["invoked"]=true;}
+        List<string> texts;var cards=Cards(profile,out texts);AutomationElement anchor=cards.Count>0?cards[cards.Count-1].Element:profile.Document;
+        if(anchor.TryGetCurrentPattern(ScrollItemPattern.Pattern,out scroll)){((ScrollItemPattern)scroll).ScrollIntoView();report["invoked"]=true;}
+        for(var element=anchor;element!=null;element=TreeWalker.ControlViewWalker.GetParent(element)){
+          if(element.TryGetCurrentPattern(ScrollPattern.Pattern,out scroll)&&((ScrollPattern)scroll).Current.VerticallyScrollable){((ScrollPattern)scroll).Scroll(ScrollAmount.NoAmount,ScrollAmount.LargeIncrement);report["invoked"]=true;break;}
+          if(element.Equals(profile.Document))break;
+        }
         report["ok"]=true;
       }
       if(args[0]=="inspect"){

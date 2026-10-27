@@ -57,7 +57,7 @@ export function renderedArticleList(kind){
 
 export class ArticleReader {
   constructor(accounts,{externalBrowser,store,clientHelper}={}){
-    this.clientHelper=clientHelper;
+    this.clientHelper=clientHelper;this.store=store;
     this.accountAccess=new WechatAccountAccess(store);
     if(externalBrowser){const original=accounts;accounts=Object.create(original);accounts.externalBrowser=externalBrowser;accounts.usesExternal=platform=>platform==='小红书';accounts.active=platform=>original.active(platform);accounts.markVerified=()=>{};accounts.markExpired=()=>{};this.ownedBrowser=externalBrowser;}
     this.accounts=accounts;this.detail=new ContentBrowser(accounts);this.detail.hidden=true;this.search=new ContentBrowser(accounts);this.search.hidden=true;this.profile=new CreatorBrowser(accounts,null);this.window=null;this.actionWindow=null;this.partition='persist:fengsha-articles';
@@ -133,8 +133,15 @@ export class ArticleReader {
   async clientArticles(request,previous,signal){
     const author=request.authorContext||await this.identifyAuthor(request,signal),limit=Math.min(request.limit,500-(previous?.items?.length||0));
     request.progress?.('正在读取电脑微信中的公众号文章列表，请保持目标公众号主页打开…');
-    const page=await this.clientHelper.collect(author,{limit,knownKeys:(previous?.items||[]).map(i=>i.nativeKey).filter(Boolean),resumeUrl:previous?.clientPending||null,signal,progress:request.progress,received:(items,clientPending)=>request.received?.({source:'wechat-client',items,clientPending,offset:null,overflow:[],complete:false,endReached:false})});
+    const known=new Map((this.store?.list('article')||[]).filter(i=>i.nativeKey&&i.sourceIdentity?.biz===author.biz).map(i=>[i.nativeKey,i]));
+    const reuse=items=>items.map(item=>{const old=known.get(item.nativeKey);return old?{...item,url:old.url,id:old.id,savedId:old.id}:item;});
+    const page=await this.clientHelper.list(author,{limit,knownKeys:(previous?.items||[]).map(i=>i.nativeKey).filter(Boolean),signal,progress:request.progress,received:(items,clientPending)=>request.received?.({source:'wechat-client',items:reuse(items),clientPending,offset:null,overflow:[],complete:false,endReached:false})});page.items=reuse(page.items);
     return {...page,authorContext:author,offset:null,overflow:[],endReached:page.complete,message:`已从电脑微信的“${author.name}”主页取得 ${page.items.length} 篇文章。${page.needsAction?'已有清单保留，请回到此公众号主页后继续。':page.complete?'已读到微信展示的列表末尾。':'可继续读取后续文章。'}请选择后保存正文和图片。`};
+  }
+  async resolveClient(item,author,signal){
+    if(!this.clientHelper||!author||item.clientReference?.biz!==author.biz||item.clientReference?.username!==author.username)throw Error('公众号文章清单身份不匹配');
+    const page=await this.clientHelper.collect(author,{limit:1,targetKey:item.nativeKey,signal,received:items=>{const found=items.find(i=>i.nativeKey===item.nativeKey);if(found&&found.title===item.title)item.url=found.url;}});
+    const found=page.items.find(i=>i.nativeKey===item.nativeKey&&i.title===item.title);if(!found||!page.returnedToOriginalProfile)throw Object.assign(Error('所选文章链接尚未完整取得，请保持公众号主页展开后重试；已有清单保留。'),{needsAction:true,wechatClient:true});return found.url;
   }
   async accountArticles(request,previous,signal){
     if(this.clientHelper)return this.clientArticles(request,previous,signal);
