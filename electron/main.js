@@ -28,6 +28,7 @@ import { UserSearchBrowser } from './user-search-browser.js';
 import { ContentSearch } from './content-search.js';
 import { ContentBrowser } from './content-browser.js';
 import {ArticleReader} from './article-reader.js';
+import {WeChatArticleHelper} from './wechat-article-helper.js';
 import {Articles} from './articles.js';
 let articles,articleStore,articleError;
 function articleCenter(){if(!articles)throw Error(articleError||'文章中心尚未就绪');return articles;}
@@ -101,7 +102,7 @@ else {
   collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true,openPage:signal=>openWeChatChannels(uri=>shell.openExternal(uri),signal),windowHelper:!testMode||process.env.FENGSHA_TEST_WECHAT_WINDOW==='1'?new WeChatWindowHelper(bin):undefined});
   creators.connection=collectorConnection;wechat.collector=wechatCreators;wechat.connection=collectorConnection;
   contentSearch=new ContentSearch({accounts,creators,userSearch,bilibili:engine.bilibili,wechat:wechatCreators,browser:new ContentBrowser(accounts),store,changed});
-  try{articleStore=await Store.open(path.join(app.getPath('userData'),'文章中心'),{});const articleBrowser=!testMode?new ExternalBrowser({managed:new ManagedBrowser({directory:path.join(app.getPath('userData'),'browser')}),mode:'managed'}):undefined;articles=new Articles({store:articleStore,reader:new ArticleReader(accounts,{externalBrowser:articleBrowser,store:articleStore}),directory:path.join(app.getPath('userData'),'文章中心','文章'),changed});}
+  try{articleStore=await Store.open(path.join(app.getPath('userData'),'文章中心'),{});const articleBrowser=!testMode?new ExternalBrowser({managed:new ManagedBrowser({directory:path.join(app.getPath('userData'),'browser')}),mode:'managed'}):undefined;articles=new Articles({store:articleStore,reader:new ArticleReader(accounts,{externalBrowser:articleBrowser,store:articleStore,clientHelper:(!testMode||process.env.FENGSHA_TEST_NATIVE_ARTICLES==='1')?new WeChatArticleHelper(bin):undefined}),directory:path.join(app.getPath('userData'),'文章中心','文章'),changed});}
   catch(e){articleError='文章资料库未能打开：'+e.message;try{articleStore?.close();}catch{}articleStore=null;}
   handle('articles-start',request=>articleCenter().start(request));
   handle('articles-identify-author',request=>articleCenter().identifyAuthor(request));

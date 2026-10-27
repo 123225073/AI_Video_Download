@@ -19,6 +19,7 @@ if(process.platform==='win32') {
 }
 if(!fs.existsSync('bin/collector/collector-native.dll'))throw new Error('Missing Windows collector interop assembly');
 prepareWeChatWindowHelper();
+if(process.platform==='win32')execFileSync(process.execPath,['scripts/prepare-wechat-article-helper.mjs'],{windowsHide:true,stdio:'inherit'});
 fs.writeFileSync('bin/collector/collector-system.ps1','\uFEFF'+fs.readFileSync('electron/collector-system.ps1','utf8').replace(/^\uFEFF/,''));
 await build({entryPoints:['scripts/clash-route-helper.mjs'],outfile:'bin/collector/clash-route-helper.cjs',bundle:true,platform:'node',format:'cjs',target:'node22',logLevel:'silent'});
 fs.writeFileSync('bin/collector/LICENSE-yaml',fs.readFileSync('node_modules/yaml/LICENSE'));

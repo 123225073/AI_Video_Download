@@ -16,6 +16,7 @@ export function verifyRuntime(bin = path.resolve('bin'), { run = execFileSync, e
     ['音视频处理', 'ffmpeg/ffmpeg.exe', ['-version']],
     ['媒体校验', 'ffmpeg/ffprobe.exe', ['-version']],
     ['独立 Node', 'node/node.exe', ['--version']],
+    ['电脑微信文章采集', 'collector/wechat-article-helper.exe', ['--version']],
     ['离线语音与完整模型', 'asr/runtime/python.exe', ['-I', '-B', '-c',
       'import sys; import av, ctranslate2; from faster_whisper import WhisperModel; ' +
       '[WhisperModel(p, device="cpu", compute_type="int8", local_files_only=True) for p in sys.argv[1:]]; print("base/small offline ready")',

@@ -1,10 +1,18 @@
 import React,{useEffect,useState,useId} from 'react';
 import {X} from 'lucide-react';
 
-export default function ArticleRestriction({record,now,busy,onOfficial,onLinks}){
- const restricted=record?.action==='wechat-rate-limit',key=restricted?`${record.id}:${record.restriction?.retryAt||0}`:null;
+export default function ArticleRestriction({record,now,busy,onOfficial,onLinks,onRetry}){
+ const client=record?.action==='wechat-client',restricted=record?.action==='wechat-rate-limit',key=client?`${record.id}:wechat-client`:restricted?`${record.id}:${record.restriction?.retryAt||0}`:null;
  const [open,setOpen]=useState(false),description=useId();
  useEffect(()=>{setOpen(!!key);},[key]);
+ if(client)return <>
+  <div className="article-restriction" role="status"><div><strong>从电脑微信读取此公众号文章</strong><p>请在已登录的电脑微信中打开“{record.authorContext?.name||'目标公众号'}”主页，再开始读取。已有清单保留。</p></div><button className="button" onClick={()=>setOpen(true)}>查看处理指引</button></div>
+  {open&&<div className="modal-backdrop" onClick={()=>setOpen(false)}><section className="modal article-restriction-dialog" role="dialog" aria-modal="true" aria-label="电脑微信文章采集指引" aria-describedby={description} onClick={e=>e.stopPropagation()}>
+   <div className="modal-head"><h2>请在电脑微信打开此公众号</h2><button className="icon-button" aria-label="关闭处理指引" onClick={()=>setOpen(false)}><X/></button></div>
+   <div id={description}><p>作者批量采集通过电脑微信中的公众号文章列表读取。</p><ol><li>打开并登录 Windows 电脑微信。</li><li>打开“{record.authorContext?.name||'目标公众号'}”的一篇文章或公众号主页，保持窗口展开。</li><li>点击下方按钮，程序会自动进入主页、读取文章链接、加载后续内容并返回主页，无需逐篇操作。读取期间请勿切换这个微信窗口。</li></ol><p>列表日期按微信页面显示；保存正文时会核对完整日期和公众号身份。登录或验证需要你本人完成。</p></div>
+   <div className="article-actions"><button className="button primary" disabled={busy} onClick={()=>{setOpen(false);onRetry();}}>我已打开，开始读取</button><button className="button" onClick={()=>setOpen(false)}>稍后处理，保留清单</button><button className="button" disabled={busy} onClick={onLinks}>使用文章链接采集</button></div>
+  </section></div>}
+ </>;
  if(!restricted)return null;
  const seconds=Math.max(0,Math.ceil(((record.restriction?.retryAt||0)-now)/1000)),remaining=`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`;
  return <>

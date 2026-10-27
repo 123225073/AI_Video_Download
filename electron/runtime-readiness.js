@@ -8,7 +8,7 @@ import { Script } from 'node:vm';
 export const runtimeFiles = [
   'yt-dlp.exe', 'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe', 'node/node.exe',
   'collector/wx_video_download.exe', 'collector/collector-native.dll',
-  'collector/wechat-window-helper.exe', 'collector/collector-system.ps1',
+  'collector/wechat-window-helper.exe', 'collector/wechat-article-helper.exe', 'collector/collector-system.ps1',
   'collector/collector-content.js', 'collector/clash-route-helper.cjs',
   'wechat/download-link.cjs', 'wechat/decrypt.cjs', 'asr/transcribe.py',
   'asr/runtime/python.exe', 'asr/runtime/python312.dll', 'asr/runtime/python312.zip',

@@ -56,7 +56,8 @@ export function renderedArticleList(kind){
 }
 
 export class ArticleReader {
-  constructor(accounts,{externalBrowser,store}={}){
+  constructor(accounts,{externalBrowser,store,clientHelper}={}){
+    this.clientHelper=clientHelper;
     this.accountAccess=new WechatAccountAccess(store);
     if(externalBrowser){const original=accounts;accounts=Object.create(original);accounts.externalBrowser=externalBrowser;accounts.usesExternal=platform=>platform==='小红书';accounts.active=platform=>original.active(platform);accounts.markVerified=()=>{};accounts.markExpired=()=>{};this.ownedBrowser=externalBrowser;}
     this.accounts=accounts;this.detail=new ContentBrowser(accounts);this.detail.hidden=true;this.search=new ContentBrowser(accounts);this.search.hidden=true;this.profile=new CreatorBrowser(accounts,null);this.window=null;this.actionWindow=null;this.partition='persist:fengsha-articles';
@@ -129,7 +130,14 @@ export class ArticleReader {
     const found=data.list.filter(a=>a.nickname===request.input);if(found.length!==1)throw Error('未能唯一确认公众号，请粘贴该账号的一篇文章链接识别身份');
     const a=found[0];return wechatAuthor({author:a.nickname,sourceIdentity:{biz:a.fakeid},account:{avatar:a.round_head_img,username:a.alias,description:a.signature}},request.input);
   }
+  async clientArticles(request,previous,signal){
+    const author=request.authorContext||await this.identifyAuthor(request,signal),limit=Math.min(request.limit,500-(previous?.items?.length||0));
+    request.progress?.('正在读取电脑微信中的公众号文章列表，请保持目标公众号主页打开…');
+    const page=await this.clientHelper.collect(author,{limit,knownKeys:(previous?.items||[]).map(i=>i.nativeKey).filter(Boolean),resumeUrl:previous?.clientPending||null,signal,progress:request.progress,received:(items,clientPending)=>request.received?.({source:'wechat-client',items,clientPending,offset:null,overflow:[],complete:false,endReached:false})});
+    return {...page,authorContext:author,offset:null,overflow:[],endReached:page.complete,message:`已从电脑微信的“${author.name}”主页取得 ${page.items.length} 篇文章。${page.needsAction?'已有清单保留，请回到此公众号主页后继续。':page.complete?'已读到微信展示的列表末尾。':'可继续读取后续文章。'}请选择后保存正文和图片。`};
+  }
   async accountArticles(request,previous,signal){
+    if(this.clientHelper)return this.clientArticles(request,previous,signal);
     const author=request.authorContext||await this.identifyAuthor(request,signal),limit=Math.min(request.limit,500-(previous?.items.length||0)),pending=previous?.overflow||[],items=pending.slice(0,limit),seen=new Set([...(previous?.items||[]),...items].map(i=>articleURL(i.url).id));let overflow=pending.slice(limit),offset=previous?.offset||0,page={complete:!!previous?.endReached,total:previous?.total,totalUnit:previous?.totalUnit},failure;
     while(items.length<limit&&!page.complete){
       const count=Math.min(5,limit-items.length);let data;
@@ -189,15 +197,18 @@ export class ArticleReader {
     const response=await session.fromPartition(this.partition).fetch(url,{signal:combined,redirect:'error',headers:{Referer:url.includes('xhscdn.com')?'https://www.xiaohongshu.com/':'https://mp.weixin.qq.com/'}});
     if(!response.ok)throw Error(`图片请求失败 (${response.status})`);if(Number(response.headers.get('content-length'))>20*1024*1024){await response.body?.cancel();throw Error('图片超过 20 MB');}
     const reader=response.body.getReader(),chunks=[];let size=0;try{for(;;){combined.throwIfAborted();const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>20*1024*1024)throw Error('图片超过 20 MB');chunks.push(value);}}finally{await reader.cancel().catch(()=>{});}
-    const bytes=Buffer.concat(chunks);let ext=bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))?'png':bytes[0]===255&&bytes[1]===216?'jpg':bytes.subarray(0,3).toString()==='GIF'?'gif':bytes.subarray(0,4).toString()==='RIFF'&&bytes.subarray(8,12).toString()==='WEBP'?'webp':null;
+    let bytes=Buffer.concat(chunks);const svg=/^image\/svg\+xml(?:;|$)/i.test(response.headers.get('content-type')||'')&&/^\s*(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(bytes.subarray(0,4096).toString());let ext=svg?'svg':bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))?'png':bytes[0]===255&&bytes[1]===216?'jpg':bytes.subarray(0,3).toString()==='GIF'?'gif':bytes.subarray(0,4).toString()==='RIFF'&&bytes.subarray(8,12).toString()==='WEBP'?'webp':null;
     if(!ext)throw Error('响应不是支持的图片格式');
     // NativeImage cannot decode every WebP/GIF supported by Chromium. Validate
     // those in an isolated blank renderer and retain original animation bytes.
-    if(nativeImage.createFromBuffer(bytes).isEmpty()){
+    if(svg||nativeImage.createFromBuffer(bytes).isEmpty()){
       if(!this.decoder||this.decoder.isDestroyed()){this.decoder=new BrowserWindow({show:false,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});await this.decoder.loadURL('data:text/html,<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:">');}
-      signal.throwIfAborted();const data=`data:image/${ext==='jpg'?'jpeg':ext};base64,${bytes.toString('base64')}`;
-      const valid=await this.decoder.webContents.executeJavaScript(`new Promise(resolve=>{const image=new Image();let timer;const done=value=>{clearTimeout(timer);image.onload=image.onerror=null;image.src='';resolve(value);};image.onload=()=>done(image.naturalWidth>0&&image.naturalHeight>0);image.onerror=()=>done(false);timer=setTimeout(()=>done(false),5000);image.src=${JSON.stringify(data)};})`);
+      signal.throwIfAborted();const data=`data:image/${svg?'svg+xml':ext==='jpg'?'jpeg':ext};base64,${bytes.toString('base64')}`;
+      // SVG is decoded only as an image under a network-blocking CSP, then saved
+      // as pixels. Source scripts and external references never enter exports.
+      const valid=await this.decoder.webContents.executeJavaScript(`new Promise(resolve=>{const image=new Image();let timer;const done=value=>{clearTimeout(timer);image.onload=image.onerror=null;image.src='';resolve(value);};image.onload=()=>{const w=image.naturalWidth,h=image.naturalHeight;if(!w||!h||w>8192||h>8192||w*h>16000000)return done(false);if(!${svg})return done(true);try{const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(image,0,0);done(canvas.toDataURL('image/png'));}catch{done(false);}};image.onerror=()=>done(false);timer=setTimeout(()=>done(false),5000);image.src=${JSON.stringify(data)};})`);
       signal.throwIfAborted();if(!valid)throw Error('响应不是可解码的图片');
+      if(svg){if(typeof valid!=='string'||!valid.startsWith('data:image/png;base64,'))throw Error('矢量图片转换失败');bytes=Buffer.from(valid.slice(22),'base64');ext='png';if(bytes.length>20*1024*1024||nativeImage.createFromBuffer(bytes).isEmpty())throw Error('矢量图片转换结果无效或过大');}
     }
     return {bytes,ext};
   }
