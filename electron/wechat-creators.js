@@ -102,6 +102,7 @@ export class WeChatCreators {
   }
   async identify(source, item, signal) {
     const data = await this.request('/api/channels/feed/profile', { url: source }, signal);
+    if (data.object) this.remember(data.object);
     const author = identity(data.object?.contact || data.contact || data.authorInfo || data.authorinfo);
     const objectId = data.object?.id;
     if (!author.id) throw new Error('原链接未返回稳定作者 ID，请在微信打开该视频，再重新识别；不会以同名搜索替代');
@@ -132,6 +133,7 @@ export class WeChatCreators {
         if (author.id && author.id !== creator.id) continue;
         if (Number(raw.objectDesc?.mediaType) !== 4 || !raw.objectDesc?.media?.length) continue;
         if (typeof raw.id !== 'string' || !raw.id) continue;
+        this.remember(raw);
         remaining.push({ id: raw.id, nonce: raw.objectNonceId || '', sourceUrl: raw.source_url || '', title: raw.objectDesc.description || '视频号视频', media: {thumbUrl:raw.objectDesc.media[0].thumbUrl,coverUrl:raw.objectDesc.media[0].coverUrl,videoPlayLen:raw.objectDesc.media[0].videoPlayLen}, createtime: raw.createtime });
       }
     } else { next = cursor?.next ?? null; end = Boolean(cursor?.end); total = cursor?.total ?? null; }

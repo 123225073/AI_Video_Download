@@ -186,3 +186,32 @@ test('视频号重读失败保留已有作品、缓冲和游标，正常续读�
   assert.equal(next.items.length, 2); assert.equal(new Set(next.items.map(item => item.sourceId)).size, 2); assert.equal(next.complete, true);
   reopened.close();
 });
+
+test('视频号博主作品列表自带媒体地址时直接缓存，后续下载解析无需再次连接微信', async () => {
+  const store = await Store.open(path.resolve('output/unit-collector', randomUUID()), {}), engine = new Engine('', null, null);
+  let calls = 0;
+  const rawObject = {
+    id: '5397107284542319999',
+    objectNonceId: '14887697630331082851_0_146_0_0',
+    contact: { username, nickname: '原作者' },
+    objectDesc: {
+      mediaType: 4,
+      description: '已带媒体地址的视频',
+      media: [{ url: 'https://finder.video.qq.com/251/cached.mp4', urlToken: '?t=ok', decodeKey: '1234567890123456', thumbUrl: 'https://images.example/cover', videoPlayLen: 25 }],
+    },
+    createtime: 1790712000,
+  };
+  const connector = new WeChatCreators(store, engine, async url => {
+    calls++;
+    assert.ok(new URL(url).pathname.endsWith('feed/list'));
+    return wrap({ object: [rawObject], contact: { username, nickname: '原作者' }, feedsCount: 1, continueFlag: 0, lastBuffer: '' });
+  });
+  const first = await connector.page({ id: username, name: '原作者' }, 50);
+  assert.equal(first.items.length, 1);
+  assert.equal(calls, 1);
+  const resolved = await connector.resolve(first.items[0]);
+  assert.equal(calls, 1, 'resolve should reuse cached media from creator list without extra network call');
+  assert.equal(resolved.url, 'https://finder.video.qq.com/251/cached.mp4?t=ok');
+  assert.equal(resolved.decodeKey, '1234567890123456');
+  store.close();
+});

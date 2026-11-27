@@ -45,7 +45,18 @@ public static class FengshaWeChatWindow {
   sealed class ToolbarResult { public AutomationElement Button;public AutomationElement Container;public int Ancestors;public int Toolbars;public int Buttons;public int OwnerRejected;public bool Limited; }
   static bool WeChatProcess(string name) { return String.Equals(name,"Weixin",StringComparison.OrdinalIgnoreCase)||String.Equals(name,"WeChat",StringComparison.OrdinalIgnoreCase); }
   static bool SamePath(string a,string b) { try{return Path.GetFullPath(a).TrimEnd('\\')==Path.GetFullPath(b).TrimEnd('\\')||String.Equals(Path.GetFullPath(a).TrimEnd('\\'),Path.GetFullPath(b).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase);}catch{return false;} }
-  static string PluginPath() { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),@"Tencent\xwechat\xplugin\plugins\RadiumWMPF\WeChatAppEx.exe"); }
+  static string PluginDirectory() { return Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),@"Tencent\xwechat\xplugin\plugins\RadiumWMPF")).TrimEnd('\\'); }
+  static string PluginPath() { return Path.Combine(PluginDirectory(),"WeChatAppEx.exe"); }
+  static bool IsPluginPath(string candidate) {
+    if(String.IsNullOrEmpty(candidate))return false;
+    string full;try{full=Path.GetFullPath(candidate).TrimEnd('\\');}catch{return false;}
+    string root=PluginDirectory();
+    if(String.Equals(full,Path.Combine(root,"WeChatAppEx.exe"),StringComparison.OrdinalIgnoreCase))return true;
+    if(!full.StartsWith(root+"\\",StringComparison.OrdinalIgnoreCase))return false;
+    var parts=full.Substring(root.Length+1).Split('\\');
+    if(parts.Length==4&&parts[0].Length>0&&parts[0].Length<=12&&String.Equals(parts[1],"extracted",StringComparison.OrdinalIgnoreCase)&&String.Equals(parts[2],"runtime",StringComparison.OrdinalIgnoreCase)&&String.Equals(parts[3],"WeChatAppEx.exe",StringComparison.OrdinalIgnoreCase)){foreach(char c in parts[0])if(c<'0'||c>'9')return false;return true;}
+    return false;
+  }
   static ProcessMetadata Metadata(uint id) {
     Stage="process-owner";
     // Read only the target PID's parent relation, image path and creation time.
@@ -84,7 +95,7 @@ public static class FengshaWeChatWindow {
     if(root==null||document==null)return false;if(document.Id==root.Id)return SamePath(document.Path,root.Path);
     var seen=new HashSet<uint>();var current=document;
     for(int depth=0;depth<8;depth++){
-      if(current==null||!seen.Add(current.Id)||!SamePath(current.Path,PluginPath())||!signed(current.Path))return false;
+      if(current==null||!seen.Add(current.Id)||!IsPluginPath(current.Path)||!signed(current.Path))return false;
       var parent=lookup(current.Parent);if(parent==null||parent.Created>current.Created)return false;
       if(parent.Id==root.Id)return SamePath(parent.Path,root.Path)&&parent.Created==root.Created;
       current=parent;
@@ -131,8 +142,8 @@ public static class FengshaWeChatWindow {
     Stage="process-filter";var allowedProcesses=new HashSet<uint>();var roots=new List<ProcessMetadata>();
     foreach(var name in new[]{"Weixin","WeChat","WeChatAppEx"})foreach(var item in Process.GetProcessesByName(name))using(item){try{allowedProcesses.Add((uint)item.Id);if(WeChatProcess(name)){var metadata=Metadata((uint)item.Id);if(RegisteredRoot(metadata))roots.Add(metadata);}}catch(InvalidOperationException){}}
     EnumWindows((window,parameter)=>{
-      Stage="window-filter";uint process;GetWindowThreadProcessId(window,out process);if(!allowedProcesses.Contains(process)||GetWindowTextLength(window)!=2)return true;
-      var caption=new StringBuilder(4);GetWindowText(window,caption,caption.Capacity);if(caption.ToString()!="微信")return true;
+      Stage="window-filter";uint process;GetWindowThreadProcessId(window,out process);int titleLen=GetWindowTextLength(window);if(!allowedProcesses.Contains(process)||(titleLen!=2&&titleLen!=3))return true;
+      var caption=new StringBuilder(8);GetWindowText(window,caption,caption.Capacity);string title=caption.ToString();if(title!="微信"&&title!="视频号")return true;
       // Modern WeChat hosts browser windows in its signed WMPF child process.
       // Establish ancestry before requesting any UI from that window.
       var ownerRoot=WindowRoot(Metadata(process),roots,Metadata,TencentSigned);if(ownerRoot==null)return true;process=ownerRoot.Id;
@@ -140,7 +151,7 @@ public static class FengshaWeChatWindow {
       try {
         Stage="window-properties";
         var root=AutomationElement.FromHandle(window);
-        if(root.Current.Name!="微信")return true;
+        if(root.Current.Name!="微信"&&root.Current.Name!="视频号")return true;
         // Request only the exact public Channels document from the provider.
         // No structural walk, control-list enumeration, other names, text or
         // inaccessible/private UI descendants are returned to this client.
@@ -248,6 +259,9 @@ public static class FengshaWeChatWindow {
     var plugin=new ProcessMetadata{Id=2,Parent=1,Path=PluginPath(),Created=new DateTime(2026,1,2)};var child=new ProcessMetadata{Id=3,Parent=2,Path=PluginPath(),Created=new DateTime(2026,1,3)};
     Func<uint,ProcessMetadata> lookup=id=>id==1?root:id==2?plugin:null;
     passed&=BrowserChain(root,child,lookup,path=>true);
+    passed&=IsPluginPath(Path.Combine(PluginDirectory(),@"26134\extracted\runtime\WeChatAppEx.exe"));
+    passed&=!IsPluginPath(Path.Combine(PluginDirectory(),@"..\evil\WeChatAppEx.exe"));
+    passed&=!IsPluginPath(Path.Combine(PluginDirectory(),@"abc\extracted\runtime\WeChatAppEx.exe"));
     passed&=!BrowserChain(root,child,lookup,path=>false);
     passed&=!BrowserChain(root,new ProcessMetadata{Id=3,Parent=1,Path=@"C:\Other\WeChatAppEx.exe",Created=child.Created},lookup,path=>true);
     passed&=!BrowserChain(root,new ProcessMetadata{Id=3,Parent=999,Path=PluginPath(),Created=child.Created},lookup,path=>true);
