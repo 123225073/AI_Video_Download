@@ -1,8 +1,25 @@
-.collector-prompt-backdrop{position:fixed;inset:0;z-index:100;background:#10243c66;display:flex;align-items:center;justify-content:center;padding:24px}
-.collector-prompt-dialog{width:min(620px,100%);max-height:calc(100dvh - 48px);overflow:auto;background:white;border-radius:14px;padding:24px;box-shadow:0 20px 60px #10243c33}
-.collector-prompt-dialog h2{font-size:20px;margin:0 0 16px}
-.collector-prompt-dialog p,.collector-prompt-dialog li{font-size:14px;line-height:1.8;color:#536a80}
-.collector-prompt-dialog ol{padding-left:22px}.collector-prompt-dialog li+li{margin-top:8px}
+.collector-prompt-backdrop{position:fixed;inset:0;z-index:100;background:#10243c66;display:flex;align-items:center;justify-content:center;padding:16px}
+.collector-prompt-dialog{width:min(640px,100%);max-height:calc(100dvh - 32px);overflow:auto;background:white;border-radius:14px;padding:22px 24px;box-shadow:0 20px 60px #10243c33;box-sizing:border-box}
+.collector-prompt-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.collector-prompt-dialog h2{font-size:19px;margin:0;color:#10243c}
+.collector-prompt-timer{font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;background:#eaf6f2;color:#0f6f58;white-space:nowrap}
+.collector-prompt-timer.expired{background:#fef2f2;color:#b91c1c}
+.collector-prompt-checks{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.collector-check-pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;padding:4px 10px;border-radius:8px;background:#f3f6f9;color:#334e68}
+.collector-check-pill i{width:7px;height:7px;border-radius:50%;display:inline-block;background:#94a3b8}
+.collector-check-pill.ok{background:#ecfdf5;color:#065f46}
+.collector-check-pill.ok i{background:#10b981}
+.collector-check-pill.pending{background:#fffbeb;color:#92400e}
+.collector-check-pill.pending i{background:#f59e0b}
+.collector-check-pill.warn{background:#fef2f2;color:#991b1b}
+.collector-check-pill.warn i{background:#ef4444}
+.collector-prompt-dialog p,.collector-prompt-dialog li{font-size:13.5px;line-height:1.7;color:#475d73}
+.collector-prompt-lead{margin:0 0 10px}
+.collector-prompt-timeout{margin:0 0 10px;color:#b91c1c;font-weight:500}
+.collector-prompt-dialog ol{padding-left:20px;margin:0 0 12px}.collector-prompt-dialog li+li{margin-top:6px}
+.collector-prompt-dialog li strong{color:#10243c}
+.collector-prompt-status{margin:12px 0 0;padding:10px 12px;border-radius:10px;background:#f4f8fb;border:1px solid #d9e6f2;color:#1e3a5f;font-size:13px;line-height:1.6}
+.collector-prompt-status.checked{background:#eef7f4;border-color:#bfe3d6;color:#0f513f}
 .collector-prompt-dialog kbd{font:inherit;font-weight:600;border:1px solid #d7e1eb;border-radius:4px;padding:1px 5px}
-.collector-prompt-actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}
-.collector-prompt-dialog small{display:block;color:#536a80;line-height:1.7}
+.collector-prompt-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 12px}
+.collector-prompt-dialog small{display:block;color:#62788e;line-height:1.6;font-size:12px}

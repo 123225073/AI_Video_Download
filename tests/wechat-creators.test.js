@@ -215,3 +215,29 @@ test('视频号博主作品列表自带媒体地址时直接缓存，后续下�
   assert.equal(resolved.decodeKey, '1234567890123456');
   store.close();
 });
+
+test('视频号博主批量模式在单次连接内连续翻页读满目标条数并实时回调进度，避免反复拆装连接', async () => {
+  const store = await Store.open(path.resolve('output/unit-collector', randomUUID()), {}), engine = new Engine('', null, null);
+  let connections = 0, listCalls = 0;
+  const makeObj = id => ({ id: String(1000000000000000000n + BigInt(id)), contact: { username }, objectDesc: { mediaType: 4, description: `第${id}条`, media: [{ thumbUrl: 'https://images.example/cover', videoPlayLen: 15 }] }, createtime: 1790712000 });
+  const connector = new WeChatCreators(store, engine, async url => {
+    listCalls++;
+    const marker = new URL(url).searchParams.get('next_marker');
+    if (!marker) return wrap({ object: [1, 2].map(makeObj), contact: { username }, feedsCount: 5, continueFlag: 1, lastBuffer: 'p2' });
+    if (marker === 'p2') return wrap({ object: [3, 4].map(makeObj), contact: { username }, feedsCount: 5, continueFlag: 1, lastBuffer: 'p3' });
+    return wrap({ object: [5].map(makeObj), contact: { username }, feedsCount: 5, continueFlag: 0, lastBuffer: '' });
+  });
+  const creators = new Creators(store, engine, null, () => {}, connector);
+  creators.connection = { withConnection: async (_signal, run) => { connections++; return run(); } };
+  const r = { id: 'batch-1', creator: { id: username, platform: '视频号', name: '作者', supported: true, adapter: 'wechat-collector' }, items: [], scanned: 0, cursor: 1, seen: [], skipped: {}, status: 'identified' };
+  store.put('creator', r.id, r);
+  const progressCounts = [];
+  const result = await creators.page(r.id, { limit: 50 }, true, false, { batch: true, onProgress: snap => progressCounts.push(snap.items.length) });
+  assert.equal(connections, 1);
+  assert.equal(listCalls, 3);
+  assert.equal(result.items.length, 5);
+  assert.equal(result.complete, true);
+  assert.deepEqual(progressCounts, [2, 4, 5]);
+  await creators.close();
+  store.close();
+});

@@ -128,8 +128,8 @@ export class CollectorConnection {
       status==='timeout'?(found?'已检测到微信视频号页面，但自动刷新确认超时；请在该页面选择“更多 → 刷新”，当前连接会继续等待。':'视频号页面检测超时，无法确认当前页面状态；请在微信视频号页面选择“更多 → 刷新”，当前连接会继续等待。'):
       status==='scan-limited'?'视频号页面检测达到安全上限，无法确认当前页面状态；请在微信视频号页面选择“更多 → 刷新”，当前连接会继续等待。':
       status==='not-found'?'尚未检测到可验证的视频号页面，请在电脑微信中打开视频号；当前连接会继续等待。':
-      found?'已检测到微信视频号页面，但当前工具栏暂不支持自动刷新；请在该页面选择“更多 → 刷新”，连接后会继续当前任务。':
-      '当前 Windows 暂不支持自动确认视频号页面状态；请在微信视频号页面选择“更多 → 刷新”，当前连接会继续等待。'});
+      found?'已检测到微信视频号页面，但当前工具栏暂不支持自动刷新；新版微信请点右上角“独立窗口打开”或先切到“朋友圈”再点回“视频号”（独立窗口可选菜单“更多 → 刷新”），连接后会继续当前任务。':
+      '当前 Windows 暂不支持自动确认视频号页面状态；新版微信请点视频号右上角“独立窗口打开”或先切到“朋友圈”再点回“视频号”（独立窗口可选菜单“更多 → 刷新”），当前连接会继续等待。'});
     let found=false;signal.throwIfAborted();this.update('waiting','正在检测电脑微信中已打开的视频号页面',{needsPage:false,waitingUntil:deadline});
     try{
       signal.throwIfAborted();const state=await abortable(Promise.resolve().then(()=>{signal.throwIfAborted();return this.windowHelper.inspect(signal);}),signal);

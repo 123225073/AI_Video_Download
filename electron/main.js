@@ -192,7 +192,14 @@ else {
   handle('enqueue', (items, options) => queue.enqueue(items, options));
   handle('remove-records',(kind,ids)=>queue.removeRecords(kind,ids));
   handle('creator-identify', text => { searchNotBusy(); if (parseProgress) throw new Error('正在识别视频，请等待当前识别结束'); const urls = linksFromText(text); if (urls.length !== 1) throw new Error('识别博主时请粘贴一个视频或博主主页链接'); return creators.identify(urls[0]); });
-  handle('creator-page', (...args) => { searchNotBusy(); return creators.page(...args); });
+  handle('creator-page', (id, rawFilters, reset = false, extend = false) => {
+    searchNotBusy();
+    const record = store.get('creator', id);
+    const options = record?.creator?.adapter === 'wechat-collector'
+      ? { batch: true, onProgress: next => { if (win && !win.isDestroyed()) win.webContents.send('fengsha:creator-changed', next); } }
+      : {};
+    return creators.page(id, rawFilters, reset, extend, options);
+  });
   handle('creator-last', () => creators.last());
   handle('creator-clear-history', () => { searchNotBusy(); if (parseProgress) throw new Error('正在识别视频，请等待结束后再清除博主历史'); return creators.clearHistory(); });
   handle('creator-cancel', () => creators.cancel());
@@ -217,7 +224,15 @@ else {
   handle('collector-allow',()=>{connectionNotBusy();return collectorConnection.allow();});
   handle('collector-open-page',()=>openWeChatChannels(uri=>shell.openExternal(uri)));
   handle('collector-restore',()=>collectorConnection.restore());
-  handle('collector-status',async()=>{let ready=false,connected=false;try{const channel=await wechatCreators.test();ready=true;connected=channel.connected;}catch{}return {...collectorConnection.status(),ready,connected};});
+  handle('collector-status',async()=>{
+    let ready=false,connected=false,proxyListening=false,adapterReady=false,detail='';
+    try{const channel=await wechatCreators.test();ready=true;connected=channel.connected;detail=channel.detail||'';}catch{}
+    if(ready){
+      try{const proxy=await collectorConnection.api('/api/proxy/status',null,2000);proxyListening=Boolean(proxy?.service?.listening||proxy?.proxy?.listening||proxy?.service?.status==='running');}catch{}
+      if(connected){try{adapterReady=await collectorConnection.adapterReady(null,3000);}catch{}}
+    }
+    return {...collectorConnection.status(),ready,connected,proxyListening,adapterReady,detail,checkedAt:Date.now()};
+  });
   const guides = { cpa: 'https://cpa.fengsha.online/', collector: 'https://ltaoo.github.io/wx_channels_download/', transcriber: 'https://github.com/wendy7756/AI-Video-Transcriber', audio: 'https://platform.openai.com/docs/guides/speech-to-text' };
   handle('guide', id => { if (!guides[id]) throw new Error('帮助页面不存在'); return shell.openExternal(guides[id]); });
   handle('action', (id, action) => queue.action(id, action));
