@@ -13,6 +13,38 @@ function fixture({opened=true,ready=true,lostAt,intervalDelay}={}){
  vm.createContext(sandbox);vm.runInContext(source.replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'')+'\nglobalThis.ContactMessages=ContactMessages;',sandbox);service=new sandbox.ContactMessages(options);return {service,options,records,events,requests,clicks,clipboardWrites,restore:()=>new sandbox.ContactMessages(options)};
 }
 const preview=f=>f.service.previewBatch('collection',['u1','u2'],'account','{昵称}：{评论}',3);
+test('单次展开占位符，昵称、评论、标题中的美元符与花括号保留原文',()=>{
+ const template='{昵称} / {评论} / {作品} / {昵称}';
+ assert.equal(contactText(template,{name:'甲{评论}',text:'$& {作品}'},{title:'乙$&'}),'甲{评论} / $& {作品} / 乙$& / 甲{评论}');
+});
+test('从评论行发起的单人预览引用该条评论，并拒绝不属于该用户的评论',async()=>{
+ const f=fixture();f.options.comments.record.comments.forEach((c,i)=>{c.id='c'+i;});
+ const prepared=await f.service.prepare('collection','u1','account','{昵称}：{评论}','c1');
+ assert.equal(prepared.text,'甲：第二条评论');
+ await assert.rejects(f.service.prepare('collection','u1','account','{评论}','c2'),/所选评论/);
+});
+test('单独点击后响应丢失返回待核对状态，关闭后重新预览不会重发',async()=>{
+ const f=fixture({lostAt:'u1'}),p=await f.service.prepare('collection','u1','account','你好');
+ const result=await f.service.send(p.id);
+ assert.equal(result.status,'uncertain');assert.match(result.message,/核对/);
+ await assert.rejects(f.service.prepare('collection','u1','account','你好'),/重复/);
+ assert.deepEqual(f.clicks,['u1']);
+});
+test('批量预览之后有人已单独尝试，直接跳过并继续剩余用户',async()=>{
+ const f=fixture(),b=preview(f);
+ const p=await f.service.prepare('collection','u1','account','{昵称}：{评论}');await f.service.send(p.id);
+ const done=await f.service.sendBatch(b.id);
+ assert.equal(done.status,'completed');assert.equal(done.rows[0].status,'already-attempted');
+ assert.deepEqual(f.clicks,['u1','u2']);
+});
+test('主页与编辑框延迟出现时仅等待准备，发送键始终只提交一次',async()=>{
+ let profileChecks=0,editorChecks=0;
+ const f=fixture({opened:()=>++profileChecks>=3,ready:()=>++editorChecks>=3});
+ const p=await f.service.prepare('collection','u1','account','延迟就绪');
+ const result=await f.service.send(p.id);
+ assert.equal(result.status,'uncertain');assert.deepEqual(f.clicks,['u1']);
+ assert.equal(profileChecks,3);assert.equal(editorChecks,3);
+});
 test('勾选批次仅含指定用户，预览不打开页面、不发消息，按用户去重边界验证',()=>{const f=fixture(),b=preview(f);assert.deepEqual(Array.from(b.rows,r=>r.userId),['u1','u2']);assert.match(b.rows[0].text,/甲.*一条/);assert.equal(f.requests.length,0);assert.equal(f.clipboardWrites.length,0);assert.throws(()=>f.service.previewBatch('collection',['u1','u1'],'account','x'),/不重复/);});
 test('整个批次先验证未知ID、账号、空文案与间隔，失败不替换已预览批次',()=>{const f=fixture(),b=preview(f);for(const args of [['collection',['u1','unknown'],'account','x',3],['collection',['u1'],'wrong','x',3],['collection',['u1'],'account',' ',3],['collection',['u1'],'account','x',0]])assert.throws(()=>f.service.previewBatch(...args));assert.equal(f.service.viewBatch().id,b.id);assert.equal(f.requests.length,0);});
 test('批量逐位只提交所选两人，每条点击前持久化，结束不冒称送达',async()=>{const f=fixture(),b=preview(f),done=await f.service.sendBatch(b.id);assert.deepEqual(f.clicks,['u1','u2']);assert.equal(done.status,'completed');assert.ok(done.rows.every(r=>r.status==='uncertain'));assert.equal(done.rows[0].text,'甲：一条评论 {昵称}');assert.equal(f.clipboardWrites[0],done.rows[0].text);});

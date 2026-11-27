@@ -1,48 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { command } from './process-output.js';
+export { command, stopProcess } from './process-output.js';
 import { platformOf, validSource, cleanName, mediaKey, safeLog, classifyError } from './core.js';
 import { thumbnailUrl } from './thumbnail.js';
 import { wechatFeedId, wechatVideoLocator } from './wechat-creators.js';
-
-export function stopProcess(child) {
-  if (!child?.pid || child.exitCode !== null) return;
-  if (process.platform === 'win32') spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-  else child.kill('SIGTERM');
-}
-export function command(binary, args, { signal, timeout = 120000, onLine } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = '', errors = '', partial = '', ended = false, timedOut = false;
-    const abort = () => stopProcess(child);
-    if (signal?.aborted) abort();
-    signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(() => { timedOut = true; stopProcess(child); }, timeout);
-    const consume = chunk => {
-      const value = chunk.toString('utf8');
-      output += value;
-      if (output.length > 24 * 1024 * 1024) { stopProcess(child); return; }
-      partial += value;
-      const lines = partial.split(/\r?\n/); partial = lines.pop();
-      for (const line of lines) onLine?.(line);
-    };
-    child.stdout.on('data', consume);
-    child.stderr.on('data', chunk => { errors = (errors + chunk.toString('utf8')).slice(-12000); onLine?.(chunk.toString('utf8')); });
-    const finish = (error, code) => {
-      if (ended) return; ended = true;
-      clearTimeout(timer); signal?.removeEventListener('abort', abort);
-      if (partial) onLine?.(partial);
-      if (signal?.aborted) reject(new Error('CANCELLED'));
-      else if (error) reject(error);
-      else if (timedOut) reject(new Error('Connection timed out'));
-      else if (code !== 0) reject(new Error(errors || `下载组件退出：${code}`));
-      else if (output.length > 24 * 1024 * 1024) reject(new Error('清单过大，请缩小解析范围'));
-      else resolve(output);
-    };
-    child.once('error', e => finish(e)); child.once('close', code => finish(null, code));
-  });
-}
 
 export class Engine {
   constructor(bin, accounts, wechat) { this.bin = bin; this.accounts = accounts; this.wechat = wechat; }
@@ -170,7 +133,7 @@ export class Engine {
       args.push('--load-info-json', infoFile);
     } else args.push('--', task.item.url);
     let finalFile = null;
-    try { await command(path.join(this.bin, 'yt-dlp.exe'), args, { signal, timeout: 60 * 60 * 1000, onLine: line => {
+    try { await command(path.join(this.bin, 'yt-dlp.exe'), args, { signal, timeout: 60 * 60 * 1000, collectOutput: false, onLine: line => {
       if (line.startsWith('__FENGSHA_PROGRESS__:')) {
         try { const p = JSON.parse(line.slice(21)); progress({ status: p.status === 'finished' ? 'processing' : 'downloading', bytes: p.downloaded_bytes || 0, total: p.total_bytes || p.total_bytes_estimate || null, speed: p.speed || null, eta: p.eta || null }); } catch { /* Non-numeric progress remains indeterminate. */ }
       } else if (line.startsWith('__FENGSHA_FILE__:')) {

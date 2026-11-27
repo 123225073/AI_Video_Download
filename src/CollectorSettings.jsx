@@ -3,6 +3,8 @@ import {CheckCircle2,Link,ShieldCheck,RefreshCw,LoaderCircle,ArrowLeft} from 'lu
 export default function CollectorSettings({state,perform,notify,back,embedded=false,active=true}) {
   const [status,setStatus]=useState(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
   const [draft,setDraft]=useState(state.collector);
+  const collectorKey=JSON.stringify(state.collector);
+  useEffect(()=>{setDraft(state.collector);},[collectorKey]);
   useEffect(()=>{if(!active)return;let live=true;const refresh=()=>perform('collectorStatus').then(s=>live&&setStatus(s)).catch(()=>{});refresh();const timer=setInterval(refresh,5000);return()=>{live=false;clearInterval(timer);};},[active]);
   async function act(name){setBusy(true);setMessage('');try{await perform('collectorSave',{...draft,enabled:true});const r=await perform(name);if(name==='collectorAllow')setMessage(r?'已准备：读取与下载时自动连接，任务结束自动恢复':'连接未准备好，请重试');else setMessage(r.label || r.detail || '检查完成');setStatus(await perform('collectorStatus'));}catch(e){setMessage(e.message);}finally{setBusy(false);}}
   const connection=state.collectorConnection || {}, blocked=busy || Boolean(state.creatorProgress) || connection.activeTasks>0;

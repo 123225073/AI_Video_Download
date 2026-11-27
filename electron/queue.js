@@ -3,6 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { archiveDirectory, classifyError, safeLog, validSource, mediaKey } from './core.js';
 import { resourceBudget, resourceSampler } from './scheduler.js';
 
+export function reusableMediaSize(media) {
+  if (!media?.filePath) return 0;
+  let file;
+  try { file = fs.statSync(media.filePath); } catch { return 0; }
+  if (!file.isFile() || file.size === 0 || (media.size > 0 && file.size !== media.size)) return 0;
+  return file.size;
+}
+
 export class Queue {
   constructor(store, engine, changed, metrics = resourceSampler()) {
     this.store = store; this.engine = engine; this.changed = changed; this.active = new Map(); this.closing = false;
@@ -25,7 +33,7 @@ export class Queue {
       if (item.available === false) { skipped.push({ title: item.title, reason: '条目不可用' }); continue; }
       const existing = this.store.get('media', item.key);
       const pending = pendingKeys.has(item.key);
-      if (pending || (!options.force && settings.skipDuplicates && existing && fs.existsSync(existing.filePath))) { skipped.push({ title: item.title, reason: pending ? '已在任务队列中' : '文件已在媒体库中' }); continue; }
+      if (pending || (!options.force && settings.skipDuplicates && reusableMediaSize(existing))) { skipped.push({ title: item.title, reason: pending ? '已在任务队列中' : '文件已在媒体库中' }); continue; }
       const task = { id: randomUUID(), item, options: { savePath: options.savePath || settings.savePath, quality: options.quality || settings.quality, archive: options.archive || settings.archive, retries: settings.retries, force: Boolean(options.force) }, status: 'queued', attempts: 0, createdAt: Date.now(), progress: {}, logs: '', message: '等待空闲下载位置' };
       this.save(task); added.push(task.id);
       pendingKeys.add(item.key);
@@ -36,15 +44,20 @@ export class Queue {
     if (this.closing) return;
     const tasks = this.tasks(), now = Date.now();
     const budget = resourceBudget(this.store.settings(), this.metrics(), tasks.filter(t => t.status === 'processing').length);
-    const counts = new Map();
-    for (const t of tasks) if (this.active.has(t.id)) counts.set(t.item.platform, (counts.get(t.item.platform) || 0) + 1);
+    const counts = new Map(), activeKeys = new Set();
+    for (const t of tasks) if (this.active.has(t.id)) {
+      counts.set(t.item.platform, (counts.get(t.item.platform) || 0) + 1);
+      activeKeys.add(t.item.key);
+    }
     const waiting = tasks.filter(t => t.status === 'queued' || (t.status === 'retry-wait' && t.retryAt <= now)).sort((a, b) => a.createdAt - b.createdAt);
     const caps = { '视频号': 2, '抖音': 2, '小红书': 2, 'B站': 3, YouTube: 4 };
     for (const task of waiting) {
       if (this.active.size >= budget.resourceLimit) break;
+      if (activeKeys.has(task.item.key)) continue;
       const p = task.item.platform; let state = this.platformState.get(p);
       if (state && state.until <= now) { this.platformState.delete(p); state = null; }
       if (state?.until > now || (counts.get(p) || 0) >= (state?.cap || caps[p] || 4)) continue;
+      activeKeys.add(task.item.key);
       counts.set(p, (counts.get(p) || 0) + 1); void this.run(task);
     }
     const next = { ...budget, active: this.active.size, waiting: tasks.filter(t => !this.active.has(t.id) && ['queued', 'retry-wait'].includes(t.status)).length, cooldowns: [...this.platformState.entries()].filter(([, s]) => s.until > now).map(([platform, s]) => ({ platform, until: s.until })) };
@@ -71,10 +84,15 @@ export class Queue {
     run.promise = (async () => {
       try {
         const existing = this.store.get('media', task.item.key);
-        if (!task.options.force && this.store.settings().skipDuplicates && existing && fs.existsSync(existing.filePath)) {
-          const size = fs.statSync(existing.filePath).size;
+        const size = reusableMediaSize(existing);
+        if (!task.options.force && this.store.settings().skipDuplicates && size) {
           this.save({ ...task, status: 'completed', filePath: existing.filePath, size, duration: existing.duration ?? task.item.duration, height: existing.height ?? task.item.height, progress: { bytes: size, total: size }, message: '复用已有完整文件', completedAt: Date.now() });
           this.store.flush(); return;
+        }
+        // Keep a changed file at its original path. The download engine uses the
+        // stable task ID for a separate filename, including on subsequent retries.
+        if (!size && existing?.filePath && fs.existsSync(existing.filePath)) {
+          task = { ...task, options: { ...task.options, force: true } };
         }
         let last = 0;
         const output = await this.engine.download(task, archiveDirectory(task.options, task.item), controller.signal, p => {

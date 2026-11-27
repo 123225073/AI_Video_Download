@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { reusableMediaSize } from './queue.js';
 import net from 'node:net';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { channelFile, pipePath } from '../cli/protocol.mjs';
@@ -20,7 +21,7 @@ export function createAgentHandler({ engine, queue, store, accounts, creators, u
     if (command === 'accounts') return { accounts: accounts.list().map(a => ({ id: a.id, platform: a.platform, name: a.name, status: a.status, active: a.active })) };
     if (command === 'tasks') { const tasks = queue.tasks().filter(t => !options.id || t.id === options.id); if (options.id && !tasks.length) throw failure('任务不存在', 'NOT_FOUND'); return { tasks: tasks.map(publicTask), scheduler: queue.scheduler() }; }
     if (command === 'task') { await queue.action(options.id, options.action); return { tasks: queue.tasks().filter(t => t.id === options.id).map(publicTask) }; }
-    if (command === 'media') { const media = queue.media().filter(m => !options.id || m.id === options.id); if (options.id && !media.length) throw failure('媒体不存在', 'NOT_FOUND'); return { media: media.map(m => ({ ...publicItem(m), id: m.id, filePath: m.filePath, size: m.size, duration: m.duration, height: m.height, quality: m.quality, exists: fs.existsSync(m.filePath) })) }; }
+    if (command === 'media') { const media = queue.media().filter(m => !options.id || m.id === options.id); if (options.id && !media.length) throw failure('媒体不存在', 'NOT_FOUND'); return { media: media.map(m => ({ ...publicItem(m), id: m.id, filePath: m.filePath, size: m.size, duration: m.duration, height: m.height, quality: m.quality, exists: reusableMediaSize(m) > 0 })) }; }
     if (command === 'probe') return { filePath: options.file, ...(await engine.verify(path.resolve(options.file))) };
     if (command === 'service') { if (source === 'stop') { if (busy()) throw failure('仍有任务或读取操作，后台未停止', 'BUSY', 1); if (!status().background) throw failure('桌面应用正在使用，请通过界面退出', 'GUI_ACTIVE', 1); stop(); return { stopping: true }; } return status(); }
     if (command === 'inspect') {
@@ -62,7 +63,7 @@ export function createAgentHandler({ engine, queue, store, accounts, creators, u
       for (const item of selected) { validSource(item.url); if (platformOf(item.url) !== item.platform) throw failure('清单平台与链接不一致'); }
       if (options.output) { fs.mkdirSync(path.resolve(options.output), { recursive: true }); fs.accessSync(path.resolve(options.output), fs.constants.W_OK); }
       const result = queue.enqueue(selected.map(publicItem), { savePath: options.output && path.resolve(options.output), quality: options.quality, archive: options.archive, force: options.force });
-      return { ...result, existing: selected.flatMap(item => { const m = store.get('media', mediaKey(item)); return m && fs.existsSync(m.filePath) ? [{ id: m.id, filePath: m.filePath }] : []; }) };
+      return { ...result, existing: selected.flatMap(item => { const m = store.get('media', mediaKey(item)); return reusableMediaSize(m) ? [{ id: m.id, filePath: m.filePath }] : []; }) };
     }
     throw failure('未知 CLI 命令');
   };

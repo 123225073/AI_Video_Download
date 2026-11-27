@@ -13,29 +13,39 @@ export class Store {
   constructor(SQL, directory, defaults) {
     this.file = path.join(directory, 'library.sqlite');
     this.db = fs.existsSync(this.file) ? new SQL.Database(fs.readFileSync(this.file)) : new SQL.Database();
+    this.closed = false;
     this.db.run('CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY,value TEXT);');
     this.defaults = defaults;
     this.put('meta', 'schema', { version: 1 });
   }
   get(kind, id) {
+    if (this.closed) return null;
     const stmt = this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?');
     try { stmt.bind([kind, id]); return stmt.step() ? JSON.parse(stmt.getAsObject().data) : null; } finally { stmt.free(); }
   }
   list(kind) {
+    if (this.closed) return [];
     const stmt = this.db.prepare('SELECT data FROM records WHERE kind=?');
     const values = [];
     try { stmt.bind([kind]); while (stmt.step()) values.push(JSON.parse(stmt.getAsObject().data)); } finally { stmt.free(); }
     return values;
   }
   put(kind, id, value) {
+    if (this.closed) return;
     this.db.run('INSERT INTO records(kind,id,data) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data', [kind, id, JSON.stringify(value)]);
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.flush(), 200);
   }
-  remove(kind,id) { this.db.run('DELETE FROM records WHERE kind=? AND id=?',[kind,id]); }
+  remove(kind, id) {
+    if (this.closed) return;
+    this.db.run('DELETE FROM records WHERE kind=? AND id=?', [kind, id]);
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.flush(), 200);
+  }
   settings() { return { ...this.defaults, ...(this.get('settings', 'main') || {}) }; }
   flush() {
     clearTimeout(this.timer);
+    if (this.closed) return;
     const data = this.db.export();
     const handle = fs.openSync(`${this.file}.tmp`, 'w');
     try { fs.writeFileSync(handle, data); fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
@@ -49,5 +59,10 @@ export class Store {
       }
     }
   }
-  close() { this.flush(); this.db.close(); }
+  close() {
+    if (this.closed) return;
+    this.flush();
+    this.closed = true;
+    this.db.close();
+  }
 }

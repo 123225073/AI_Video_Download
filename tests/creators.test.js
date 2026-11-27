@@ -52,7 +52,8 @@ test('取消正在执行的分页保留前一页和游标；可以继续读取',
   service.flat = async () => ({ entries: entries(['c']) });
   const recovered = await service.page('creator', {}); assert.equal(recovered.items.length, 3); assert.equal(recovered.complete, true); store.close();
 });
-test('日期过滤补取详情；登录失败不会跳过该页或假装完成', async () => {
+test('日期过滤补取详情；登录失败不会跳过该页或假装完成', async t => {
+  t.mock.method(Date, 'now', () => Date.UTC(2026, 9, 15, 12));
   const { store, service } = await fixture();
   service.flat = async () => ({ entries: [{ id: 'a', title: 'a', url: 'https://www.youtube.com/watch?v=a' }] });
   service.engine.parse = async () => { throw new Error('Login required'); };

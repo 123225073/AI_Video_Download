@@ -1,5 +1,21 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import {chromium} from 'playwright';
 const module=fs.readFileSync(new URL('../electron/comment-workflow.js',import.meta.url),'utf8'),fn=module.slice(module.indexOf('export function renderedComments'),module.indexOf('export function publicComment')).replace('export function','function');
+test('已加载 2101 条评论时，读完后段才确认末页',async t=>{
+  const browser=await chromium.launch({headless:true,...(fs.existsSync(chromium.executablePath())?{}:{channel:'chrome'})});
+  t.after(()=>browser.close());
+  const page=await browser.newPage(),url='https://www.xiaohongshu.com/explore/6aba58610000000018018a47';
+  const cards=Array.from({length:2101},(_,i)=>'<div class="comment-item" data-comment-id="c'+i+'"><div class="content">评论 '+i+'</div></div>');
+  await page.route('**/*',r=>r.fulfill({contentType:'text/html; charset=utf-8',body:'<div class="comments-container">'+cards.join('')+'<div>THE END</div></div>'}));
+  await page.goto(url);await page.addScriptTag({content:fn});
+  const ids=[];let offset=0,complete=false;
+  do {
+    const result=await page.evaluate(next=>renderedComments('小红书',location.href,false,next),offset);
+    if(result.nextOffset)assert.equal(result.complete,false);
+    ids.push(...result.comments.map(row=>row.id));
+    complete=result.complete;offset=result.nextOffset;
+  }while(offset);
+  assert.equal(complete,true);assert.equal(new Set(ids).size,2101);assert.equal(ids.at(-1),'c2100');
+});
 test('真实浏览器DOM：小红书可读首屏不因登录弹窗丢弃，规范跳转不会误判离开',async t=>{
  const browser=await chromium.launch({headless:true,...(fs.existsSync(chromium.executablePath())?{}:{channel:'chrome'})});t.after(()=>browser.close());const page=await browser.newPage();await page.route('**/*',r=>r.fulfill({contentType:'text/html; charset=utf-8',body:'<div class="login-modal">请登录查看更多</div><div class="comments-container"><div class="comment-item" id="comment-c1"><a class="name" href="/user/profile/111111111111111111111111">读者</a><div class="content"><span class="note-text">已公开的真实首屏样式</span></div></div></div>'}));await page.goto('https://www.xiaohongshu.com/discovery/item/6aba58610000000018018a47');const result=await page.evaluate(`(()=>{${fn};return renderedComments('小红书','https://www.xiaohongshu.com/explore/6aba58610000000018018a47');})()`);assert.equal(result.comments.length,1);assert.equal(result.comments[0].id,'comment-c1');assert.equal(result.blocked,true);const other=await page.evaluate(`(()=>{${fn};return renderedComments('小红书','https://www.xiaohongshu.com/explore/111111111111111111111111');})()`);assert.equal(other.comments.length,0);assert.equal(other.blocked,true);
 });

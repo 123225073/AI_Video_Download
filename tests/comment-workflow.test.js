@@ -166,6 +166,44 @@ test('DOM批次超出上限的真实回复持久化缓冲，滚动后继续不�
   assert.equal(restored.view().status,'complete');assert.equal(restored.view().pendingComments,undefined);
 });
 
+test('已读末页的缓冲可跨重启离线续读，返回值释放忙碌状态',async()=>{
+  const comments=['a','b','c','d'].map(id=>({id,text:id}));
+  const f=fixture({read:async()=>({comments,complete:true})});
+  const first=await f.workflow.start('s','w',1);
+  assert.equal(first.busy,false);
+  assert.equal(first.status,'limited');
+  const restored=f.restore();
+  restored.browser.open=async()=>{throw Error('本地末页不应再打开浏览器');};
+  assert.throws(()=>restored.more(first.id,1),/提高/);
+  const second=await restored.more(first.id,2);
+  assert.deepEqual(Array.from(second.comments,c=>c.id),['a','b']);
+  assert.equal(second.status,'limited');
+  const last=await restored.more(first.id,4);
+  assert.deepEqual(Array.from(last.comments,c=>c.id),['a','b','c','d']);
+  assert.equal(last.busy,false);
+  assert.equal(last.status,'complete');
+});
+
+test('同一已加载页面的后续片段在本次任务继续处理',async()=>{
+  const f=fixture({read:async script=>{
+    const offset=Number(script.match(/,true,(\d+)\);/)?.[1]);
+    assert.ok([0,500].includes(offset));
+    return offset===0?{comments:[{id:'front',text:'首段'}],nextOffset:500,complete:false}
+      :{comments:[{id:'back',text:'后段'}],complete:true};
+  }});
+  const result=await f.workflow.start('s','w');
+  assert.deepEqual(Array.from(result.comments,c=>c.id),['front','back']);
+  assert.equal(result.status,'complete');
+});
+
+test('缺少平台评论ID时，不同匿名昵称的同文评论都保留，翻页重复不增加条数',async()=>{
+  const a={name:'甲',text:'请问价格',published:'昨天'},b={...a,name:'乙'};
+  const f=fixture({read:async()=>({comments:[a,b,a,b],complete:true})});
+  const result=await f.workflow.start('s','w');
+  assert.deepEqual(Array.from(result.comments,row=>row.name),['甲','乙']);
+  assert.equal(result.comments[0].id,f.publicComment('小红书',a).id,'已有记录继续沿用旧指纹');
+});
+
 test('视频号批次实时落盘，取消后的晚响应不冒充完成，重启沿用原分页位置',async()=>{
   const gate=deferred();let calls=0;
   const item={id:'18446744073709551000',objectNonceId:'fixture-nonce',platform:'视频号',url:'https://channels.weixin.qq.com/web/pages/feed?oid=18446744073709551000'};

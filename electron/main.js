@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, protocol, net, safeStorage, session } from 'electron';
 import { Store } from './store.js';
 import { Engine } from './engine.js';
-import { Queue } from './queue.js';
+import { Queue, reusableMediaSize } from './queue.js';
 import { AccountManager } from './accounts.js';
 import {ExternalBrowser} from './external-browser.js';
 import {ManagedBrowser} from './managed-browser.js';
@@ -56,7 +56,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'fengsha-media', privileges: { s
 let videoWorkflow;
 let win, store, queue, accounts, engine, creators, userSearch, ai, transcriptions, wechatCreators, collectorConnection, environment = [], parseProgress = null, closing = false, quitting = false;
 let agentServer, agentIdleTimer;
-const snapshot = () => ({ articles:articles?.view()||{unavailable:articleError}, videoTasks:videoWorkflow?.list()||[], version: app.getVersion(), settings: store.settings(), tasks: queue.tasks(), media: queue.media().map(m => ({ ...m, exists: fs.existsSync(m.filePath) })), accounts: accounts.list(), environment, parseProgress, creatorProgress: creators?.progress(), scheduler: queue.scheduler(), ai: ai?.all(), voice:voice?.config(), transcriptions: transcriptions?.list() || [], transcriptionFolders: transcriptions?.folders() || [], speechEnvironment: transcriptions?.environment(), collector: wechatCreators?.config(), collectorConnection:collectorConnection?.status(), contentSearch:contentSearch?.view(),commentCollection:comments?.view(),contactBatch:contacts?.viewBatch(), studioProgress:contentStudio?.progress(),contentDraft:contentStudio?.job?.draftId?contentStudio.get(contentStudio.job.draftId):null,sourceNotice:sourceWindows?.notice, contentProgress:voice?.active?{kind:"voice",message:"正在处理豆包声音…"}:contacts?.active?{kind:"contact",message:"正在准备或提交所选用户的私信…"}:comments?.active?{kind:"comments",message:"正在读取评论与公开用户资料…"}:contentSearch?.active?{kind:"search",message:contentSearch.record?.message||"正在读取作品并筛选发布日期…"}:(contentStudio?.active||contentStudio?.remixController)?{kind:"clone",message:"正在克隆、改图或生成发布素材…"}:null, userSearchProgress:userSearch?.active?{platform:userSearch.activePlatform}:null });
+const snapshot = () => ({ articles:articles?.view()||{unavailable:articleError}, videoTasks:videoWorkflow?.list()||[], version: app.getVersion(), settings: store.settings(), tasks: queue.tasks(), media: queue.media().map(m => ({ ...m, exists: reusableMediaSize(m) > 0 })), accounts: accounts.list(), environment, parseProgress, creatorProgress: creators?.progress(), scheduler: queue.scheduler(), ai: ai?.all(), voice:voice?.config(), transcriptions: transcriptions?.list() || [], transcriptionFolders: transcriptions?.folders() || [], speechEnvironment: transcriptions?.environment(), collector: wechatCreators?.config(), collectorConnection:collectorConnection?.status(), contentSearch:contentSearch?.view(),commentCollection:comments?.view(),contactBatch:contacts?.viewBatch(), studioProgress:contentStudio?.progress(),contentDraft:contentStudio?.job?.draftId?contentStudio.get(contentStudio.job.draftId):null,sourceNotice:sourceWindows?.notice, contentProgress:voice?.active?{kind:"voice",message:"正在处理豆包声音…"}:contacts?.active?{kind:"contact",message:"正在准备或提交所选用户的私信…"}:comments?.active?{kind:"comments",message:"正在读取评论与公开用户资料…"}:contentSearch?.active?{kind:"search",message:contentSearch.record?.message||"正在读取作品并筛选发布日期…"}:(contentStudio?.active||contentStudio?.remixController)?{kind:"clone",message:"正在克隆、改图或生成发布素材…"}:null, userSearchProgress:userSearch?.active?{platform:userSearch.activePlatform}:null });
 let changedTimer;
 function changed() { if (closing || quitting || changedTimer) return; changedTimer = setTimeout(() => { changedTimer=null;if (!closing && !quitting && win && !win.isDestroyed()) win.webContents.send('fengsha:changed', snapshot()); }, 80); }
 function handle(name, callback) { ipcMain.handle(`fengsha:${name}`, async (event, ...args) => { if (closing||quitting) return {ok:false,error:'应用正在退出，请等待关闭完成'}; if (event.sender !== win.webContents) return { ok: false, error: '无效请求' }; try { return { ok: true, value: await callback(...args) }; } catch (e) { return { ok: false, code: e.code, error: classifyError(e.message).category === 'unknown' ? safeLog(e.message) : classifyError(e.message).message }; } }); }
@@ -123,9 +123,14 @@ else {
   handle('comments-more',(id,limit)=>{if((contentStudio.active||contentStudio.remixController||contacts.active)||contentSearch.active||parseProgress)throw new Error('正在搜索或二创，请等待完成');return comments.more(id,limit);});
   handle('comments-cancel',()=>comments.cancel());
   handle('comments-last',()=>comments.view());
+  handle('comments-history',()=>comments.history());
+  handle('comments-select',id=>{
+    if(contacts.active)throw new Error('请先结束当前私信操作，再切换评论记录');
+    return comments.select(id);
+  });
   handle('comments-show',()=>comments.show());
   handle('comments-export',async id=>{const r=comments.record?.id===id?comments.record:store.get('comment-collection',id);if(!r)throw new Error('评论资料不存在');const directory=path.join(app.getPath('userData'),'评论资料');fs.mkdirSync(directory,{recursive:true});const file=path.join(directory,r.id+'.json');const {busy,canContinue,...publicRecord}=comments.view(r);fs.writeFileSync(file,JSON.stringify(publicRecord,null,2));await shell.openPath(directory);return {file};});
-  handle('contact-prepare',(collectionId,userId,accountId,text)=>{if(comments.active||contentSearch.active||contentStudio.active||contentStudio.remixController)throw new Error('请等待采集或二创完成');return contacts.prepare(collectionId,userId,accountId,text);});
+  handle('contact-prepare',(collectionId,userId,accountId,text,commentId)=>{if(comments.active||contentSearch.active||contentStudio.active||contentStudio.remixController)throw new Error('请等待采集或二创完成');return contacts.prepare(collectionId,userId,accountId,text,commentId);});
   handle('contact-send',id=>contacts.send(id));
   handle('contact-batch-preview',(collectionId,userIds,accountId,text,interval)=>{if(comments.active||contentSearch.active||contentStudio.active||contentStudio.remixController)throw new Error('请等待采集或二创完成');return contacts.previewBatch(collectionId,userIds,accountId,text,interval);});
   handle('contact-batch-send',id=>{if(comments.active||contentSearch.active||contentStudio.active||contentStudio.remixController)throw new Error('请等待采集或二创完成');return contacts.sendBatch(id);});
@@ -244,15 +249,30 @@ else {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.once('ready-to-show', () => { if (!background && (!testMode || process.env.FENGSHA_TEST_VISIBLE === '1')) win.show(); });
+  const workInProgress = () => Boolean(queue.active.size || transcriptions.active || articles?.active || voice.active ||
+    creators.progress() || parseProgress || userSearch.active || contentSearch.active || contentSearch.actionPending || comments.active || contacts.active ||
+    contentStudio.active || contentStudio.remixController || videoWorkflow.jobs.size || videoWorkflow.mediaJobs.size || videoWorkflow.articleJobs.size);
+  let closePromptOpen = false;
   win.on('close', async e => {
-    if (closing) return; e.preventDefault();
-    if (queue.active.size || transcriptions.active) { const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['继续处理', '暂停任务并退出'], defaultId: 0, cancelId: 0, message: '仍有下载或转录任务，是否暂停并退出？', detail: '任务与已完成文稿保留，下次启动可以继续处理。' }); if (r.response === 0) return; }
+    if (closing && quitting) return;
+    e.preventDefault();
+    if (closing || quitting || closePromptOpen) return;
+    if (workInProgress()) {
+      closePromptOpen = true;
+      try {
+        const choice = await dialog.showMessageBox(win, {
+          type: 'question', buttons: ['继续处理', '停止任务并退出'], defaultId: 0, cancelId: 0,
+          message: '仍有任务正在处理，是否退出？', detail: '退出将中断当前操作。已保存的记录可在下次启动时查看。'
+        });
+        if (choice.response === 0 || closing || quitting) return;
+      } finally { closePromptOpen = false; }
+    }
     closing = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); await articles?.close(); articleStore?.close(); await comments.close(); await contacts.close(); await contentSearch.close(); await videoWorkflow.close(); await contentStudio.close(); await voice.close(); contentPublisher.close();sourceWindows?.close(); await userSearch.close(); await creators.close(); await transcriptions.close(); await queue.close(); await collectorConnection.close().catch(()=>{}); await accounts.externalBrowser?.close(); await accounts.flushAll(); store.close(); win.destroy(); app.quit();
   });
   app.on('before-quit', e => { if (!closing && !quitting) { e.preventDefault(); quitting = true; clearTimeout(changedTimer); clearInterval(agentIdleTimer); agentServer?.close(); void Promise.resolve(articles?.close()).then(()=>articleStore?.close()).then(()=>comments.close()).then(()=>contacts.close()).then(()=>contentSearch.close()).then(()=>videoWorkflow.close()).then(()=>contentStudio.close()).then(()=>voice.close()).then(()=>contentPublisher.close()).then(()=>userSearch.close()).then(() => creators.close()).then(() => transcriptions.close()).then(() => queue.close()).then(()=>collectorConnection.close().catch(()=>{})).then(()=>accounts.externalBrowser?.close()).then(() => accounts.flushAll()).then(() => { store.close(); closing = true; app.quit(); }); } });
   if (testMode) globalThis.fengshaTest = { articles, articleStore, videoWorkflow, store, queue, engine, creators, userSearch, contentSearch, contentStudio, contentPublisher, comments, contacts, voice, accounts, ai, transcriptions, wechatCreators, collectorConnection, snapshot, win };
   await win.loadFile(path.join(root, 'dist', 'index.html'));
-  const agentBusy = type => type === 'parse' ? Boolean(voice.active || parseProgress || userSearch.active || contentSearch.active || (contentStudio.active||contentStudio.remixController||comments.active||contacts.active)) : Boolean(articles?.active || voice.active || parseProgress || userSearch.active || contentSearch.active || contentStudio.active || [userSearch.browser.window,contentSearch.browser.window,contentStudio.browser.window,comments.browser.window,contacts.browser.window,contentPublisher.window].some(w=>w&&!w.isDestroyed()) || creators.progress() || transcriptions.active || queue.active.size || queue.tasks().some(t => ['queued', 'retry-wait'].includes(t.status)) || (agentServer?.active || 0) > 1);
+  const agentBusy = type => type === 'parse' ? Boolean(voice.active || parseProgress || userSearch.active || contentSearch.active || (contentStudio.active||contentStudio.remixController||comments.active||contacts.active)) : Boolean(workInProgress() || [userSearch.browser.window,contentSearch.browser.window,contentStudio.browser.window,comments.browser.window,contacts.browser.window,contentPublisher.window].some(w=>w&&!w.isDestroyed()) || queue.tasks().some(t => ['queued', 'retry-wait'].includes(t.status)) || (agentServer?.active || 0) > 1);
   agentServer = await startAgentServer(app.getPath('userData'), createAgentHandler({ engine, queue, store, accounts, creators, userSearch, contentSearch, contentStudio, parse: parseLinks,
     identify: source => { searchNotBusy(); if (parseProgress) throw new Error('正在识别视频，请稍后识别博主'); const urls = linksFromText(source); if (urls.length !== 1) throw new Error('请提供一个视频或主页链接'); return creators.identify(urls[0]); },
     busy: agentBusy, creatorChanged: record => { if (win && !win.isDestroyed()) win.webContents.send('fengsha:creator-changed', record); }, status: () => ({ version: app.getVersion(), pid: process.pid, background: !win.isVisible(), dataDirectory: app.getPath('userData'), activeTasks: queue.active.size }), stop: () => setTimeout(() => app.quit(), 100) }));

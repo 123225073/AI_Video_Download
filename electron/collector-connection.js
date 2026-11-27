@@ -297,20 +297,25 @@ export class CollectorConnection {
     else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('系统代理切换未生效或已被其他程序修改，微信采集已停止；请检查代理软件的系统代理设置后再试');
     const deadline=Date.now()+this.waitMs;
     this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续',{needsPage:!pageReady,waitingUntil:deadline});
-    let pageBootstrap=!pageReady?await this.bootstrapPage(signal,deadline):null,pageOpened=false;
-    if(!pageReady&&this.openPage&&(!pageBootstrap||pageBootstrap.status==='not-found')){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续当前任务。若未自动进入，请按连接提示打开并刷新视频号。',{needsPage:true,waitingUntil:deadline});try{signal.throwIfAborted();await this.openPage(signal);pageOpened=true;}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号并刷新；无需关闭现有代理。',{needsPage:true,waitingUntil:deadline});}}
+    let pageBootstrap=!pageReady?await this.bootstrapPage(signal,deadline):null,pageOpened=false,lastBootstrap=Date.now();
+    const canFallbackOpen=!pageReady&&this.openPage&&(!pageBootstrap||pageBootstrap.status==='not-found'||(pageBootstrap.found&&!pageBootstrap.refreshRequested&&['unsupported-toolbar','unsupported-menu','unavailable'].includes(pageBootstrap.status)));
+    if(canFallbackOpen){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续当前任务。若未自动进入，请按连接提示打开并刷新视频号。',{needsPage:true,waitingUntil:deadline});try{signal.throwIfAborted();await this.openPage(signal);pageOpened=true;}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号并刷新；无需关闭现有代理。',{needsPage:true,waitingUntil:deadline});}}
     // The registered URI may reveal a cached page that existed before this
-    // lease. Recheck once after opening, rather than waiting forever for an old
+    // lease. Recheck after opening, rather than waiting forever for an old
     // page to attach. Already-online pages and unsupported inspections are not
     // touched, and the same lease deadline/cancellation still bounds the work.
     if(pageOpened&&pageBootstrap?.status==='not-found'&&Date.now()<deadline&&!await abortable(this.online(),signal)){
       signal.throwIfAborted();this.update('waiting','已请求打开视频号，正在等待页面就绪后核对当前任务连接',{needsPage:true,waitingUntil:deadline});
       await delay(Math.max(1,Math.min(500,deadline-Date.now())),signal);signal.throwIfAborted();
-      if(Date.now()<deadline&&!await abortable(this.online(),signal))pageBootstrap=await this.bootstrapPage(signal,deadline);
+      if(Date.now()<deadline&&!await abortable(this.online(),signal)){pageBootstrap=await this.bootstrapPage(signal,deadline);lastBootstrap=Date.now();}
     }
     let pageOnline=false,refreshRequested=pageBootstrap?.refreshRequested===true;
     do {
       if(signal.aborted)throw new Error('CANCELLED');
+      if(!pageOnline&&pageOpened&&pageBootstrap?.status==='not-found'&&!refreshRequested&&Date.now()-lastBootstrap>=1000&&Date.now()<deadline&&!await abortable(this.online(),signal)){
+        pageBootstrap=await this.bootstrapPage(signal,deadline);lastBootstrap=Date.now();
+        if(pageBootstrap?.refreshRequested===true)refreshRequested=true;
+      }
       if(await abortable(this.online(),signal)){
         pageOnline=true;
         if(await this.adapterReady(signal,Math.max(1,Math.min(8000,deadline-Date.now())),required)){this.update('connected','当前任务所需微信接口已就绪 · 任务结束后自动恢复原网络');return;}

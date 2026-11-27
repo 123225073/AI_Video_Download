@@ -55,3 +55,42 @@ test('排队期间文件恢复后复用媒体，同时保存CLI需要的大小�
   const task=store.get('task',id);assert.equal(task.status,'completed');assert.equal(task.size,7);assert.equal(task.duration,42);assert.equal(task.height,1080);assert.equal(calls,0);
   await queue.close();store.close();
 });
+
+test('零字节、变短的文件与目录不能复用，重新下载时保留原路径', async t => {
+  const downloads = [];
+  const { queue, store, dir } = await setup(async task => {
+    downloads.push(task);
+    const filePath = path.join(dir, task.id + '.mp4');
+    fs.writeFileSync(filePath, 'new');
+    return { filePath, size: 3 };
+  });
+  t.after(async () => { await queue.close(); store.close(); });
+  for (const [index, original] of ['', 'cut', null].entries()) {
+    const video = item(index), key = mediaKey(video), filePath = path.join(dir, 'old' + index + '.mp4');
+    if (original === null) fs.mkdirSync(filePath);
+    else fs.writeFileSync(filePath, original);
+    store.put('media', key, { id: key, filePath, size: 99 });
+    const result = queue.enqueue([video]);
+    assert.equal(result.added.length, 1);
+    await wait(() => store.get('task', result.added[0]).status === 'completed');
+    assert.equal(downloads[index].options.force, true);
+    assert.notEqual(store.get('media', key).filePath, filePath);
+    if (original === null) assert.ok(fs.statSync(filePath).isDirectory());
+    else assert.equal(fs.readFileSync(filePath, 'utf8'), original);
+  }
+});
+
+test('重试旧任务时，不与已重新加入的同一作品并行写入文件', async t => {
+  const { queue, store } = await setup((_task, _dir, signal) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(Error('CANCELLED')), { once: true });
+  }));
+  t.after(async () => { await queue.close(); store.close(); });
+  const video = item(7);
+  const first = queue.enqueue([video]).added[0];
+  await queue.action(first, 'cancel');
+  const second = queue.enqueue([video]).added[0];
+  await queue.action(first, 'retry');
+  assert.equal(queue.active.size, 1);
+  assert.ok(queue.active.has(second));
+  assert.equal(store.get('task', first).status, 'queued');
+});

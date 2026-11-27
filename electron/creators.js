@@ -1,5 +1,5 @@
 import path from 'node:path';
-import fs from 'node:fs';
+import { reusableMediaSize } from './queue.js';
 import { randomUUID } from 'node:crypto';
 import { command } from './engine.js';
 import { platformOf, validSource, classifyError, safeLog } from './core.js';
@@ -246,7 +246,7 @@ export class Creators {
           final = entries.length < count || Boolean(total && r.scanned + entries.length >= total);
           }
         }
-        const seen = new Set(r.seen), downloaded = item => { const m = this.store.get('media', item.key); return Boolean(m && fs.existsSync(m.filePath)); };
+        const seen = new Set(r.seen), downloaded = item => reusableMediaSize(this.store.get('media', item.key)) > 0;
         if (r.creator.platform === 'B站' && entries.some(item => seen.has(item.key))) throw new Error('B站重复返回已读取作品，请重新读取；原清单和位置已保留');
         const items = [...r.items], skipped = { ...r.skipped };
         for (let item of entries) {

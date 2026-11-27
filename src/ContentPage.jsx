@@ -3,13 +3,14 @@ import {Search,Copy,ExternalLink,LoaderCircle,ImagePlus,ArrowUp,ArrowDown,X,Save
 import {SEARCH_PLATFORMS,contentDefaults} from '../electron/content-data.js';
 import Thumb from './Thumbnail.jsx';
 import CommentsPane from './CommentsPane.jsx';
+import CommentHistory from './CommentHistory.jsx';
 import StudioProgress from './StudioProgress.jsx';
 import VideoWorkbench from './VideoWorkbench.jsx';
 import StudioComparison from './StudioComparison.jsx';
 import CollectorConnectionPrompt from './CollectorConnectionPrompt.jsx';
 import SearchRecoveryPrompt from './SearchRecoveryPrompt.jsx';
 import './content-studio.css';
-export default function ContentPage({externalVideoSeed,state,perform,safe,accounts,settings,notify}){
+export default function ContentPage({commentsRoute,showSearch,showComments,externalVideoSeed,state,perform,safe,accounts,settings,notify}){
   const [platform,setPlatform]=useState('小红书'),[keyword,setKeyword]=useState(''),[options,setOptions]=useState(()=>contentDefaults()),[record,setRecord]=useState(null),[draft,setDraft]=useState(null),[busy,setBusy]=useState(false),[dirty,setDirty]=useState(false),[message,setMessage]=useState(''),[prompt,setPrompt]=useState(''),[target,setTarget]=useState('小红书'),[account,setAccount]=useState(''),[mode,setMode]=useState('image'),[publish,setPublish]=useState(null),[drafts,setDrafts]=useState([]);
   const [studioOpen,setStudioOpen]=useState(false),[selectedSource,setSelectedSource]=useState(null);const scrollPosition=useRef(0);
   const [tasksOpen,setTasksOpen]=useState(false);
@@ -21,7 +22,9 @@ export default function ContentPage({externalVideoSeed,state,perform,safe,accoun
   const waitingWeChat=workflow!=='video'&&state.collectorConnection?.phase==='waiting'&&state.collectorConnection.needsPage===true&&(waitingSearch||waitingDraft);
   const allBusy=busy||!!state.contentProgress;
   const [voiceCheck,setVoiceCheck]=useState(null);
-  const [comments,setComments]=useState(null),[commentsOpen,setCommentsOpen]=useState(false);const commentSource=useRef(null);
+  const [comments,setComments]=useState(null);
+  const commentsOpen=commentsRoute, commentSource=useRef(null);
+  const setCommentsOpen=open=>{if(open)showComments();else if(commentsRoute)showSearch();};
   const [autoCreate,setAutoCreate]=useState(true),[imagePrompt,setImagePrompt]=useState('');
   const dirtyRef=useRef(dirty),pendingClone=useRef(null);dirtyRef.current=dirty;
   const draftRef=useRef(draft),selectionEpoch=useRef(0),editEpoch=useRef(0),searchEpoch=useRef(0);draftRef.current=draft;
@@ -30,7 +33,7 @@ export default function ContentPage({externalVideoSeed,state,perform,safe,accoun
   const acceptDraft=(d,id)=>{if(!d||d.id!==id)return;setDraft(current=>current?.id===id&&!(d.revision<current.revision)?d:current);};
   const belongsToClone=d=>{const scope=pendingClone.current;return scope&&d?.source?.id===scope.sourceId&&d.searchRecordId===scope.recordId&&!scope.excluded.includes(d.id)&&Number(d.createdAt)>=scope.startedAt;};
   useEffect(()=>{if(!draft?.id)return;let current=true;perform('contentDraftGet',draft.id).then(d=>{if(current)setDraft(previous=>{if(previous?.id!==d.id)return previous;if(dirtyRef.current||d.revision<previous.revision)return {...previous,voiceReview:d.voiceReview,videoCurrent:dirtyRef.current?false:previous.videoCurrent};return d;});}).catch(()=>{});return()=>{current=false;};},[draft?.id,state.voice?.source,state.voice?.execution,state.voice?.speaker,state.voice?.speechRate]);
-  useEffect(()=>{const initialSearch=searchEpoch.current;perform('contentLast').then(r=>{if(searchEpoch.current!==initialSearch)return;setRecord(r);if(r){setPlatform(r.platform);setKeyword(r.keyword);setOptions(r.options);if(r.action?.awaitingAccount&&!r.action.dismissed)setActionAuto(true);}}).catch(()=>{});perform('commentsLast').then(setComments).catch(()=>{});perform('contentDrafts').then(setDrafts).catch(()=>{});perform('contentDraftLast').then(d=>{if(d&&!pendingClone.current&&!selectionEpoch.current){setDraft(previous=>previous||d);setTarget(d.source.platform);setMode(d.source.type==='video'?'video':'image');}}).catch(()=>{});},[]);
+  useEffect(()=>{const initialSearch=searchEpoch.current;perform('contentLast').then(r=>{if(searchEpoch.current!==initialSearch)return;setRecord(r);if(r){setPlatform(r.platform);setKeyword(r.keyword);setOptions(r.options);if(r.action?.awaitingAccount&&!r.action.dismissed)setActionAuto(true);}}).catch(()=>{});perform('commentsLast').then(r=>{if(!commentSource.current)setComments(r);}).catch(()=>{});perform('contentDrafts').then(setDrafts).catch(()=>{});perform('contentDraftLast').then(d=>{if(d&&!pendingClone.current&&!selectionEpoch.current){setDraft(previous=>previous||d);setTarget(d.source.platform);setMode(d.source.type==='video'?'video':'image');}}).catch(()=>{});},[]);
   useEffect(()=>{if(state.contentSearch){setRecord(state.contentSearch);if(state.contentSearch.busy)setMessage('');}},[state.contentSearch]);
   useEffect(()=>{perform('contentDrafts').then(setDrafts).catch(()=>{});},[state.contentDraft?.id,state.contentDraft?.status]);
   useEffect(()=>{const next=state.commentCollection;if(next&&(!commentSource.current||next.source?.id===commentSource.current))setComments(next);},[state.commentCollection]);
@@ -71,10 +74,23 @@ export default function ContentPage({externalVideoSeed,state,perform,safe,accoun
     setDraft(next);setStudioOpen(true);setCommentsOpen(false);setSelectedSource(next.source);setMessage(next.message||'已使用采集内容，可以继续编辑。');
   }
   function move(id,offset){const ids=[...draft.assetOrder],i=ids.indexOf(id),j=i+offset;if(j<0||j>=ids.length)return;[ids[i],ids[j]]=[ids[j],ids[i]];change('assetOrder',ids);}
-  return <div className="content-page"><div className="replica-workspace-tabs" role="tablist" aria-label="复刻工作台"><button role="tab" aria-selected={workflow==='image'} onClick={()=>{if(videoDirty){notify('请先保存视频二创文案',true);return;}if(!canSwitch(draft?.id))return;setWorkflow('image');setStudioOpen(false);setCommentsOpen(false);}}>图文复刻</button><button role="tab" aria-selected={workflow==='video'} onClick={()=>{if(dirtyRef.current){notify('请先保存当前图文稿件',true);return;}if(!canSwitch(null))return;setWorkflow('video');setStudioOpen(false);setCommentsOpen(false);}}>视频复刻</button></div>{workflow==='video'&&<VideoWorkbench {...{state,perform,safe,accounts,settings}} seed={videoSeed} onDirtyChange={setVideoDirty} onImages={id=>{if(videoDirty){notify('请先保存视频校对稿或二创文案',true);return;}if(typeof id==='string')openDraft(id);else{setWorkflow('image');setStudioOpen(false);}}} onSearch={()=>{if(videoDirty){notify('请先保存视频二创文案',true);return;}setWorkflow('image');setStudioOpen(false);}}/>}{waitingWeChat&&<CollectorConnectionPrompt connection={state.collectorConnection} perform={perform} onStop={()=>perform('contentCancel',waitingDraft?draft.id:undefined)} onUseCollected={waitingSearch?record.items.length?useWaitingContent:undefined:waitingDraft&&draft.source.text?.trim()?useWaitingContent:undefined} collectedLabel={waitingSearch?`使用已采集的 ${record.items.length} 条作品`:'直接使用已采集内容'} collectedUnavailable={waitingSearch&&!record.items.length?'本次尚未采集到作品，连接后会自动继续。':undefined}/>}
+  return <div className="content-page"><div hidden={commentsOpen}>
+    {!studioOpen&&<div className={`content-top-bar ${workflow==='video'?'is-compact':''}`}>
+      {workflow==='image'?<div><h1>作品搜索与二创</h1><p>关键词找笔记或视频 · 一键克隆 · 画面文案二创 · 发布准备</p></div>:<div/>}
+      <div className="content-top-actions">
+        <div className="replica-workspace-tabs" role="tablist" aria-label="复刻工作台"><button role="tab" aria-selected={workflow==='image'} onClick={()=>{if(videoDirty){notify('请先保存视频二创文案',true);return;}if(!canSwitch(draft?.id))return;setWorkflow('image');setStudioOpen(false);setCommentsOpen(false);}}>图文复刻</button><button role="tab" aria-selected={workflow==='video'} onClick={()=>{if(dirtyRef.current){notify('请先保存当前图文稿件',true);return;}if(!canSwitch(null))return;setWorkflow('video');setStudioOpen(false);setCommentsOpen(false);}}>视频复刻</button></div>
+        {comments&&<button className="button" onClick={()=>{scrollPosition.current=document.querySelector('.main')?.scrollTop||0;commentSource.current=comments.source.id;setCommentsOpen(true);}}>打开评论采集结果</button>}
+      </div>
+    </div>}
+    {workflow==='video'&&<VideoWorkbench {...{state,perform,safe,accounts,settings}} seed={videoSeed} onDirtyChange={setVideoDirty} onImages={id=>{if(videoDirty){notify('请先保存视频校对稿或二创文案',true);return;}if(typeof id==='string')openDraft(id);else{setWorkflow('image');setStudioOpen(false);}}} onSearch={()=>{if(videoDirty){notify('请先保存视频二创文案',true);return;}setWorkflow('image');setStudioOpen(false);}}/>}{waitingWeChat&&<CollectorConnectionPrompt connection={state.collectorConnection} perform={perform} onStop={()=>perform('contentCancel',waitingDraft?draft.id:undefined)} onUseCollected={waitingSearch?record.items.length?useWaitingContent:undefined:waitingDraft&&draft.source.text?.trim()?useWaitingContent:undefined} collectedLabel={waitingSearch?`使用已采集的 ${record.items.length} 条作品`:'直接使用已采集内容'} collectedUnavailable={waitingSearch&&!record.items.length?'本次尚未采集到作品，连接后会自动继续。':undefined}/>}
 {workflow==='image'&&!studioOpen&&!commentsOpen&&!allBusy&&record?.action&&!record.action.dismissed&&dismissedAction!==record.action.id&&<SearchRecoveryPrompt record={record} perform={perform} automatic={actionAuto} onConsume={()=>setActionAuto(false)} onResume={resumeSearchAction} onDismiss={dismissSearchAction} onAccounts={accounts}/>}
-<div hidden={workflow==='video'||studioOpen||commentsOpen} className="content-search-view"><header className="page-heading"><div><h1>作品搜索与二创</h1><p>关键词找笔记或视频 → 克隆单篇 → 编辑画面与文案 → 发布准备</p></div>{comments&&<button className="button" onClick={()=>{scrollPosition.current=document.querySelector('.main')?.scrollTop||0;commentSource.current=comments.source.id;setCommentsOpen(true);}}>打开评论采集结果</button>}</header>
-    <div className="clone-task-toolbar"><button className="button" aria-expanded={tasksOpen} onClick={()=>setTasksOpen(!tasksOpen)}>我的克隆任务（{drafts.length}）</button>{draft&&<button className="text-button" disabled={dirty} onClick={()=>openDraft(draft.id)}>返回当前任务</button>}<span className="hint">离开页面后可从这里继续；打开已有任务不会重新处理。</span></div>
+<div hidden={workflow==='video'||studioOpen||commentsOpen} className="content-search-view">
+    <div className="clone-task-toolbar">
+      <button className="button" aria-expanded={tasksOpen} onClick={()=>setTasksOpen(!tasksOpen)}>我的克隆任务（{drafts.length}）</button>
+      {!!drafts.length&&<select aria-label="已保存克隆稿" value={draft?.id||''} disabled={dirty} onChange={e=>e.target.value&&openDraft(e.target.value)}><option value="">快速切换已保存稿件…</option>{drafts.map(d=><option key={d.id} value={d.id}>{d.platform} · {d.title}</option>)}</select>}
+      {draft&&!studioOpen&&<button className="button" disabled={dirty} onClick={()=>enterStudio(draft.source)}>打开当前二创稿</button>}
+      {dirty&&<span className="hint">请先保存当前修改再切换稿件。</span>}
+    </div>
     {tasksOpen&&<section className="panel clone-task-list" aria-label="我的克隆任务"><h2>已保存的克隆任务</h2>{!drafts.length?<p className="hint">克隆开始后任务会自动保存。</p>:drafts.map(d=><article key={d.id}><div><strong title={d.title}>{d.title}</strong><span>{d.platform} · {{cloning:'正在保存素材',transcribing:'正在提取原文',draft:'可编辑', 'needs-action':'待继续'}[d.status]||d.status} · {new Date(d.createdAt).toLocaleString()}</span></div><button className="button" disabled={dirty} onClick={()=>openDraft(d.id)}>打开任务</button></article>)}{dirty&&<p className="hint">请先保存当前修改再切换任务。</p>}</section>}
     <section className="panel content-form"><form onSubmit={e=>{e.preventDefault();if(!allBusy&&keyword.trim())search();}}>
       <label>平台<select aria-label="作品搜索平台" value={platform} disabled={allBusy} onChange={e=>{searchEpoch.current++;setPlatform(e.target.value);}}>{SEARCH_PLATFORMS.map(p=><option key={p}>{p}</option>)}</select></label>
@@ -89,10 +105,8 @@ export default function ContentPage({externalVideoSeed,state,perform,safe,accoun
     {record&&<div className="content-summary"><strong>{record.platform} · “{record.keyword}” · 符合条件 {record.items.length} / {record.options.limit} 条</strong><span>已读取 {record.scanned} 条 · 日期待确认 {record.unknown} 条</span><div>{record.busy&&<button className="button stop-collection" onClick={()=>safe('contentCancel')}>停止采集，保留当前结果</button>}<button className="button" onClick={()=>record.platform==='B站'?openOriginal('https://search.bilibili.com/all?keyword='+encodeURIComponent(record.keyword)):safe('contentShow')}>显示官方窗口</button>{record.action&&<button className="button" disabled={allBusy} onClick={async()=>{setActionAuto(false);setDismissedAction(null);await perform('contentAction',record.id,'review');const r=await safe('contentLast');if(r)setRecord(r);}}>查看处理指引</button>}{record.canContinue&&<button className="button" disabled={allBusy} onClick={()=>search(true)}>{sameSearch?'继续读取':'按新条件重新搜索'}</button>}</div></div>}
     {record&&!sameSearch&&<p className="hint" role="status">搜索条件已修改，现有结果仍对应原条件；点击“搜索作品”或“按新条件重新搜索”后生效。</p>}<div className="content-results">{record?.items.map(item=><article className="panel content-card" key={item.key}><Thumb item={item}/><div><span className="badge">{item.type==='image'?'图文笔记':'视频'}</span><h3>{item.title}</h3><p>{item.author||'作者未返回'} · {item.publishedAt||'发布时间未知'}</p><div className="content-card-actions"><button className="text-button" onClick={()=>openOriginal(item.url)}><ExternalLink size={15}/>原作品</button><button className="button primary" disabled={dirty||allBusy&&!existingTask(item)} onClick={()=>clone(item)}><Copy size={16}/>{existingTask(item)?'打开已有任务':item.type==='video'?'视频复刻':'一键克隆'}</button><button className="button" disabled={allBusy} onClick={()=>collect(item)}>一键采集评论</button></div></div></article>)}</div>
     {record&&!record.items.length&&!allBusy&&<section className="panel empty"><Search size={32}/><h3>{record.status==='complete'?'当前范围没有匹配作品':'尚未取得符合条件的作品'}</h3><p>{record.unknown?'平台未提供部分作品日期，可勾选“同时列出日期未知作品”后重新搜索。':record.message}</p></section>}
-    {!!drafts.length&&<div className="content-draft-picker"><label>已保存的克隆稿<select aria-label="已保存克隆稿" value={draft?.id||''} disabled={dirty} onChange={e=>e.target.value&&openDraft(e.target.value)}><option value="">选择稿件</option>{drafts.map(d=><option key={d.id} value={d.id}>{d.platform} · {d.title}</option>)}</select></label>{dirty&&<span className="hint">请先保存当前修改再切换稿件。</span>}</div>}
-    {draft&&!studioOpen&&<button className="button" onClick={()=>enterStudio(draft.source)}>打开当前二创稿</button>}
     </div>
-    {workflow==='image'&&commentsOpen&&<CommentsPane {...{state,perform,safe}} record={comments} setRecord={setComments} onBack={()=>setCommentsOpen(false)}/>}
+    
     {workflow==='image'&&studioOpen&&<div className="studio-workspace"><StudioProgress job={studioJob?.draftId===draft?.id&&studioJob?.running?studioJob:draft?.extractionProgress&&(!studioJob||studioJob.draftId!==draft.id||studioJob.stage==='source')?draft.extractionProgress:!draft||studioJob?.draftId===draft.id?studioJob:null} draft={draft} summary={draft?.remixSummary} busy={busy||!!studioJob?.running||draft?.status==='transcribing'} source={selectedSource||draft?.source} onBack={()=>setStudioOpen(false)} onStop={async()=>{await safe('contentCancel',draft?.id);if(draft)setDraft(await perform('contentDraftGet',draft.id));}}/>{draft?.status==='needs-action'&&draft?.transcriptionId&&<button className="button" onClick={()=>run(async()=>setDraft(await perform('contentTranscriptResume',draft.id)))}>继续提取视频文案</button>}
     {message&&<div className="creator-notice" role="status">{message}</div>}
     {draft?.source.platform==='视频号'&&draft.source.text&&['needs-action','transcribing'].includes(draft.status)&&<button className="button primary" onClick={()=>run(async()=>setDraft(await perform('contentUseCollected',draft.id)))}>使用已采集文案与封面</button>}
@@ -115,5 +129,10 @@ export default function ContentPage({externalVideoSeed,state,perform,safe,accoun
       </div>
     </section>}
     </div>}
+    </div>
+    {commentsOpen&&<>
+      <CommentHistory record={comments} busy={allBusy||comments?.busy} perform={perform} onSelect={r=>{commentSource.current=r.source.id;setComments(r);}} onSearch={()=>{if(!videoDirty&&!dirtyRef.current){setWorkflow('image');setStudioOpen(false);}showSearch();}}/>
+      {comments&&<CommentsPane {...{state,perform,safe}} record={comments} setRecord={setComments} onBack={showSearch}/>}
+    </>}
   </div>;
 }
