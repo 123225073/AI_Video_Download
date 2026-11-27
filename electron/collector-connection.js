@@ -70,7 +70,7 @@ export class CollectorConnection {
   constructor(store, bin, directory, changed, options = {}) {
     this.store=store; this.bin=bin; this.directory=directory; this.changed=changed; this.fetch=options.request || fetch; this.system=options.system || this.runSystem.bind(this); this.guard=options.guard || this.startGuard.bind(this); this.consent=options.consent || (async()=>false); this.waitMs=options.waitMs ?? 120000; this.members=new Set(); this.state={phase:'idle',label:'未使用时保持原网络设置'}; this.started=null; this.ending=null; this.leaseFile=null; this.controller=null; this.closed=false; this.worker=null;
     fs.mkdirSync(directory,{recursive:true});
-    this.routing=options.routing || new ClashRoute();this.openPage=options.openPage;this.windowHelper=options.windowHelper;
+    this.routing=options.routing || new ClashRoute();this.openPage=options.openPage;this.windowHelper=options.windowHelper;this.prepareLiteAppCache=options.prepareLiteAppCache||null;
   }
   config() { return { enabled: true, automatic: true, baseUrl:'http://127.0.0.1:2022', ...this.store.get('collector-config','wechat') }; }
   status() { const policy=this.store.get('collector-policy','automatic');return {...this.state, activeTasks:this.members.size, bundled:fs.existsSync(path.join(this.bin,'collector','wx_video_download.exe')), allowed:Boolean(policy?.allowed && (!this.certificate || policy.certificateFingerprint===this.certificate.fingerprint))}; }
@@ -296,9 +296,17 @@ export class CollectorConnection {
     }
     else if (!Number(applied.proxy?.ProxyEnable?.value) || applied.proxy?.ProxyServer?.value !== '127.0.0.1:2023' || applied.proxy?.AutoConfigURL?.value) throw new Error('系统代理切换未生效或已被其他程序修改，微信采集已停止；请检查代理软件的系统代理设置后再试');
     const deadline=Date.now()+this.waitMs;
-    this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续',{needsPage:!pageReady,waitingUntil:deadline});
-    let pageBootstrap=!pageReady?await this.bootstrapPage(signal,deadline):null,pageOpened=false,lastBootstrap=Date.now();
-    const canFallbackOpen=!pageReady&&this.openPage&&(!pageBootstrap||pageBootstrap.status==='not-found'||(pageBootstrap.found&&!pageBootstrap.refreshRequested&&['unsupported-toolbar','unsupported-menu','unavailable'].includes(pageBootstrap.status)));
+    let liteAppCache=!pageReady&&this.prepareLiteAppCache?await this.prepareLiteAppCache().catch(()=>null):null;
+    const cacheStatus=liteAppCache?.status==='needs-wechat-restart'||liteAppCache?.status==='cleaned'?liteAppCache.status:undefined;
+    if(liteAppCache?.status==='needs-wechat-restart'){
+      this.update('waiting','检测到微信 4.2 存有旧版视频号缓存：请保持本弹窗打开，右键右下角任务栏微信图标 → 退出微信，软件将在 1 秒内自动清理并提示您重开微信。',{needsPage:true,waitingUntil:deadline,liteAppCacheStatus:'needs-wechat-restart'});
+    }else if(liteAppCache?.status==='cleaned'){
+      this.update('waiting','已自动清理微信 4.2 旧版视频号缓存：现在请打开电脑微信并进入“视频号”，连接后将自动继续当前任务。',{needsPage:true,waitingUntil:deadline,liteAppCacheStatus:'cleaned'});
+    }else{
+      this.update('waiting',plan?'视频号专用分流已开启，Clash 保持运行：请打开或重新进入微信的视频号页面':'连接已临时开启：请在微信中打开或重新进入视频号页面，连接后自动继续',{needsPage:!pageReady,waitingUntil:deadline});
+    }
+    let pageBootstrap=!pageReady&&liteAppCache?.status!=='needs-wechat-restart'?await this.bootstrapPage(signal,deadline):null,pageOpened=false,lastBootstrap=Date.now();
+    const canFallbackOpen=!pageReady&&liteAppCache?.status!=='needs-wechat-restart'&&this.openPage&&(!pageBootstrap||pageBootstrap.status==='not-found'||(pageBootstrap.found&&!pageBootstrap.refreshRequested&&['unsupported-toolbar','unsupported-menu','unavailable'].includes(pageBootstrap.status)));
     if(canFallbackOpen){this.update('waiting','正在自动打开电脑微信的视频号；连接后继续当前任务。若未自动进入，请按连接提示打开并刷新视频号。',{needsPage:true,waitingUntil:deadline});try{signal.throwIfAborted();await this.openPage(signal);pageOpened=true;}catch(e){if(signal.aborted)throw e;this.update('waiting',e.message+' 请在电脑微信进入视频号并刷新；无需关闭现有代理。',{needsPage:true,waitingUntil:deadline});}}
     // The registered URI may reveal a cached page that existed before this
     // lease. Recheck after opening, rather than waiting forever for an old
@@ -312,6 +320,13 @@ export class CollectorConnection {
     let pageOnline=false,refreshRequested=pageBootstrap?.refreshRequested===true;
     do {
       if(signal.aborted)throw new Error('CANCELLED');
+      if(!pageOnline&&this.prepareLiteAppCache&&liteAppCache?.status==='needs-wechat-restart'&&Date.now()<deadline){
+        const nextCache=await this.prepareLiteAppCache().catch(()=>liteAppCache);
+        if(nextCache?.status==='cleaned'||nextCache?.status==='clean'){
+          liteAppCache=nextCache;
+          this.update('waiting','已自动清理微信 4.2 旧版视频号缓存！现在请重新打开电脑微信并进入“视频号”，连接会自动继续。',{needsPage:true,waitingUntil:deadline,liteAppCacheStatus:'cleaned'});
+        }
+      }
       if(!pageOnline&&pageOpened&&pageBootstrap?.status==='not-found'&&!refreshRequested&&Date.now()-lastBootstrap>=1000&&Date.now()<deadline&&!await abortable(this.online(),signal)){
         pageBootstrap=await this.bootstrapPage(signal,deadline);lastBootstrap=Date.now();
         if(pageBootstrap?.refreshRequested===true)refreshRequested=true;

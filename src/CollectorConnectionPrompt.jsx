@@ -63,6 +63,10 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
         setMessage(`${clock}（第 ${nextCount} 次检测）：尚未检测到本机采集服务响应；请稍候再试，或停止后重新发起读取。`);
       } else if (status && 'proxyListening' in status && !status.proxyListening) {
         setMessage(`${clock}（第 ${nextCount} 次检测）：采集服务在线，但微信代理分流通道尚未就绪，尚未检测到视频号页面连接；请稍候或停止后重试。`);
+      } else if (status?.liteAppCacheStatus === 'needs-wechat-restart') {
+        setMessage(`${clock}（第 ${nextCount} 次检测）：微信 4.2 仍在使用未注入的旧版视频号缓存，尚未检测到视频号页面连接。请保持此窗口开启并右键右下角托盘“退出微信”，软件会在 1 秒内自动清理旧缓存，再重开微信进入视频号即可接入。`);
+      } else if (status?.liteAppCacheStatus === 'cleaned') {
+        setMessage(`${clock}（第 ${nextCount} 次检测）：已自动清理微信 4.2 旧版缓存，尚未检测到视频号页面连接。现在请打开电脑微信并进入“视频号”，连接会自动继续。`);
       } else {
         setMessage(`${clock}（第 ${nextCount} 次检测）：采集服务与分流已就绪，但仍未收到微信视频号页面回连。新版微信 4.2 首次连接若切换“朋友圈 → 视频号”仍未接通，请右键任务栏托盘彻底退出微信再重新打开进入视频号（清理旧缓存，仅需一次）。`);
       }
@@ -80,6 +84,7 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
   const serviceOk = probe ? probe.ready !== false : true;
   const proxyOk = probe && 'proxyListening' in probe ? Boolean(probe.proxyListening) : true;
   const pageOk = Boolean(probe?.connected);
+  const liteCache = probe?.liteAppCacheStatus || connection?.liteAppCacheStatus;
   return <div className="collector-prompt-backdrop">
     <section ref={dialog} className="collector-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={keepFocus}>
       <div className="collector-prompt-head">
@@ -90,6 +95,8 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
         <span className={`collector-check-pill ${serviceOk ? 'ok' : 'warn'}`}><i/>采集服务：{serviceOk ? '已就绪' : '未响应'}</span>
         <span className={`collector-check-pill ${proxyOk ? 'ok' : 'warn'}`}><i/>分流通道：{proxyOk ? '已开启' : '未监听'}</span>
         <span className={`collector-check-pill ${pageOk ? 'ok' : 'pending'}`}><i/>微信页面：{pageOk ? '已连接' : '等待重载'}</span>
+        {liteCache === 'needs-wechat-restart' && <span className="collector-check-pill warn"><i/>微信缓存：含旧版 SDK（请先退出微信）</span>}
+        {liteCache === 'cleaned' && <span className="collector-check-pill ok"><i/>微信缓存：已清理（请重开微信）</span>}
       </div>
       <p className="collector-prompt-lead">{connection.label || '原任务正在等待微信视频号连接。'}</p>
       {hasDeadline && remaining === 0 && <p className="collector-prompt-timeout">等待已超时，正在等待后台返回原因；已有结果保留。</p>}

@@ -20,6 +20,7 @@ import { createMediaProtocolHandler } from './transcript-media.js';
 import { WeChatCreators } from './wechat-creators.js';
 import {openWeChatChannels} from './wechat-page.js';
 import {WeChatWindowHelper} from './wechat-window-helper.js';
+import {prepareLiteAppSdkCache} from './wechat-liteapp-cache.js';
 import { CollectorConnection } from './collector-connection.js';
 import { createAgentHandler, startAgentServer } from './agent.js';
 import { Bilibili } from './bilibili.js';
@@ -100,7 +101,8 @@ else {
   handle('user-search-show', () => userSearch.browser.show());
   // Automatic temporary connection was explicitly requested. Certificate identity,
   // CurrentUser scope, per-task leases and recovery remain enforced by the helper.
-  collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true,openPage:signal=>openWeChatChannels(uri=>shell.openExternal(uri),signal),windowHelper:!testMode||process.env.FENGSHA_TEST_WECHAT_WINDOW==='1'?new WeChatWindowHelper(bin):undefined});
+  collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true,openPage:signal=>openWeChatChannels(uri=>shell.openExternal(uri),signal),windowHelper:!testMode||process.env.FENGSHA_TEST_WECHAT_WINDOW==='1'?new WeChatWindowHelper(bin):undefined,prepareLiteAppCache:!testMode?()=>prepareLiteAppSdkCache():undefined});
+  if(!testMode) void prepareLiteAppSdkCache().catch(()=>{});
   creators.connection=collectorConnection;wechat.collector=wechatCreators;wechat.connection=collectorConnection;
   contentSearch=new ContentSearch({accounts,creators,userSearch,bilibili:engine.bilibili,wechat:wechatCreators,browser:new ContentBrowser(accounts),store,changed});
   try{articleStore=await Store.open(path.join(app.getPath('userData'),'文章中心'),{});const articleBrowser=!testMode?new ExternalBrowser({managed:new ManagedBrowser({directory:path.join(app.getPath('userData'),'browser')}),mode:'managed'}):undefined;articles=new Articles({store:articleStore,reader:new ArticleReader(accounts,{externalBrowser:articleBrowser,store:articleStore,clientHelper:(!testMode||process.env.FENGSHA_TEST_NATIVE_ARTICLES==='1')?new WeChatArticleHelper(bin):undefined}),directory:path.join(app.getPath('userData'),'文章中心','文章'),changed});}
@@ -234,11 +236,14 @@ else {
     socket.once('error',()=>finish(false));
   });
   handle('collector-status',async()=>{
-    let ready=false,connected=false,proxyListening=false,adapterReady=false,detail='';
+    let ready=false,connected=false,proxyListening=false,adapterReady=false,detail='',liteAppCacheStatus=undefined;
     try{const channel=await wechatCreators.test();ready=true;connected=channel.connected;detail=channel.detail||'';}catch{}
     proxyListening=await tcpListening(2023);
+    if(!connected&&!testMode){
+      try{const cache=await prepareLiteAppSdkCache();if(cache.status==='needs-wechat-restart'||cache.status==='cleaned')liteAppCacheStatus=cache.status;}catch{}
+    }
     if(ready&&connected){try{adapterReady=await collectorConnection.adapterReady(null,3000);}catch{}}
-    return {...collectorConnection.status(),ready,connected,proxyListening,adapterReady,detail,checkedAt:Date.now()};
+    return {...collectorConnection.status(),ready,connected,proxyListening,adapterReady,detail,...(liteAppCacheStatus?{liteAppCacheStatus}:{}),checkedAt:Date.now()};
   });
   const guides = { cpa: 'https://cpa.fengsha.online/', collector: 'https://ltaoo.github.io/wx_channels_download/', transcriber: 'https://github.com/wendy7756/AI-Video-Transcriber', audio: 'https://platform.openai.com/docs/guides/speech-to-text' };
   handle('guide', id => { if (!guides[id]) throw new Error('帮助页面不存在'); return shell.openExternal(guides[id]); });
