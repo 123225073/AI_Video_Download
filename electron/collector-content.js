@@ -6,9 +6,11 @@
   const registry=new Map(),subscribed=new WeakSet(),modules=new Map();
   const capture=variables=>{for(const methods of Object.values(variables||{})){if(!methods||!['object','function'].includes(typeof methods))continue;for(const name of ['finderSearch','finderUserPage','finderGetCommentDetail','finderGetCommentList'])if(typeof methods[name]==='function')registry.set(name,{owner:methods,fn:methods[name]});}};
   const refresh=()=>{
-    if(typeof WXU==='undefined')return;
-    capture({a:WXU.API,b:WXU.API2,c:WXU.API3,d:WXU.API4});
-    if(typeof WXU.onAPILoaded==='function'&&!subscribed.has(WXU)){WXU.onAPILoaded(capture);subscribed.add(WXU);}
+    if(typeof WXU!=='undefined'){
+      capture({a:WXU.API,b:WXU.API2,c:WXU.API3,d:WXU.API4});
+      if(typeof WXU.onAPILoaded==='function'&&!subscribed.has(WXU)){WXU.onAPILoaded(capture);subscribed.add(WXU);}
+    }
+    try{const lite=window.__wxchannels_liteapp_rewrite__;if(lite&&typeof lite.services==='function')capture(lite.services());}catch{}
   };
   // A cached ES module does not replay the interceptor's APILoaded event. Import
   // the exact URL already used by this page to recover its existing singleton.

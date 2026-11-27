@@ -64,7 +64,7 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
       } else if (status && 'proxyListening' in status && !status.proxyListening) {
         setMessage(`${clock}（第 ${nextCount} 次检测）：采集服务在线，但微信代理分流通道尚未就绪，尚未检测到视频号页面连接；请稍候或停止后重试。`);
       } else {
-        setMessage(`${clock}（第 ${nextCount} 次检测）：采集服务与分流已就绪，但仍未收到微信视频号页面回连。新版微信请点视频号右上角“独立窗口打开”图标，或先点左侧“朋友圈”再点回“视频号”以触发重载（旧版窗口可点菜单刷新）。`);
+        setMessage(`${clock}（第 ${nextCount} 次检测）：采集服务与分流已就绪，但仍未收到微信视频号页面回连。新版微信 4.2 首次连接若切换“朋友圈 → 视频号”仍未接通，请右键任务栏托盘彻底退出微信再重新打开进入视频号（清理旧缓存，仅需一次）。`);
       }
     } catch (error) { if (mounted.current) setMessage(error.message); }
     finally { checking.current = false; if (mounted.current) setDetecting(false); }
@@ -95,7 +95,7 @@ export default function CollectorConnectionPrompt({ connection, perform, onStop,
       {hasDeadline && remaining === 0 && <p className="collector-prompt-timeout">等待已超时，正在等待后台返回原因；已有结果保留。</p>}
       <ol>
         <li><strong>确保打开官方视频号窗口</strong>：微信未登录时先完成登录，未出现视频号可点击下方“打开微信视频号”；保持窗口打开，浏览器分享页无法建立连接。</li>
-        <li><strong>触发一次视频号页面重新加载（关键）</strong>：连接开启前已经打开的页面无法自动接入。<strong>新版微信（4.x 内嵌视频号）</strong>请点击视频号右上角“独立窗口打开”图标，或先点左侧“朋友圈”再点回“视频号”（即关闭视频号页面后重新进入，不用退出微信）；<strong>独立窗口</strong>可在右上角菜单选择“刷新”。仅切换播放中的视频不能建立连接。</li>
+        <li><strong>触发一次视频号页面重新加载（关键）</strong>：连接开启前已打开的旧页面无法自动接入。<strong>新版微信（4.2 内嵌视频号）</strong>请先点左侧“朋友圈”再点回“视频号”（即关闭视频号页面后重新进入）或点右上角“独立窗口打开”；若微信刚升级到 4.2 且首次仍未接通，请<strong>右键右下角托盘退出微信后重开一次</strong>以清理旧缓存（仅需一次）。<strong>旧版独立窗口</strong>可在右上角菜单选择“刷新”。仅切换播放中的视频不能建立连接。</li>
         <li><strong>自动接入并继续任务</strong>：重载页面后软件会自动持续检测，连接就绪后原任务自动继续；也可随时点击“立即检测”查看最新实时状态。</li>
       </ol>
       <p className={`collector-prompt-status ${probeCount > 0 ? 'checked' : ''}`} role="status" aria-live="polite">{message || error || '等待期间已有结果保留；无需关闭代理软件或反复登录。'}</p>

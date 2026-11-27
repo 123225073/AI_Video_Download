@@ -6,7 +6,7 @@ import {Script} from 'node:vm';
 import {ClashRoute} from './clash-route.js';
 import YAML from 'yaml';
 
-const bundledHash = '26a99c72dc1873982671426af2b60a20ceef9f7bb31e47fb7db42f94de45a818';
+const bundledHash = '5e0a943793f44b22dab938b0a0b49a7ce6c20a5a6119389c93f1495dda082d79';
 const adapterCapabilities=['search','detail','creatorFeeds'];
 const capabilityLabels={search:'搜索',detail:'详情',creatorFeeds:'作者作品',comments:'评论'};
 function requiredCapabilities(required=adapterCapabilities){

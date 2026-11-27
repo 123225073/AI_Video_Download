@@ -17,7 +17,7 @@ export const runtimeFiles = [
   'LICENSE-yt-dlp.txt', 'ffmpeg/LICENSE.txt', 'node/LICENSE', 'collector/LICENSE',
   'collector/LICENSE-yaml', 'asr/runtime/LICENSE.txt',
 ];
-const collectorSHA256 = '26a99c72dc1873982671426af2b60a20ceef9f7bb31e47fb7db42f94de45a818';
+const collectorSHA256 = '5e0a943793f44b22dab938b0a0b49a7ce6c20a5a6119389c93f1495dda082d79';
 
 export function inspectRuntimeBundle(bin, { verifyCollectorHash = true } = {}) {
   const issues = [];

@@ -7,7 +7,9 @@ import {domainToASCII} from 'node:url';
 import YAML from 'yaml';
 
 export const routeName='Fengsha-WeChat-Route', proxyName='Fengsha-WeChat-Local';
-export const routeRule=`DOMAIN,channels.weixin.qq.com,${routeName}`;
+export const routeHosts=['channels.weixin.qq.com','res.wx.qq.com'];
+export const routeRules=routeHosts.map(host=>`DOMAIN,${host},${routeName}`);
+export const routeRule=routeRules[0];
 const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const generalKeys=['port','mixed-port','socks-port','redir-port','tproxy-port','mode','allow-lan','bind-address','ipv6','log-level','tun'];
 // Only the current local Windows Verge sidecar namespace is supported. Never
@@ -79,7 +81,7 @@ export function routedConfig(config,general) {
   for(const k of generalKeys)if(k in general)c[k]=general[k];
   c.proxies.push({name:proxyName,type:'http',server:'127.0.0.1',port:2023});
   c['proxy-groups'].push({name:routeName,type:'fallback',proxies:[proxyName,'DIRECT'],url:'http://www.qq.com',interval:5,lazy:false});
-  c.rules.unshift(routeRule);
+  c.rules.unshift(...routeRules);
   return c;
 }
 export class ClashRoute {
@@ -133,14 +135,15 @@ export class ClashRoute {
     // Refresh fallback health without pinning it: a stopped collector must fall back.
     await this.api(context,`/group/${routeName}/delay?url=http%3A%2F%2Fwww.qq.com&timeout=5000`).catch(()=>{});
     const actual=await this.api(context,'/rules');
-    if(actual.rules?.[0]?.payload!=='channels.weixin.qq.com'||actual.rules[0].proxy!==routeName)throw new Error('视频号专用分流未生效，已停止采集');
+    const topRules=(actual.rules||[]).slice(0,routeHosts.length);
+    if(topRules.length!==routeHosts.length||!routeHosts.every((host,i)=>topRules[i]?.payload===host&&topRules[i]?.proxy===routeName))throw new Error('视频号专用分流未生效，已停止采集');
     // Existing HTTPS sockets retain the route chosen when they were opened.
     // Reconnect only this platform's stale TCP sockets; never flush all traffic.
     const current=await this.api(context,'/connections');
     if(signal?.aborted)throw new Error('CANCELLED');
     for(const connection of current.connections||[]){
       if(signal?.aborted)throw new Error('CANCELLED');
-      if(connection.metadata?.host!=='channels.weixin.qq.com'||connection.metadata?.network!=='tcp'||!Array.isArray(connection.chains)||connection.chains.includes(proxyName)||typeof connection.id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connection.id))continue;
+      if(!routeHosts.includes(connection.metadata?.host)||connection.metadata?.network!=='tcp'||!Array.isArray(connection.chains)||connection.chains.includes(proxyName)||typeof connection.id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(connection.id))continue;
       await this.api(context,'/connections/'+connection.id,undefined,'DELETE');
       if(signal?.aborted)throw new Error('CANCELLED');
     }
@@ -150,7 +153,8 @@ export class ClashRoute {
     const {rules}=await this.api(context,'/rules');
     if(!rules.some(r=>r.proxy===routeName))return;
     const owned=rules.filter(r=>r.proxy===routeName),others=rules.filter(r=>r.proxy!==routeName);
-    if(context.configurationDigest!==plan.configurationDigest||owned.length!==1||owned[0].payload!=='channels.weixin.qq.com'||digest(others.map(r=>[r.type,r.payload,r.proxy]))!==plan.rulesDigest)throw new Error('Clash 规则已被其他操作修改，保留当前规则；视频号分流可在 Clash 重载配置后清除');
+    const ownedValid=(owned.length===routeHosts.length&&routeHosts.every(host=>owned.some(r=>r.payload===host)))||(owned.length===1&&owned[0].payload==='channels.weixin.qq.com');
+    if(context.configurationDigest!==plan.configurationDigest||!ownedValid||digest(others.map(r=>[r.type,r.payload,r.proxy]))!==plan.rulesDigest)throw new Error('Clash 规则已被其他操作修改，保留当前规则；视频号分流可在 Clash 重载配置后清除');
     const general=await this.api(context,'/configs');
     const c=context.config;for(const k of generalKeys)if(k in general)c[k]=general[k];
     await this.reload(context,c);

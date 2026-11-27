@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import nodeNet from 'node:net';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, protocol, net, safeStorage, session } from 'electron';
 import { Store } from './store.js';
@@ -224,13 +225,19 @@ else {
   handle('collector-allow',()=>{connectionNotBusy();return collectorConnection.allow();});
   handle('collector-open-page',()=>openWeChatChannels(uri=>shell.openExternal(uri)));
   handle('collector-restore',()=>collectorConnection.restore());
+  const tcpListening=(port,host='127.0.0.1',timeout=300)=>new Promise(resolve=>{
+    const socket=nodeNet.createConnection({host,port});
+    const finish=ok=>{socket.removeAllListeners();socket.destroy();resolve(ok);};
+    socket.setTimeout(timeout);
+    socket.once('connect',()=>finish(true));
+    socket.once('timeout',()=>finish(false));
+    socket.once('error',()=>finish(false));
+  });
   handle('collector-status',async()=>{
     let ready=false,connected=false,proxyListening=false,adapterReady=false,detail='';
     try{const channel=await wechatCreators.test();ready=true;connected=channel.connected;detail=channel.detail||'';}catch{}
-    if(ready){
-      try{const proxy=await collectorConnection.api('/api/proxy/status',null,2000);proxyListening=Boolean(proxy?.service?.listening||proxy?.proxy?.listening||proxy?.service?.status==='running');}catch{}
-      if(connected){try{adapterReady=await collectorConnection.adapterReady(null,3000);}catch{}}
-    }
+    proxyListening=await tcpListening(2023);
+    if(ready&&connected){try{adapterReady=await collectorConnection.adapterReady(null,3000);}catch{}}
     return {...collectorConnection.status(),ready,connected,proxyListening,adapterReady,detail,checkedAt:Date.now()};
   });
   const guides = { cpa: 'https://cpa.fengsha.online/', collector: 'https://ltaoo.github.io/wx_channels_download/', transcriber: 'https://github.com/wendy7756/AI-Video-Transcriber', audio: 'https://platform.openai.com/docs/guides/speech-to-text' };
