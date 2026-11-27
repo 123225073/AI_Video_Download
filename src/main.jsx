@@ -896,7 +896,15 @@ function Tasks({ initialFilter, state, safe, perform, notify, accounts, newDownl
             </dl>
             {detail.error && <div className="error-box"><AlertCircle size={16} /><p>{detail.error.message}</p></div>}
             {detail.logs && <details><summary>查看诊断信息</summary><pre>{detail.logs}</pre></details>}
-            <Button onClick={() => safe('openSource', detail.item.url)}><ExternalLink size={15} />打开原页面</Button>
+            {isWeChatInternalUrl(detail.item.url) ? (
+              detail.status === 'completed' ? (
+                <Button variant="primary" onClick={() => safe('openFile', detail.item.key)}><Play size={15} />播放本地视频</Button>
+              ) : (
+                <p className="hint">该视频号链接为微信客户端内部地址，下载完成后可直接点击播放本地视频。</p>
+              )
+            ) : (
+              <Button onClick={() => safe('openSource', detail.item.url)}><ExternalLink size={15} />打开原页面</Button>
+            )}
             {detail.status !== 'completed' && detail.status !== 'cancelled' && (
               <Button variant="quiet" onClick={() => safe('action', detail.id, 'cancel')}>取消此任务</Button>
             )}
@@ -905,6 +913,15 @@ function Tasks({ initialFilter, state, safe, perform, notify, accounts, newDownl
       </div>
     </>
   );
+}
+
+function isWeChatInternalUrl(url) {
+  try {
+    const u = new URL(String(url || ''));
+    return u.hostname === 'channels.weixin.qq.com' && u.pathname.startsWith('/web/pages/');
+  } catch {
+    return false;
+  }
 }
 
 function StatusIcon({ status }) {
@@ -1041,9 +1058,11 @@ function MediaLibrary({ onVideo, state, safe, perform, notify, newDownload, tran
                     <Button disabled={!m.exists} onClick={() => onVideo({ mediaId: m.id, title: m.title })}>对标二创</Button>
                     <Button disabled={!m.exists} onClick={() => transcribe(m.id)}><FileText size={13} />转录与翻译</Button>
                     <div className="media-actions-tail">
-                      <button className="icon-button" aria-label="打开视频原页面" title="打开原页面" onClick={() => safe('openSource', m.url)}>
-                        <ExternalLink size={14} />
-                      </button>
+                      {!isWeChatInternalUrl(m.url) && (
+                        <button className="icon-button" aria-label="打开视频原页面" title="打开原页面" onClick={() => safe('openSource', m.url)}>
+                          <ExternalLink size={14} />
+                        </button>
+                      )}
                       {removal.removeButton(m)}
                     </div>
                   </div>

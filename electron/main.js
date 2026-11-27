@@ -101,7 +101,7 @@ else {
   handle('user-search-show', () => userSearch.browser.show());
   // Automatic temporary connection was explicitly requested. Certificate identity,
   // CurrentUser scope, per-task leases and recovery remain enforced by the helper.
-  collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true,openPage:signal=>openWeChatChannels(uri=>shell.openExternal(uri),signal),windowHelper:!testMode||process.env.FENGSHA_TEST_WECHAT_WINDOW==='1'?new WeChatWindowHelper(bin):undefined,prepareLiteAppCache:!testMode?()=>prepareLiteAppSdkCache():undefined});
+  collectorConnection = new CollectorConnection(store,bin,path.join(app.getPath('userData'),'视频号连接'),changed,{consent:async()=>true,keepAliveMs:!testMode?15*60*1000:0,openPage:signal=>openWeChatChannels(uri=>shell.openExternal(uri),signal),windowHelper:!testMode||process.env.FENGSHA_TEST_WECHAT_WINDOW==='1'?new WeChatWindowHelper(bin):undefined,prepareLiteAppCache:!testMode?()=>prepareLiteAppSdkCache():undefined});
   if(!testMode) void prepareLiteAppSdkCache().catch(()=>{});
   creators.connection=collectorConnection;wechat.collector=wechatCreators;wechat.connection=collectorConnection;
   contentSearch=new ContentSearch({accounts,creators,userSearch,bilibili:engine.bilibili,wechat:wechatCreators,browser:new ContentBrowser(accounts),store,changed});
@@ -220,7 +220,14 @@ else {
   handle('transcription-archive', (id, draft) => transcriptions.archive(id, draft));
   handle('transcription-unarchive', id => transcriptions.unarchive(id));
   handle('transcription-export', async (id, format, language, variant) => { if (!['md', 'txt', 'srt', 'timed-txt', 'corrected-txt', 'translation-txt', 'variant-txt', 'variant-srt', 'corrected-timed-txt', 'corrected-srt', 'corrected-candidate-txt'].includes(format)) throw new Error('请选择 Markdown、TXT 或 SRT'); const text = transcriptions.exportText(id, format, language, variant); const t = transcriptions.get(id); const extension = format.endsWith('-txt') ? 'txt' : format.endsWith('-srt') ? 'srt' : format; const suffix = { txt: '纯文本原文', 'timed-txt': '时间戳原文', 'corrected-txt': '校正文案', srt: '字幕', md: '完整资料', 'translation-txt': `译文-${language}`, 'variant-txt': `${language}-${String(variant).includes(':timed:') ? '时间戳' : '纯文本'}译文`, 'variant-srt': `${language}字幕`, 'corrected-timed-txt': '矫正时间戳文案', 'corrected-srt': '矫正字幕', 'corrected-candidate-txt': '矫正文案' }[format]; const r = await dialog.showSaveDialog(win, { title: '导出转录资料', defaultPath: path.join(store.settings().savePath, `${t.title.replace(/[<>:"/\\|?*\r\n]/g, '_').slice(0, 60)}-${suffix}.${extension}`), filters: [{ name: suffix, extensions: [extension] }] }); if (r.canceled) return null; fs.writeFileSync(r.filePath, text, 'utf8'); return { path: r.filePath }; });
-  handle('collector-save', value => { if (userSearch.active || creators.progress() || collectorConnection.status().activeTasks) throw new Error('视频号任务正在使用连接，请停止后更改连接设置'); const c = wechatCreators.save(value); changed(); return c; });
+  handle('collector-save', async value => {
+    if (userSearch.active || creators.progress() || collectorConnection.status().activeTasks) throw new Error('视频号任务正在使用连接，请停止后更改连接设置');
+    const c = wechatCreators.save(value);
+    if ((!c.keepAlive || !c.automatic || !c.enabled) && collectorConnection.status().keepAliveActive) {
+      await collectorConnection.finish().catch(() => {});
+    }
+    changed(); return c;
+  });
   handle('collector-test', () => wechatCreators.test());
   const connectionNotBusy=()=>{if(userSearch.active || creators.progress() || collectorConnection.status().activeTasks)throw new Error('视频号任务正在使用连接，请停止后更改连接设置');};
   handle('collector-prepare',()=>{connectionNotBusy();return collectorConnection.prepare();});

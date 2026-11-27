@@ -62,8 +62,8 @@ export function wechatMetadata(feed = {}, parsed = {}) {
 }
 export class WeChatCreators {
   constructor(store, engine, request = fetch, codec = null) { this.store = store; this.engine = engine; this.fetch = request; this.codec=codec;this.mediaCache=new Map();this.staleMedia=new Set(); }
-  config() { return { enabled: true, automatic:true, baseUrl: 'http://127.0.0.1:2022', ...this.store.get('collector-config', 'wechat') }; }
-  save(raw) { const c = { enabled: Boolean(raw.enabled), automatic:raw.automatic !== false, baseUrl: collectorBase(raw.baseUrl) }; if(c.automatic && c.baseUrl!=='http://127.0.0.1:2022') throw new Error('自动连接使用内置本机地址；自定义服务请选择手动连接'); this.store.put('collector-config', 'wechat', c); this.store.flush(); return c; }
+  config() { return { enabled: true, automatic:true, keepAlive:true, baseUrl: 'http://127.0.0.1:2022', ...this.store.get('collector-config', 'wechat') }; }
+  save(raw) { const c = { enabled: Boolean(raw.enabled), automatic:raw.automatic !== false, keepAlive:raw.keepAlive !== false, baseUrl: collectorBase(raw.baseUrl) }; if(c.automatic && c.baseUrl!=='http://127.0.0.1:2022') throw new Error('自动连接使用内置本机地址；自定义服务请选择手动连接'); this.store.put('collector-config', 'wechat', c); this.store.flush(); return c; }
   async request(route, params = {}, signal) {
     const c = this.config(); if (!c.enabled) throw new Error('请先在设置中连接本机视频号采集服务');
     const u = new URL(route, collectorBase(c.baseUrl)); for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v ?? ''));

@@ -68,12 +68,14 @@ export function upstreamProxy(before, guardedProxy = false) {
 }
 export class CollectorConnection {
   constructor(store, bin, directory, changed, options = {}) {
-    this.store=store; this.bin=bin; this.directory=directory; this.changed=changed; this.fetch=options.request || fetch; this.system=options.system || this.runSystem.bind(this); this.guard=options.guard || this.startGuard.bind(this); this.consent=options.consent || (async()=>false); this.waitMs=options.waitMs ?? 120000; this.members=new Set(); this.state={phase:'idle',label:'未使用时保持原网络设置'}; this.started=null; this.ending=null; this.leaseFile=null; this.controller=null; this.closed=false; this.worker=null;
+    this.store=store; this.bin=bin; this.directory=directory; this.changed=changed; this.fetch=options.request || fetch; this.system=options.system || this.runSystem.bind(this); this.guard=options.guard || this.startGuard.bind(this); this.consent=options.consent || (async()=>false); this.waitMs=options.waitMs ?? 120000; this.keepAliveMs=options.keepAliveMs ?? 0; this.idleTimer=null; this.members=new Set(); this.state={phase:'idle',label:'未使用时保持原网络设置'}; this.started=null; this.ending=null; this.leaseFile=null; this.controller=null; this.closed=false; this.worker=null;
     fs.mkdirSync(directory,{recursive:true});
     this.routing=options.routing || new ClashRoute();this.openPage=options.openPage;this.windowHelper=options.windowHelper;this.prepareLiteAppCache=options.prepareLiteAppCache||null;
   }
-  config() { return { enabled: true, automatic: true, baseUrl:'http://127.0.0.1:2022', ...this.store.get('collector-config','wechat') }; }
-  status() { const policy=this.store.get('collector-policy','automatic');return {...this.state, activeTasks:this.members.size, bundled:fs.existsSync(path.join(this.bin,'collector','wx_video_download.exe')), allowed:Boolean(policy?.allowed && (!this.certificate || policy.certificateFingerprint===this.certificate.fingerprint))}; }
+  config() { return { enabled: true, automatic: true, keepAlive: true, baseUrl:'http://127.0.0.1:2022', ...this.store.get('collector-config','wechat') }; }
+  status() { const policy=this.store.get('collector-policy','automatic');return {...this.state, activeTasks:this.members.size, keepAliveActive:Boolean(this.idleTimer && this.leaseFile), bundled:fs.existsSync(path.join(this.bin,'collector','wx_video_download.exe')), allowed:Boolean(policy?.allowed && (!this.certificate || policy.certificateFingerprint===this.certificate.fingerprint))}; }
+  clearIdleTimer() { if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; } }
+  shouldKeepAlive(failed) { return !failed && !this.closed && this.keepAliveMs > 0 && this.config().keepAlive !== false && this.leaseMode === 'routed' && Boolean(this.leaseFile) && this.state.phase === 'connected'; }
   update(phase,label,extra={}) { this.state={phase,label,...extra}; this.changed(); }
   async api(route, body, timeout=15000, signal=null) {
     if(signal?.aborted)throw new Error('CANCELLED');
@@ -382,8 +384,17 @@ export class CollectorConnection {
     if(this.ending)await this.ending;
     if(this.closed || signal?.aborted)throw new Error('CANCELLED');
     if(this.state.phase==='error')throw new Error('上次网络恢复尚未完成，请先在视频号连接中恢复原网络');
-    const member=randomUUID();this.members.add(member);
+    const member=randomUUID(),wasKeepAlive=Boolean(this.idleTimer);this.clearIdleTimer();this.members.add(member);
+    let failed=false;
     try {
+      if(wasKeepAlive&&this.members.size===1&&this.started&&this.leaseFile&&this.state.phase==='connected'){
+        const alive=await abortable(this.online(),signal)&&await this.adapterReady(signal,8000,required);
+        if(signal?.aborted)throw new Error('CANCELLED');
+        if(!alive){
+          // Keep-alive lease lost its WeChat page; cleanly re-establish a fresh lease.
+          await this.finish();
+        }
+      }
       if(!this.started){this.controller=new AbortController();this.startedRequired=required;this.started=this.begin(this.controller.signal,required);}
       await abortable(this.started,signal); if(signal?.aborted) throw new Error('CANCELLED');
       // Each joining task checks any additional capability before it runs. Do
@@ -392,13 +403,32 @@ export class CollectorConnection {
         if(!await this.adapterReady(signal||this.controller.signal,8000,required))throw new Error(this.adapterMessage(required));
       }
       if(signal?.aborted)throw new Error('CANCELLED');return await operation();
+    } catch(error) {
+      failed=true;throw error;
     } finally {
       this.members.delete(member);
-      if(!this.members.size) { this.ending=this.finish();try{await this.ending;}finally{this.ending=null;} }
+      if(!this.members.size) {
+        if(this.shouldKeepAlive(failed)) {
+          const minutes=Math.max(1,Math.round(this.keepAliveMs/60000));
+          this.update('connected',`视频号连接保持就绪 · 连续操作免重复刷新（${minutes} 分钟无操作或退出软件自动恢复）`,{keepAlive:true});
+          this.clearIdleTimer();
+          this.idleTimer=setTimeout(()=>{
+            this.idleTimer=null;
+            if(!this.members.size&&!this.ending&&this.leaseFile){
+              this.ending=this.finish().catch(()=>{}).finally(()=>{this.ending=null;this.changed();});
+            }
+          },this.keepAliveMs);
+          this.idleTimer.unref?.();
+        } else {
+          this.clearIdleTimer();
+          this.ending=this.finish();try{await this.ending;}finally{this.ending=null;}
+        }
+      }
       this.changed();
     }
   }
   async finish() {
+    this.clearIdleTimer();
     this.controller?.abort();await this.started?.catch(()=>{});
     try {
       if(this.leaseFile){this.update('restoring','正在恢复原代理与临时证书');await this.system('restore',this.leaseFile);await this.stopProxy();}
@@ -406,9 +436,9 @@ export class CollectorConnection {
     } catch(error){this.update('error','自动恢复尚未完成，请点击恢复原网络');throw error;}
     finally {this.started=null;this.startedRequired=null;this.controller=null;if(this.state.phase!=='error'){this.leaseFile=null;this.leaseMode=null;}}
   }
-  async restore() { if(this.members.size) throw new Error('请先停止作品读取和视频号下载，再恢复网络');await this.recover();if(this.leaseFile)await this.stopProxy();this.leaseFile=null;this.leaseMode=null;this.update('idle','原网络设置已恢复');return this.status(); }
+  async restore() { if(this.members.size) throw new Error('请先停止作品读取和视频号下载，再恢复网络');this.clearIdleTimer();if(this.leaseFile||this.started)await this.finish();await this.recover();if(this.leaseFile)await this.stopProxy();this.leaseFile=null;this.leaseMode=null;this.update('idle','原网络设置已恢复');return this.status(); }
   async close(){
-    this.closed=true;this.controller?.abort();
+    this.closed=true;this.clearIdleTimer();this.controller?.abort();
     await this.recovering;await this.ending;
     if(this.state.phase==='error'&&!this.leaseFile)throw new Error(this.state.label);
     await this.finish();this.worker?.kill();
